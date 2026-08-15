@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     groq_strong_model: str = "groq/llama-3.3-70b-versatile"
     groq_cheap_model: str = "groq/llama-3.1-8b-instant"
 
+    # Web search (Tavily free tier). Empty = web_search tool says "not configured".
+    tavily_api_key: str = ""
+
     def model_post_init(self, __context) -> None:
         if self.groq_api_key and self.strong_model.startswith("gemini/"):
             self.strong_model = self.groq_strong_model

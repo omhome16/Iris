@@ -178,6 +178,8 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "file_write",
         "file_read",
         "file_list",
+        "web_search",
+        "ingest_url",
     }
     for s in schemas:
         assert s["function"]["parameters"]["type"] == "object"

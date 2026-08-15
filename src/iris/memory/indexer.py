@@ -46,6 +46,8 @@ class Reindexer:
             return Origin.OWNER, True
         if rel_path.startswith("memory/"):
             return Origin.AGENT, False
+        if rel_path.startswith("imports/"):
+            return Origin.UNTRUSTED, False
         if rel_path.startswith("skills/"):
             return Origin.AGENT, True
         return Origin.SYSTEM, False
