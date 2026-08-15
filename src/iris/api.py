@@ -38,6 +38,7 @@ from iris.memory.llm import LLMClient
 from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
+from iris.scheduler import build_scheduler
 from iris.voice import transcribe
 
 log = logging.getLogger("iris")
@@ -98,11 +99,16 @@ async def lifespan(app: FastAPI):
 
         graph = ChatGraph(runtime, saver)
 
+        scheduler = build_scheduler(runtime)
+        scheduler.start()
+        log.info("scheduler started: %s", [j.id for j in scheduler.get_jobs()])
+
         app.state.runtime = runtime
         app.state.graph = graph
         try:
             yield
         finally:
+            scheduler.shutdown(wait=False)
             await telegram.close()
             await index.close()
 

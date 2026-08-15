@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     dream_staging_dir: str = "memory/.dreams"
     dream_candidate_max: int = 200
     nightly_sleep_hour: int = 4  # best-effort nightly sweep (24h clock, local tz)
+    morning_brief_hour: int = 8  # Telegram digest to owner_chat_id (needs it set)
     # Deterministic promotion gate (Light phase, no model calls).
     # Score = w·[occurrence, importance, richness, trigger-diversity].
     dream_light_weights: tuple[float, float, float, float] = (0.35, 0.35, 0.15, 0.15)
