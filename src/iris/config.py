@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # Web search (Tavily free tier). Empty = web_search tool says "not configured".
     tavily_api_key: str = ""
 
+    # Voice notes — Groq Whisper (needs groq_api_key).
+    voice_model: str = "groq/whisper-large-v3-turbo"
+
     def model_post_init(self, __context) -> None:
         if self.groq_api_key and self.strong_model.startswith("gemini/"):
             self.strong_model = self.groq_strong_model

@@ -259,6 +259,43 @@ def _format_skills(data: dict) -> str:
 
 # ── Bridge loop ───────────────────────────────────────────────────────────
 
+async def _handle_voice(chat_id: int, voice: dict) -> None:
+    """Voice message → download audio → iris-core /voice → reply.
+
+    The transcript comes back with the reply; the original audio never
+    touches disk here (streamed through memory).
+    """
+    await send_to_chat(chat_id, "🎙 Listening…")
+    try:
+        file_id = voice["file_id"]
+        file_info = await _tg("getFile", file_id=file_id)
+        file_path = file_info.get("file_path")
+        if not file_path:
+            raise RuntimeError("telegram returned no file path")
+        async with httpx.AsyncClient(timeout=60) as client:
+            dl = await client.get(
+                f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+            )
+            dl.raise_for_status()
+            r = await client.post(
+                f"{IRIS_CORE_URL}/voice",
+                data={"user_id": str(chat_id)},
+                files={"audio": ("voice.ogg", dl.content, "audio/ogg")},
+                timeout=180,
+            )
+            data = r.json()
+            reply = data.get("reply", "I couldn't hear you.")
+            transcript = data.get("transcript")
+    except Exception as exc:  # noqa: BLE001 - voice must never kill the poller
+        log.warning("voice handling failed: %s", exc)
+        reply = "I couldn't hear you — voice needs GROQ_API_KEY, and a clear recording."
+        transcript = None
+    if transcript:
+        _log_chat(chat_id, "user", f"[voice] {transcript[:200]}")
+    await send_to_chat(chat_id, reply)
+    _log_chat(chat_id, "iris", reply)
+
+
 async def _poll_loop() -> None:
     """Long-poll Telegram updates; forward messages into iris-core /chat."""
     offset = 0
@@ -273,8 +310,13 @@ async def _poll_loop() -> None:
                 chat_id = msg["chat"]["id"]
                 text = (msg.get("text") or "").strip()
                 user = (msg.get("from") or {}).get("first_name", "Owner")
+
+                voice = msg.get("voice")
+                if not text and voice:
+                    await _handle_voice(chat_id, voice)
+                    continue
                 if not text:
-                    await send_to_chat(chat_id, "I can only read text messages for now.")
+                    await send_to_chat(chat_id, "I can only read text or voice messages for now.")
                     continue
                 _log_chat(chat_id, "user", text)
                 if text.startswith("/start"):

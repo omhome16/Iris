@@ -21,7 +21,7 @@ from pathlib import Path
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, UploadFile
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
 
@@ -38,6 +38,7 @@ from iris.memory.llm import LLMClient
 from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
+from iris.voice import transcribe
 
 log = logging.getLogger("iris")
 
@@ -141,6 +142,40 @@ async def chat(req: ChatRequest) -> ChatResponse:
     # wizard state lives on disk; reload for a fresh read (graph may have run it)
     wizard = OnboardingWizard(app.state.runtime.files)
     return ChatResponse(reply=reply, onboarded=wizard.onboarded)
+
+
+@app.post("/voice")
+async def voice_turn(user_id: str = Form(...), audio: UploadFile = File(...)) -> dict:
+    """Voice note → Groq Whisper transcript → the same chat graph as /chat.
+
+    Called by the Telegram bridge, which downloads the voice message and
+    forwards the audio file here. Replies with the graph's reply text.
+    """
+    import tempfile
+
+    graph: ChatGraph = app.state.graph
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ogg")
+    tmp_path = Path(tmp.name)
+    try:
+        tmp.write(await audio.read())
+        tmp.close()
+        transcript = await transcribe(tmp_path)
+    except Exception as exc:  # noqa: BLE001 - a voice turn must never 500
+        log.warning("voice turn failed: %s", exc)
+        return {"reply": f"I couldn't hear you: {exc}"}
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    try:
+        reply = await asyncio.wait_for(
+            graph.respond(transcript, session_id=user_id), timeout=120.0
+        )
+    except TimeoutError:
+        reply = "I'm still thinking — the language model is under load. Say that again in a bit."
+    except Exception as exc:  # noqa: BLE001
+        log.exception("voice graph turn failed")
+        reply = f"I hit an unexpected error ({type(exc).__name__}) — try again later."
+    return {"reply": reply, "transcript": transcript}
 
 
 @app.get("/onboarding")
