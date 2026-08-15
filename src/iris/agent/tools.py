@@ -1,0 +1,334 @@
+"""Agent tools — the visible-mind toolset Iris calls through the graph.
+
+Every tool is a plain function bound to the Runtime. Schema is OpenAI-style
+for LiteLLM tool-calling. Tools never touch the host: memory, skills, dreams
+and the sleep graph only.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
+from iris.agent.runtime import Runtime
+from iris.memory.files import ConcurrencyError
+from iris.memory.provenance import Origin, Provenance
+from iris.memory.skills import Skill
+
+
+@dataclass(slots=True)
+class Tool:
+    name: str
+    description: str
+    parameters: dict
+    handler: Callable[..., Awaitable[str]]
+
+    def schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+def _ok(**extra: Any) -> str:
+    return json.dumps({"ok": True, **extra}, ensure_ascii=False)
+
+
+def _err(reason: str) -> str:
+    return json.dumps({"ok": False, "error": reason}, ensure_ascii=False)
+
+
+def build_tools(runtime: Runtime) -> list[Tool]:
+    tools: list[Tool] = []
+
+    async def memory_search(query: str, top_k: int = 5) -> str:
+        hits = await runtime.index.search(query, top_k=top_k, mrr_top_k=top_k)
+        return _ok(
+            results=[
+                {
+                    "content": h.content,
+                    "score": round(h.score, 3),
+                    "origin": h.origin.value,
+                    "path": h.path,
+                }
+                for h in hits[:top_k]
+            ]
+        )
+
+    tools.append(
+        Tool(
+            "memory_search",
+            "Search Iris's long-term memory for facts relevant to a query. "
+            "Use before answering anything about the owner's life or history.",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "what to search for"},
+                    "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+                },
+                "required": ["query"],
+            },
+            memory_search,
+        )
+    )
+
+    async def remember(content: str, importance: float = 6.0, triggers: list[str] | None = None) -> str:
+        """Explicit owner-requested memory. Written to MEMORY.md immediately
+        with owner provenance (bypasses staging — the human is the writer)."""
+        if len(content) > 500:
+            return _err("content too long (max 500 chars)")
+        entry = f"- [{importance:.0f}] {content}"
+        if triggers:
+            entry += f"  (triggers: {', '.join(triggers[:5])})"
+        stamp = datetime.now().isoformat(timespec="seconds")
+        entry += f"  (by owner, {stamp[:10]})"
+        try:
+            runtime.files.append_curated(runtime.files.memory, entry)
+            await runtime.reindexer.reindex_all()
+        except ConcurrencyError as exc:
+            return _err(str(exc))
+        return _ok(entry=entry)
+
+    tools.append(
+        Tool(
+            "remember",
+            "Store a durable fact the owner asked to remember, or a stable "
+            "fact about them. Written straight into long-term memory with "
+            "owner provenance. Importance 1-10.",
+            {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "the fact, present tense, self-contained"},
+                    "importance": {"type": "number", "minimum": 1, "maximum": 10},
+                    "triggers": {"type": "array", "items": {"type": "string"}, "description": "trigger phrases"},
+                },
+                "required": ["content"],
+            },
+            remember,
+        )
+    )
+
+    async def inspect_mind() -> str:
+        files = runtime.files
+        mem = files.read(files.memory)[:2000]
+        user = files.read(files.user)[:1500]
+        dreams = files.read(files.dreams)[-1500:]
+        skills = [s.name for s in runtime.skills.list()]
+        stats = await runtime.index.stats()
+        return _ok(
+            memory=mem,
+            user=user,
+            dreams_tail=dreams,
+            skills=skills,
+            stats=stats,
+        )
+
+    tools.append(
+        Tool(
+            "inspect_mind",
+            "Show Iris's whole visible mind: MEMORY.md, USER.md, recent "
+            "dreams, skills and index stats. For introspection requests.",
+            {"type": "object", "properties": {}},
+            inspect_mind,
+        )
+    )
+
+    async def forget(query: str) -> str:
+        """Mark a matching memory as superseded (never hard-delete)."""
+        hits = await runtime.index.search(query, top_k=3, mrr_top_k=1)
+        if not hits:
+            return _err("no memory matched")
+        hit = hits[0]
+        current = runtime.files.read(runtime.files.memory)
+        marker = f"(superseded {datetime.now().isoformat()[:10]})"
+        new = current.replace(hit.content, f"{hit.content} {marker}")
+        if new == current:
+            return _err("found in index but not editable in MEMORY.md (daily note); leaving intact")
+        try:
+            runtime.files.write_curated(runtime.files.memory, new)
+            await runtime.reindexer.reindex_all()
+        except ConcurrencyError as exc:
+            return _err(str(exc))
+        return _ok(superseded=hit.content[:120])
+
+    tools.append(
+        Tool(
+            "forget",
+            "Retire a memory the owner wants gone. Matching is semantic; "
+            "the entry is marked superseded, never deleted. Requires owner intent.",
+            {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            forget,
+        )
+    )
+
+    async def skill_write(name: str, description: str, procedure: str, triggers: list[str] | None = None) -> str:
+        if len(procedure) > 4000:
+            return _err("procedure too long (max 4000 chars)")
+        skill = Skill(
+            name=name,
+            description=description,
+            procedure=procedure,
+            triggers=triggers or [],
+        )
+        runtime.skills.write(skill)
+        await runtime.reindexer.reindex_all()
+        return _ok(name=name)
+
+    tools.append(
+        Tool(
+            "skill_write",
+            "Write a reusable procedure (skill) into Iris's procedural memory. "
+            "Use when the owner asks 'how do you do X' style procedures or when "
+            "a repeated workflow is discovered.",
+            {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "procedure": {"type": "string", "description": "step-by-step procedure"},
+                    "triggers": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["name", "description", "procedure"],
+            },
+            skill_write,
+        )
+    )
+
+    async def skill_list() -> str:
+        skills = runtime.skills.list()
+        return _ok(
+            skills=[
+                {"name": s.name, "description": s.description, "triggers": s.triggers, "success": s.success_score}
+                for s in skills
+            ]
+        )
+
+    tools.append(
+        Tool(
+            "skill_list",
+            "List all skills in procedural memory.",
+            {"type": "object", "properties": {}},
+            skill_list,
+        )
+    )
+
+    async def skill_apply(name: str) -> str:
+        skill = runtime.skills.get(name)
+        if skill is None:
+            return _err(f"no skill named {name!r}")
+        return _ok(name=name, procedure=skill.procedure)
+
+    tools.append(
+        Tool(
+            "skill_apply",
+            "Read the full procedure of a skill so you can execute it.",
+            {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            skill_apply,
+        )
+    )
+
+    async def dream_now() -> str:
+        record = await runtime.dreams.sleep()
+        n = await runtime.reindexer.reindex_all()
+        return _ok(
+            staged=record.staged,
+            promoted=record.promoted,
+            themes=len(record.themes),
+            added=record.added,
+            superseded=record.superseded,
+            fallback=record.fallback,
+            reindexed=n,
+        )
+
+    tools.append(
+        Tool(
+            "dream_now",
+            "Run the sleep graph now: consolidate staged memories into "
+            "MEMORY.md, write the dream to DREAMS.md, reindex.",
+            {"type": "object", "properties": {}},
+            dream_now,
+        )
+    )
+
+    # ── Outbound channel: Telegram via MCP (only when the bridge is up) ──
+    if runtime.telegram is not None:
+
+        async def send_message(chat_id: int, text: str) -> str:
+            if not runtime.telegram.connected:
+                return _err("telegram channel unavailable")
+            if len(text) > 4000:
+                return _err("text too long (Telegram limit 4096 chars)")
+            await runtime.telegram.send_message(chat_id, text)
+            return _ok(chat_id=chat_id)
+
+        tools.append(
+            Tool(
+                "send_message",
+                "Send a message to the owner over Telegram (the MCP channel). "
+                "Use when the owner is away and a fact needs delivery, or to "
+                "confirm an async action. Requires the owner's chat id.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {"type": "integer", "description": "the Telegram chat id to reach"},
+                        "text": {"type": "string", "description": "message body, plain text"},
+                    },
+                    "required": ["chat_id", "text"],
+                },
+                send_message,
+            )
+        )
+
+        async def get_chat_history(chat_id: int, limit: int = 10) -> str:
+            if not runtime.telegram.connected:
+                return _err("telegram channel unavailable")
+            return await runtime.telegram.get_chat_history(chat_id, limit)
+
+        tools.append(
+            Tool(
+                "get_chat_history",
+                "Read the recent Telegram conversation with a chat (from the "
+                "bridge's in-memory log). Useful to remember what was discussed "
+                "outside Iris's own memory files.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {"type": "integer"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                    },
+                    "required": ["chat_id"],
+                },
+                get_chat_history,
+            )
+        )
+
+    return tools
+
+
+TOOLS_CACHE: dict[int, list[Tool]] = {}
+
+
+def get_tools(runtime: Runtime) -> list[Tool]:
+    """Tools are pure functions of the runtime; cache by runtime id."""
+    rid = id(runtime)
+    if rid not in TOOLS_CACHE:
+        TOOLS_CACHE[rid] = build_tools(runtime)
+    return TOOLS_CACHE[rid]
+
+
+def tool_schemas(runtime: Runtime) -> list[dict]:
+    return [t.schema() for t in get_tools(runtime)]
+
+
+async def dispatch(runtime: Runtime, name: str, args: dict) -> str:
+    for tool in get_tools(runtime):
+        if tool.name == name:
+            return await tool.handler(**args)
+    return _err(f"unknown tool {name!r}")

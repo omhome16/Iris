@@ -1,0 +1,26 @@
+# env
+.env
+*.env.local
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# iris runtime
+workspace/.dreams/
+workspace/config/iris.json
+*.sqlite3
+*.log
+
+# telegram bridge state (learned owner chat id, etc.)
+mcp_servers/telegram/data/
+
+# ide
+.idea/
+.vscode/

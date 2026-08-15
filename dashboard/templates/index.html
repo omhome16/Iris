@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IRIS — Memory Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar glass">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">IRIS</span>
+      <span class="brand-sub">memory console</span>
+    </div>
+    <nav class="nav" aria-label="sections">
+      <a href="#conversation" class="nav-link">conversation</a>
+      <a href="#memory" class="nav-link">memory</a>
+      <a href="#dreams" class="nav-link">dreams</a>
+      <a href="#decay" class="nav-link">decay</a>
+      <a href="#skills" class="nav-link">skills</a>
+    </nav>
+    <div class="topbar-actions">
+      <span class="status" id="status"><span class="status-dot" aria-hidden="true"></span><span id="status-text">connecting</span></span>
+      <button class="theme-toggle" id="theme-toggle" aria-label="toggle dark mode" title="toggle dark mode">
+        <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5 5l1.7 1.7M17.3 17.3 19 19M19 5l-1.7 1.7M6.7 17.3 5 19"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="main">
+
+    <section class="kpi-grid" aria-label="memory overview">
+      <div class="kpi card">
+        <span class="kpi-label">memory chunks</span>
+        <span class="kpi-value mono" id="kpi-chunks">—</span>
+        <span class="kpi-foot mono" id="kpi-byorigin">index warming…</span>
+      </div>
+      <div class="kpi card">
+        <span class="kpi-label">avg retention</span>
+        <span class="kpi-value mono" id="kpi-retention">—</span>
+        <span class="kpi-foot mono">30-day half-life curve</span>
+      </div>
+      <div class="kpi card">
+        <span class="kpi-label">rot flagged</span>
+        <span class="kpi-value mono" id="kpi-rot">—</span>
+        <span class="kpi-foot mono">decayed past threshold</span>
+      </div>
+      <div class="kpi card">
+        <span class="kpi-label">skills</span>
+        <span class="kpi-value mono" id="kpi-skills">—</span>
+        <span class="kpi-foot mono">procedural memory</span>
+      </div>
+    </section>
+
+    <div class="workspace">
+
+      <section class="card chat-card" id="conversation">
+        <div class="card-head">
+          <h2 class="card-title">conversation</h2>
+          <span class="card-meta mono" id="chat-meta">session active</span>
+        </div>
+        <div class="chat-log" id="chat-log" role="log" aria-live="polite">
+          <div class="msg msg-iris">
+            <div class="msg-role">IRIS</div>
+            <div class="msg-body">Say hello. On a fresh memory I'll ask a few questions to build your profile.</div>
+          </div>
+        </div>
+        <form class="composer" id="composer">
+          <input id="input" type="text" placeholder="Message Iris…" autocomplete="off" autofocus>
+          <button type="submit" class="send" id="send-btn">send ↵</button>
+        </form>
+        <div class="hint mono" id="hint"></div>
+      </section>
+
+      <div class="side-stack">
+
+        <section class="card" id="memory">
+          <div class="card-head">
+            <h2 class="card-title">memory</h2>
+            <span class="card-meta mono">source of truth</span>
+          </div>
+          <div class="file-tabs" role="tablist">
+            <button class="file-tab active" data-file="memory" role="tab">MEMORY.md</button>
+            <button class="file-tab" data-file="user" role="tab">USER.md</button>
+          </div>
+          <pre class="file-body mono" id="file-body">loading…</pre>
+        </section>
+
+        <section class="card" id="dreams">
+          <div class="card-head">
+            <h2 class="card-title">dreams</h2>
+            <button class="action" id="sleep-btn">run dream cycle</button>
+          </div>
+          <pre class="file-body mono" id="dreams-body">loading…</pre>
+        </section>
+
+        <section class="card" id="decay">
+          <div class="card-head">
+            <h2 class="card-title">decay</h2>
+            <span class="card-meta mono">retention · age</span>
+          </div>
+          <svg id="curve" class="curve" viewBox="0 0 600 180" preserveAspectRatio="none" aria-label="retention decay curve"></svg>
+          <div class="rot-list" id="rot-list"></div>
+        </section>
+
+        <section class="card" id="skills">
+          <div class="card-head">
+            <h2 class="card-title">skills</h2>
+            <span class="card-meta mono">procedural</span>
+          </div>
+          <div class="skill-list" id="skill-list">loading…</div>
+        </section>
+
+      </div>
+
+    </div>
+  </main>
+
+  <footer class="colophon mono">
+    <span>iris — memory engineering · agent graphs · context engineering</span>
+    <span id="index-stats">index: —</span>
+  </footer>
+
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
