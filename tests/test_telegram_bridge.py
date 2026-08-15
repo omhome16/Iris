@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
+import anyio
 import httpx
 import pytest
 
 BRIDGE_DIR = Path(__file__).resolve().parents[1] / "mcp_servers" / "telegram"
 sys.path.insert(0, str(BRIDGE_DIR))
 
+import server  # noqa: E402
 from server import CommandDispatcher  # noqa: E402
 
 
@@ -52,6 +55,38 @@ def dispatcher() -> CommandDispatcher:
     client = httpx.AsyncClient(transport=FakeCoreTransport())
     d = CommandDispatcher("http://core", client=client)
     yield d
+
+
+@pytest.mark.anyio
+async def test_typing_loop_sends_chat_action(monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+
+    async def fake_tg(method: str, **kwargs):
+        calls.append(method)
+        if len(calls) >= 2:
+            raise asyncio.CancelledError  # stop the loop after proving it repeats
+
+    async def no_sleep(_seconds: float):
+        return None
+
+    monkeypatch.setattr(server, "_tg", fake_tg)
+    monkeypatch.setattr(server.asyncio, "sleep", no_sleep)
+    task = asyncio.create_task(server._typing_loop(123))
+    await anyio.sleep(0.1)  # real clock — the loop's patched sleep runs instantly
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert calls == ["sendChatAction", "sendChatAction"]
+
+
+@pytest.mark.anyio
+async def test_typing_loop_ignores_errors(monkeypatch: pytest.MonkeyPatch):
+    async def fake_tg(method: str, **kwargs):
+        raise RuntimeError("telegram hiccup")
+
+    monkeypatch.setattr(server, "_tg", fake_tg)
+    task = asyncio.create_task(server._typing_loop(123))
+    await asyncio.sleep(0.2)
+    assert task.done()  # cosmetic loop dies silently, never crashes the poller
 
 
 @pytest.mark.anyio

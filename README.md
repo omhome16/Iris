@@ -47,8 +47,10 @@ your message
   → assemble context: USER.md + MEMORY.md (bounded token budgets)
      + hybrid recall (vector + FTS, recency decay, importance, MMR diversity)
   → agent node: strong model, tool-enabled ReAct loop
-     tools: memory_search · remember · forget · inspect_mind ·
-            skill_write/list/apply · dream_now · send_message/get_chat_history
+     tools: memory_search (default + escalate lanes) · remember · forget ·
+            inspect_mind · skill_write/list/apply · dream_now ·
+            file_create/write/read/list (sandboxed) · web_search (Tavily) ·
+            ingest_url · send_message/get_chat_history (Telegram)
   → write path (off the hot path, cheap model): extract memory candidates
      → staged (tainted) → promoted only by dreaming, never directly
   → reply; checkpointer persists every step (survives restarts)
@@ -56,6 +58,49 @@ your message
 
 Every turn is bounded by a **120 s budget** — a provider hiccup can never hang
 you; you get a graceful "still thinking" instead.
+
+### Recall lanes
+
+- **Default lane** — precision-tuned hybrid search (vector + FTS × recency
+  decay × importance, MMR diversity). Best for "what do you know about X".
+- **Escalation lane** — decay disabled, daily notes only, triggered by
+  temporal questions ("when did…", "last month") or a weak default lane.
+  Recovers the old facts the default lane deliberately hides. Proven by the
+  eval lab: the two lanes together answer everything either alone misses.
+
+### Sandboxed file tools (computer-use, jailed)
+
+Iris may only touch `workspace/sandbox/` (configurable via `SANDBOX_DIR`).
+`file_create / file_write / file_read / file_list` validate every path —
+traversal (`..`), absolute paths and drive letters are rejected, so she can
+organize notes and drafts without ever reaching `.env` or system files.
+
+### Web search + document ingestion
+
+- `web_search` — Tavily (free tier, set `TAVILY_API_KEY`); without a key it
+  answers "not configured" gracefully.
+- `ingest_url` — fetch any URL, strip it to readable text, store as
+  `imports/YYYY-MM-DD-<hash>.md`. Imports are **UNTRUSTED origin**: recallable
+  on demand, never promoted into curated memory (the trust model refuses it).
+
+### Voice notes (Groq Whisper)
+
+Send a Telegram voice message; the bridge downloads it and posts it to
+`POST /voice`, where `groq/whisper-large-v3-turbo` transcribes it and the
+graph answers on the transcript. Needs `GROQ_API_KEY` (free tier). While any
+turn is in flight, Telegram shows the **typing…** indicator — she feels alive
+instead of frozen during free-tier latency.
+
+### Circadian proactivity
+
+APScheduler runs two jobs in your timezone:
+- **04:00 nightly sleep** — the dream cycle consolidates the day into `MEMORY.md`.
+- **08:00 morning brief** — a Telegram digest: what dreaming promoted, how
+  retention looks, what's flagged as rot. Requires `OWNER_CHAT_ID` + a
+  connected channel; otherwise it stays silent.
+
+Both are no-ops when they can't run safely — the scheduler never crashes the
+process.
 
 ### Dreaming (consolidation)
 
@@ -91,6 +136,8 @@ Two-tier brain via LiteLLM (any provider works):
 | strong | conversation, reasoning, skills | `gemini-3.5-flash` | `llama-3.3-70b-versatile` |
 | cheap | extraction, consolidation, scoring | `gemini-3.1-flash-lite` | `llama-3.1-8b-instant` |
 | embeddings | index everything | `gemini-embedding-001` | n/a — stays Gemini |
+| voice | voice-note transcription | n/a | `groq/whisper-large-v3-turbo` |
+| web search | current information | n/a | Tavily (free tier) |
 
 Set `GROQ_API_KEY` in `.env` and the strong/cheap tiers swap automatically
 (Groq's free tier is generous and fast). You still need `GEMINI_API_KEY` for

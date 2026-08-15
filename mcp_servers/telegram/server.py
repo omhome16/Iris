@@ -257,6 +257,19 @@ def _format_skills(data: dict) -> str:
     return "\n".join(f"• {s['name']}: {s['description']}" for s in skills)
 
 
+async def _typing_loop(chat_id: int) -> None:
+    """Repeat the Telegram 'typing…' action every few seconds until the turn
+    is done — Iris feels alive instead of frozen while the LLM thinks."""
+    try:
+        while True:
+            await _tg("sendChatAction", chat_id=chat_id, action="typing")
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - typing is cosmetic; never crash for it
+        return
+
+
 # ── Bridge loop ───────────────────────────────────────────────────────────
 
 async def _handle_voice(chat_id: int, voice: dict) -> None:
@@ -329,6 +342,7 @@ async def _poll_loop() -> None:
                         _log_chat(chat_id, "iris", reply)
                     continue
                 # plain message → the graph (onboarding wizard included)
+                typing = asyncio.create_task(_typing_loop(chat_id))
                 try:
                     async with httpx.AsyncClient(timeout=300) as client:
                         r = await client.post(
@@ -340,6 +354,8 @@ async def _poll_loop() -> None:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("iris-core /chat failed: %s", exc)
                     reply = "I can't reach my brain right now — try again in a bit."
+                finally:
+                    typing.cancel()
                 await send_to_chat(chat_id, reply)
                 _log_chat(chat_id, "iris", reply)
         except asyncio.CancelledError:
