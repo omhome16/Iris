@@ -48,8 +48,15 @@ def _err(reason: str) -> str:
 def build_tools(runtime: Runtime) -> list[Tool]:
     tools: list[Tool] = []
 
-    async def memory_search(query: str, top_k: int = 5) -> str:
-        hits = await runtime.index.search(query, top_k=top_k, mrr_top_k=top_k)
+    async def memory_search(
+        query: str,
+        top_k: int = 5,
+        lane: str = "default",
+    ) -> str:
+        if lane == "escalate":
+            hits = await runtime.index.escalate(query, top_k=top_k, mrr_top_k=top_k)
+        else:
+            hits = await runtime.index.search(query, top_k=top_k, mrr_top_k=top_k)
         return _ok(
             results=[
                 {
@@ -57,6 +64,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
                     "score": round(h.score, 3),
                     "origin": h.origin.value,
                     "path": h.path,
+                    "lane": h.lane,
                 }
                 for h in hits[:top_k]
             ]
@@ -66,12 +74,15 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         Tool(
             "memory_search",
             "Search Iris's long-term memory for facts relevant to a query. "
-            "Use before answering anything about the owner's life or history.",
+            "Use before answering anything about the owner's life or history. "
+            "For temporal questions ('when did ...', 'last month', 'before') "
+            "use lane='escalate' to search daily notes directly.",
             {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "what to search for"},
                     "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+                    "lane": {"type": "string", "enum": ["default", "escalate"]},
                 },
                 "required": ["query"],
             },

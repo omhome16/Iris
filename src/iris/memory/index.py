@@ -64,6 +64,7 @@ class MemoryHit:
     origin: Origin
     observed_at: date
     evergreen: bool
+    lane: str = "default"  # "default" | "escalate"
 
 
 @dataclass(slots=True)
@@ -207,6 +208,54 @@ class MemoryIndex:
         pairs.sort(key=lambda p: p[0].score, reverse=True)
         if "no_mmr" in ablation:
             return [hit for hit, _ in pairs[: mrr_top_k or top_k]]
+        return self._mmr(pairs, top_k=mrr_top_k or top_k)
+
+    async def escalate(self, query: str, *, top_k: int = 5, mrr_top_k: int = 5) -> list[MemoryHit]:
+        """Escalation lane — direct scan of daily notes with decay disabled.
+
+        The default lane is a *precision* device: recency decay deliberately
+        demotes old episodic facts. Temporal/multi-hop questions ("when did we
+        talk about X?", "what happened last month?") are exactly the case the
+        default lane hides, so this lane trades precision tuning away: daily
+        notes only, flat decay, hybrid FTS+vector ranking, MMR diversity.
+        """
+        q_emb = await self.llm.embed_one(query)
+        async with self._pool.acquire() as conn:
+            await register_vector(conn)
+            rows = await conn.fetch(
+                """
+                SELECT content, path, importance, origin, observed_at, evergreen, embedding,
+                       (1 - (embedding <=> $1::vector)) AS vscore,
+                       ts_rank(to_tsvector('english', content), plainto_tsquery('english', $2)) AS fscore
+                FROM memory_chunks
+                WHERE path ~ '^memory/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.md$'
+                ORDER BY vscore DESC
+                LIMIT $3
+                """,
+                q_emb,
+                query,
+                top_k * 6,
+            )
+
+        pairs: list[tuple[MemoryHit, np.ndarray]] = []
+        for row in rows:
+            vscore = float(row["vscore"])
+            fscore = float(row["fscore"]) / 10.0  # normalize FTS rank
+            hybrid = 0.6 * vscore + 0.4 * min(fscore, 1.0)
+            importance = 1.0 + (float(row["importance"]) / 10.0)  # 1..2 multiplier
+            hit = MemoryHit(
+                content=row["content"],
+                path=row["path"],
+                score=hybrid * importance,
+                importance=float(row["importance"]),
+                origin=Origin(row["origin"]),
+                observed_at=row["observed_at"],
+                evergreen=row["evergreen"],
+                lane="escalate",
+            )
+            pairs.append((hit, np.asarray(row["embedding"].to_list(), dtype=float)))
+
+        pairs.sort(key=lambda p: p[0].score, reverse=True)
         return self._mmr(pairs, top_k=mrr_top_k or top_k)
 
     @staticmethod

@@ -11,13 +11,29 @@ rebuildable. Provenance is derived from *which tier* a file belongs to:
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import date, datetime
 from pathlib import Path
 
 from iris.memory.chunking import chunk_text, estimate_tokens
 from iris.memory.files import WorkspaceFiles
 from iris.memory.index import ChunkRecord, MemoryIndex
 from iris.memory.provenance import Origin, Provenance
+
+_DATE_RE = re.compile(r"memory/(\d{4})-(\d{2})-(\d{2})\.md$")
+
+
+def observed_date_for(rel: str) -> date | None:
+    """The date encoded in a daily-note filename — the *actual* day the note
+    describes. Without this, reindexed notes would all be stamped 'today'
+    and recency decay would never fire."""
+    m = _DATE_RE.match(rel)
+    if not m:
+        return None
+    try:
+        return date(int(m[1]), int(m[2]), int(m[3]))
+    except ValueError:
+        return None
 
 
 class Reindexer:
@@ -57,6 +73,7 @@ class Reindexer:
         if not text.strip():
             return 0
         chunks = chunk_text(text)
+        observed = observed_date_for(rel)
         records = []
         for i, chunk in enumerate(chunks):
             records.append(
@@ -64,7 +81,15 @@ class Reindexer:
                     path=rel,
                     chunk_index=i,
                     content=chunk,
-                    provenance=Provenance(origin=origin, source=rel),
+                    provenance=Provenance(
+                        origin=origin,
+                        source=rel,
+                        observed_at=(
+                            datetime.combine(observed, datetime.min.time())
+                            if observed
+                            else datetime.now()
+                        ),
+                    ),
                     evergreen=evergreen,
                 )
             )

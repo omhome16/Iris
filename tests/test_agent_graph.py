@@ -86,6 +86,9 @@ class StubIndex:
     async def search(self, *args, **kwargs):
         return []
 
+    async def escalate(self, *args, **kwargs):
+        return []
+
     async def stats(self):
         return {"total_chunks": 0, "by_origin": {}}
 

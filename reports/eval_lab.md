@@ -22,3 +22,15 @@ Date: 2026-08-15 · synthetic corpus, deterministic embeddings, no model calls �
 - `no_decay`: none
 - `no_importance`: what instrument did Omar learn as a child
 - `no_mmr`: what instrument did Omar learn as a child
+
+## Escalation lane — does it close the gap?
+
+| metric | value |
+|---|---|
+| escalation recall@5 | 1.00 |
+| escalation mrr@5 | 0.89 |
+
+The escalation lane (decay disabled, daily notes only) is triggered by temporal signals or a weak default lane, and it **recovers every query the default lane missed**:
+- `what instrument did Omar learn as a child`
+
+The two lanes together answer everything the default lane alone hides — the precision trade is now a *choice*, not a blind spot.

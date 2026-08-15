@@ -117,3 +117,29 @@ async def test_evergreen_and_dated_origins(env):
     assert hits[0].path == "MEMORY.md"
     assert hits[0].evergreen is True
     assert hits[0].origin is Origin.OWNER
+
+
+async def test_escalation_lane_finds_old_daily_facts(env):
+    """The default lane's recency decay buries old episodic facts; the
+    escalation lane scans daily notes with decay disabled and finds them."""
+    files, index = env
+    files.append_daily(
+        "Owner's childhood cat was named Mochi.",
+        day=date.today() - timedelta(days=400),
+    )
+    # fresh but irrelevant noise — default-lane bait (decay 1.0)
+    files.append_daily("Bought cat food today.", day=date.today())
+    reindexer = Reindexer(files, index)
+    await reindexer.reindex_all()
+
+    default = await index.search("what was the owner's childhood cat called", top_k=3, mrr_top_k=3)
+    assert not any("Mochi" in h.content for h in default), (
+        "400-day-old fact must be decayed out of the default lane"
+    )
+
+    esc = await index.escalate("what was the owner's childhood cat called", top_k=3, mrr_top_k=3)
+    assert esc, "escalation lane must return hits"
+    assert esc[0].lane == "escalate"
+    assert any("Mochi" in h.content for h in esc), (
+        "escalation lane must recover the old fact (no decay)"
+    )

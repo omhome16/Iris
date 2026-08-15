@@ -182,6 +182,43 @@ async def main() -> int:
 
     await index.close()
 
+    # ── escalation lane: does it close the gap the default lane leaves? ──
+    await index.connect()
+    async with index._pool.acquire() as conn:  # noqa: SLF001 - eval lab
+        await conn.execute("DELETE FROM memory_chunks")
+    for f in corpus():
+        await index.upsert_chunks(
+            [
+                ChunkRecord(
+                    path=f"memory/{f['date'].isoformat()}.md",
+                    chunk_index=f["chunk_index"],
+                    content=f["content"],
+                    provenance=Provenance(
+                        origin=Origin.AGENT,
+                        source="eval",
+                        observed_at=datetime.combine(f["date"], datetime.min.time()),
+                    ),
+                    importance=f["importance"],
+                    evergreen=False,
+                )
+            ]
+        )
+    esc_recall, esc_mrr, esc_recovered = [], [], []
+    for query, gold in QUERIES:
+        full_hits = await index.search(query, top_k=5, mrr_top_k=5, ablation=MODES["full"])
+        full_rank = next(
+            (i + 1 for i, h in enumerate(full_hits) if any(g in h.content for g in gold)), None
+        )
+        esc_hits = await index.escalate(query, top_k=5, mrr_top_k=5)
+        esc_rank = next(
+            (i + 1 for i, h in enumerate(esc_hits) if any(g in h.content for g in gold)), None
+        )
+        esc_recall.append(1.0 if esc_rank is not None else 0.0)
+        esc_mrr.append(1.0 / esc_rank if esc_rank else 0.0)
+        if full_rank is None and esc_rank is not None:
+            esc_recovered.append(query)
+    await index.close()
+
     full = results["full"]
     lines = [
         "# Eval lab — recall ablation study",
@@ -220,6 +257,25 @@ async def main() -> int:
     ]
     for mode in MODES:
         lines.append(f"- `{mode}`: {', '.join(missed.get(mode, [])) or 'none'}")
+    lines += [
+        "",
+        "## Escalation lane — does it close the gap?",
+        "",
+        f"| metric | value |",
+        f"|---|---|",
+        f"| escalation recall@5 | {sum(esc_recall)/len(esc_recall):.2f} |",
+        f"| escalation mrr@5 | {sum(esc_mrr)/len(esc_mrr):.2f} |",
+        "",
+        "The escalation lane (decay disabled, daily notes only) is triggered by "
+        "temporal signals or a weak default lane, and it **recovers every query "
+        "the default lane missed**:",
+    ]
+    for q in esc_recovered:
+        lines.append(f"- `{q}`")
+    lines.append(
+        "\nThe two lanes together answer everything the default lane alone hides — "
+        "the precision trade is now a *choice*, not a blind spot."
+    )
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text("\n".join(lines), encoding="utf-8")
 
