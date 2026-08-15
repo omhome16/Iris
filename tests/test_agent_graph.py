@@ -18,6 +18,7 @@ from iris.memory.files import WorkspaceFiles
 from iris.memory.llm import LLMClient
 from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingState, OnboardingWizard
+from iris.sandbox import Sandbox
 
 
 # ── onboarding wizard ───────────────────────────────────────────────────────
@@ -102,6 +103,7 @@ def make_runtime(files: WorkspaceFiles, llm: LLMClient) -> Runtime:
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
         skills=SkillLibrary(files),
+        sandbox=Sandbox(files.root / "sandbox"),
     )
 
 
@@ -159,10 +161,23 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
         skills=SkillLibrary(files),
+        sandbox=Sandbox(tmp_path / "sandbox"),
     )
     schemas = [t.schema() for t in get_tools(runtime)]
     names = {s["function"]["name"] for s in schemas}
-    assert names == {"memory_search", "remember", "inspect_mind", "forget",
-                     "skill_write", "skill_list", "skill_apply", "dream_now"}
+    assert names == {
+        "memory_search",
+        "remember",
+        "inspect_mind",
+        "forget",
+        "skill_write",
+        "skill_list",
+        "skill_apply",
+        "dream_now",
+        "file_create",
+        "file_write",
+        "file_read",
+        "file_list",
+    }
     for s in schemas:
         assert s["function"]["parameters"]["type"] == "object"

@@ -16,6 +16,7 @@ from iris.memory.index import MemoryIndex
 from iris.memory.indexer import Reindexer
 from iris.memory.llm import LLMClient
 from iris.memory.skills import SkillLibrary
+from iris.sandbox import Sandbox
 
 
 @dataclass(slots=True)
@@ -27,4 +28,5 @@ class Runtime:
     dreams: DreamEngine
     forgetting: ForgettingEngine
     skills: SkillLibrary
+    sandbox: Sandbox
     telegram: TelegramMCPClient | None = None

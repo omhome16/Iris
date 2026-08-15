@@ -37,6 +37,7 @@ from iris.memory.indexer import Reindexer
 from iris.memory.llm import LLMClient
 from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
+from iris.sandbox import Sandbox
 
 log = logging.getLogger("iris")
 
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI):
             dreams=DreamEngine(llm, files, index),
             forgetting=ForgettingEngine(index),
             skills=SkillLibrary(files),
+            sandbox=Sandbox(Path(settings.sandbox_dir)),
         )
 
         telegram = TelegramMCPClient(settings.telegram_mcp_url)

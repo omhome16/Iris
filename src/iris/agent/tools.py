@@ -90,6 +90,103 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         )
     )
 
+    async def file_create(path: str, content: str) -> str:
+        """Create a new file inside Iris's sandbox. Fails if it exists."""
+        try:
+            created = runtime.sandbox.create(path, content)
+        except Exception as exc:  # noqa: BLE001 - tool errors surface as JSON
+            return _err(str(exc))
+        return _ok(path=created.relative_to(runtime.sandbox.root).as_posix())
+
+    tools.append(
+        Tool(
+            "file_create",
+            "Create a new file inside Iris's sandbox (workspace/sandbox). "
+            "Use for notes, drafts, project docs. Fails if the file exists.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "sandbox-relative path, e.g. notes/idea.md"},
+                    "content": {"type": "string", "description": "file contents (plain text/markdown)"},
+                },
+                "required": ["path", "content"],
+            },
+            file_create,
+        )
+    )
+
+    async def file_write(path: str, content: str) -> str:
+        """Overwrite (or create) a file inside the sandbox."""
+        try:
+            written = runtime.sandbox.write(path, content)
+        except Exception as exc:  # noqa: BLE001
+            return _err(str(exc))
+        return _ok(path=written.relative_to(runtime.sandbox.root).as_posix())
+
+    tools.append(
+        Tool(
+            "file_write",
+            "Overwrite or create a file inside Iris's sandbox. "
+            "Use to update drafts and notes she manages.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "sandbox-relative path"},
+                    "content": {"type": "string", "description": "new file contents"},
+                },
+                "required": ["path", "content"],
+            },
+            file_write,
+        )
+    )
+
+    async def file_read(path: str) -> str:
+        """Read a file from the sandbox."""
+        try:
+            content = runtime.sandbox.read(path)
+        except Exception as exc:  # noqa: BLE001
+            return _err(str(exc))
+        return _ok(path=path, content=content[:4000])
+
+    tools.append(
+        Tool(
+            "file_read",
+            "Read a file from Iris's sandbox (workspace/sandbox).",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "sandbox-relative path"},
+                },
+                "required": ["path"],
+            },
+            file_read,
+        )
+    )
+
+    async def file_list(path: str = "") -> str:
+        """List files in the sandbox (recursive, with sizes)."""
+        try:
+            entries = runtime.sandbox.list(path)
+        except Exception as exc:  # noqa: BLE001
+            return _err(str(exc))
+        return _ok(files=entries)
+
+    tools.append(
+        Tool(
+            "file_list",
+            "List files Iris has in her sandbox (workspace/sandbox), "
+            "optionally inside a subdirectory.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "sandbox-relative directory, default root"},
+                },
+                "required": [],
+            },
+            file_list,
+        )
+    )
+
     async def remember(content: str, importance: float = 6.0, triggers: list[str] | None = None) -> str:
         """Explicit owner-requested memory. Written to MEMORY.md immediately
         with owner provenance (bypasses staging — the human is the writer)."""

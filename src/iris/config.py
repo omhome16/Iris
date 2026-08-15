@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     telegram_mcp_url: str = "http://127.0.0.1:8100/mcp"
     owner_chat_id: int | None = None  # learned from the first /start if unknown
     workspace_dir: str = "./workspace"
+    sandbox_dir: str = "./workspace/sandbox"  # the only file system Iris may touch
     iris_timezone: str = "UTC"
 
     # ── Context engineering (bootstrap budget) ───────────────────────────
