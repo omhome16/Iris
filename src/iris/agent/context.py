@@ -89,4 +89,15 @@ class ContextAssembler:
 
             parts.extend(blocks)
 
+        # Skill trigger injection: only name + description + match, never the
+        # full procedure — enough for the agent to decide whether to
+        # skill_apply (which returns the procedure on demand).
+        if user_message.strip():
+            matched = self.runtime.skills.match_triggers(user_message)
+            if matched:
+                block = "\n".join(
+                    f"- {s.name}: {s.description} (trigger match)" for s in matched
+                )
+                parts.append(f"## Relevant skills\n{block}")
+
         return "\n\n".join(parts)

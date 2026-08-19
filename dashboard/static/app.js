@@ -98,17 +98,22 @@ $("composer").addEventListener("submit", async (e) => {
 /* ── Memory panels ─────────────────────────────────────────────── */
 
 async function refreshPanels() {
-  const [mind, ret, rot, skills] = await Promise.all([
+  const [mind, ret, rot, skills, tasks, costs] = await Promise.all([
     api("/api/mind"),
     api("/api/retention"),
     api("/api/rot"),
     api("/api/skills"),
+    api("/api/tasks"),
+    api("/api/costs"),
   ]);
 
   if (mind.memory !== undefined) {
     state.memoryCache = mind;
     renderMemoryTab();
     $("dreams-body").textContent = mind.dreams_tail || "(no dreams yet)";
+    if (mind.hallucination_flags !== undefined) {
+      $("kpi-flags").textContent = mind.hallucination_flags;
+    }
   }
 
   if (ret.chunks) {
@@ -163,6 +168,48 @@ async function refreshPanels() {
         item.append(n, d);
         list.appendChild(item);
       }
+    }
+  }
+
+  if (tasks.tasks) {
+    $("kpi-tasks").textContent = tasks.tasks.length;
+    const list = $("task-list");
+    if (!tasks.tasks.length) {
+      list.innerHTML = '<div class="empty">no scheduled tasks</div>';
+    } else {
+      list.innerHTML = "";
+      for (const t of tasks.tasks) {
+        const item = document.createElement("div");
+        item.className = "skill-item";
+        const n = document.createElement("div");
+        n.className = "skill-name";
+        n.textContent = t.run_at;
+        const d = document.createElement("div");
+        d.className = "skill-desc";
+        d.textContent = t.instruction;
+        item.append(n, d);
+        list.appendChild(item);
+      }
+    }
+  }
+
+  if (costs.totals !== undefined) {
+    $("kpi-cost").textContent = "$" + costs.totals.cost.toFixed(2);
+    $("cost-requests").textContent = costs.totals.requests + " requests";
+    $("cost-foot").textContent = "today: $" + (costs.daily.length ? costs.daily[0].cost.toFixed(3) : "0.000");
+    const list = $("cost-list");
+    list.innerHTML = "";
+    for (const d of costs.daily.slice(0, 7)) {
+      const item = document.createElement("div");
+      item.className = "skill-item";
+      const n = document.createElement("div");
+      n.className = "skill-name";
+      n.textContent = d.day;
+      const c = document.createElement("div");
+      c.className = "skill-desc";
+      c.textContent = `$${d.cost.toFixed(3)} · ${d.requests} req · ${d.prompt_tokens + d.completion_tokens} tok`;
+      item.append(n, c);
+      list.appendChild(item);
     }
   }
 }

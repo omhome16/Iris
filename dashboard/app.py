@@ -26,6 +26,7 @@ from fastapi.templating import Jinja2Templates
 log = logging.getLogger("iris.dashboard")
 
 IRIS_CORE_URL = os.environ.get("IRIS_API_URL", "http://127.0.0.1:8000").rstrip("/")
+IRIS_API_TOKEN = os.environ.get("IRIS_API_TOKEN", "")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 app = FastAPI(title="Iris Dashboard")
@@ -33,9 +34,15 @@ app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="
 templates = Jinja2Templates(directory=os.path.join(HERE, "templates"))
 
 
+def _core_headers() -> dict[str, str]:
+    if IRIS_API_TOKEN:
+        return {"Authorization": f"Bearer {IRIS_API_TOKEN}"}
+    return {}
+
+
 async def _proxy(path: str, method: str = "GET", json: dict | None = None) -> dict | str:
     async with httpx.AsyncClient(timeout=300) as client:
-        r = await client.request(method, f"{IRIS_CORE_URL}{path}", json=json)
+        r = await client.request(method, f"{IRIS_CORE_URL}{path}", json=json, headers=_core_headers())
         if r.status_code != 200:
             return {"error": f"iris-core {path}: HTTP {r.status_code} {r.text[:200]}"}
         try:
@@ -73,6 +80,16 @@ async def api_rot() -> JSONResponse:
 @app.get("/api/skills")
 async def api_skills() -> JSONResponse:
     return JSONResponse(await _proxy("/skills"))
+
+
+@app.get("/api/tasks")
+async def api_tasks() -> JSONResponse:
+    return JSONResponse(await _proxy("/tasks"))
+
+
+@app.get("/api/costs")
+async def api_costs() -> JSONResponse:
+    return JSONResponse(await _proxy("/costs"))
 
 
 @app.get("/api/health")

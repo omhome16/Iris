@@ -14,6 +14,7 @@ Reliability discipline (from the research brief):
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from typing import Any, Sequence
@@ -21,6 +22,11 @@ from typing import Any, Sequence
 import litellm
 
 from iris.config import settings
+
+try:
+    from iris.ledger import CostLedger
+except ImportError:  # pragma: no cover - ledger is always present in the package
+    CostLedger = None  # type: ignore[assignment,misc]
 
 
 class LLMError(RuntimeError):
@@ -82,11 +88,21 @@ class LLMClient:
     _last_strong_call: float = 0.0
     _strong_min_interval: float = 3.5  # ~17 req/min < 20 free-tier cap
 
-    def __init__(self) -> None:
+    def __init__(self, ledger: CostLedger | None = None) -> None:
         self.strong_model = settings.strong_model
         self.cheap_model = settings.cheap_model
         self.embedding_model = settings.embedding_model
         self.embedding_dim = settings.embedding_dim
+        self.ledger = ledger
+
+    def _record(self, model: str, tier: str, usage: Any) -> None:
+        if self.ledger is None:
+            return
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        self.ledger.record(
+            model=model, tier=tier, prompt_tokens=prompt, completion_tokens=completion
+        )
 
     @classmethod
     async def _throttle_strong(cls) -> None:
@@ -126,6 +142,7 @@ class LLMClient:
             if json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
             resp = await litellm.acompletion(**kwargs)
+            self._record(model, tier, getattr(resp, "usage", None))
             return resp.choices[0].message.content
 
         return await _with_retries(call, max_attempts=max_attempts)
@@ -162,6 +179,7 @@ class LLMClient:
             if tools:
                 kwargs["tools"] = tools
             resp = await litellm.acompletion(**kwargs)
+            self._record(model, tier, getattr(resp, "usage", None))
             message = resp.choices[0].message
             calls: list[dict] = []
             for tc in getattr(message, "tool_calls", None) or []:
@@ -183,6 +201,7 @@ class LLMClient:
             if self.embedding_model.startswith("gemini/"):
                 kwargs["dimensions"] = self.embedding_dim
             resp = await litellm.aembedding(**kwargs)
+            self._record(self.embedding_model, "embedding", getattr(resp, "usage", None))
             return [item["embedding"] for item in resp.data]
 
         return await _with_retries(call)

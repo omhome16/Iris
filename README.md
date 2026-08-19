@@ -194,19 +194,47 @@ That's the moment she's born.
 | `/remember <x>` | direct memory write (owner provenance) |
 | `/forget <x>` | supersede a memory (two-phase confirm) |
 | `/skills` | list learned skills |
+| `/tasks` | list pending scheduled tasks |
 | `/rot` · `/retention` | forgetting report |
 | `/dream_now` | force a consolidation pass |
 | `/help` | command list |
 
-### Tests, eval lab, CI
+Scheduled tasks: ask her in chat — *"remind me in 3 days to renew the lease"*
+or *"run the weekly summary tomorrow 9:30"* — she parses ISO/relative/shorthand
+times, persists them to `workspace/config/tasks.json`, and at fire time runs
+the instruction through the graph and delivers the result over Telegram.
+
+### API auth
+
+Set `IRIS_API_TOKEN` in `.env` to protect every iris-core endpoint except
+`/health` with a `Authorization: Bearer` check. The Telegram bridge and the
+dashboard forward the token automatically; when unset, auth is off and the
+core logs a warning at boot. Recommended for anything beyond localhost.
+
+### Cost ledger & reflection
+
+Every LLM call is appended to `workspace/config/llm_calls.jsonl` (per-call
+usage + estimated cost; unknown models price at $0). The dashboard *costs*
+panel and `GET /costs` show daily/weekly/total rollups. Turns that actually
+retrieved memory get a cheap-model reflection pass that flags claims not
+supported by the retrieved excerpts (`workspace/config/hallucination_flags.jsonl`,
+counted on the dashboard and in `/mind`).
+
+### Healthchecks
+
+`docker compose` runs per-service healthchecks (HTTP for iris-core/dashboard,
+TCP for the telegram bridge) and `depends_on: condition: service_healthy`,
+so the bridge never starts before the core is answering and the dashboard
+never proxies to a dead core.
+
+### Tests, eval lab
 
 ```bash
-uv run pytest tests -q                    # 40 tests (deterministic, no API calls)
+uv run pytest tests -q                    # 110+ tests (deterministic, no API calls)
 uv run python scripts/eval_lab.py         # ablation study → reports/eval_lab.md
 ```
 
-CI (`.github/workflows/iris-ci.yml`) runs pytest + the eval lab against a
-pgvector service container on every push.
+Both run locally (no CI workflow is configured for this repo).
 
 ### Reset
 
@@ -248,7 +276,7 @@ re-runs onboarding.
 4. LangGraph runtime — chat graph, tools, HITL
 5. Telegram MCP bridge + onboarding wizard
 6. Web dashboard — the visible mind
-7. Memory lab — ablation evals + CI
+7. Memory lab — ablation evals
 8. Local deploy + end-to-end verification
 
 Research basis: `research/00-synthesis.md` (12 parallel research briefs,

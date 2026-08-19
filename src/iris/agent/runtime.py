@@ -6,7 +6,8 @@ agent code free of global state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 
 from iris.channels.telegram_mcp import TelegramMCPClient
 from iris.memory.dreaming import DreamEngine
@@ -17,6 +18,7 @@ from iris.memory.indexer import Reindexer
 from iris.memory.llm import LLMClient
 from iris.memory.skills import SkillLibrary
 from iris.sandbox import Sandbox
+from iris.tasks import TaskScheduler
 
 
 @dataclass(slots=True)
@@ -30,3 +32,5 @@ class Runtime:
     skills: SkillLibrary
     sandbox: Sandbox
     telegram: TelegramMCPClient | None = None
+    tasks: TaskScheduler | None = None
+    on_onboarded: Callable[[], None] | None = field(default=None, init=False)

@@ -16,6 +16,7 @@ score importance at write time, not query time).
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -89,6 +90,38 @@ class MemoryIndex:
         self.dsn = dsn
         self.llm = llm
         self._pool: asyncpg.Pool | None = None
+        self._cache: dict[tuple, tuple[float, list[MemoryHit]]] = {}
+
+    # ── recall cache (TTL, in-memory; cleared on any mutation) ───────────
+    @staticmethod
+    def _cache_key(*, query: str, top_k: int, mrr_top_k: int, origins, ablation) -> tuple:
+        return (
+            query.casefold().strip(),
+            top_k,
+            mrr_top_k,
+            tuple(sorted(origins)),
+            tuple(sorted(ablation)),
+        )
+
+    def _cached(self, key: tuple) -> list[MemoryHit] | None:
+        if not settings.recall_cache_enabled:
+            return None
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        ts, hits = entry
+        if time.monotonic() - ts > settings.recall_cache_ttl_seconds:
+            self._cache.pop(key, None)
+            return None
+        return hits
+
+    def _store(self, key: tuple, hits: list[MemoryHit]) -> None:
+        if settings.recall_cache_enabled:
+            self._cache[key] = (time.monotonic(), hits)
+
+    def clear_cache(self) -> None:
+        """Invalidate recall results after any index mutation."""
+        self._cache.clear()
 
     async def connect(self) -> None:
         if self._pool is None:
@@ -112,6 +145,7 @@ class MemoryIndex:
         if not records:
             return
         embeddings = await self.llm.embed([r.content for r in records])
+        self.clear_cache()
         async with self._pool.acquire() as conn:
             await register_vector(conn)
             for record, emb in zip(records, embeddings):
@@ -141,28 +175,15 @@ class MemoryIndex:
                 )
 
     async def delete_file_chunks(self, path: str) -> None:
+        self.clear_cache()
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM memory_chunks WHERE path = $1", path)
 
     # ── recall (default lane: deterministic, no model call) ───────────────
-    async def search(
-        self,
-        query: str,
-        *,
-        top_k: int = 20,
-        mrr_top_k: int = 5,
-        require_origin: set[Origin] | None = None,
-        ablation: set[str] | None = None,
-    ) -> list[MemoryHit]:
-        """Ablation knobs (eval-lab only, default = full pipeline):
-        {"vector_only", "no_decay", "no_importance", "no_mmr"}."""
-        ablation = ablation or set()
-        q_emb = await self.llm.embed_one(query)
-        origins = [o.value for o in (require_origin or {o for o in Origin})]
-
+    async def _search_rows(self, q_emb, query: str, origins: list[str], top_k: int) -> list[asyncpg.Record]:
         async with self._pool.acquire() as conn:
             await register_vector(conn)
-            rows = await conn.fetch(
+            return await conn.fetch(
                 """
                 SELECT content, path, importance, origin, observed_at, evergreen, embedding,
                        (1 - (embedding <=> $1::vector)) AS vscore,
@@ -177,6 +198,29 @@ class MemoryIndex:
                 origins,
                 top_k * 4,
             )
+
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 20,
+        mrr_top_k: int = 5,
+        require_origin: set[Origin] | None = None,
+        ablation: set[str] | None = None,
+    ) -> list[MemoryHit]:
+        """Ablation knobs (eval-lab only, default = full pipeline):
+        {"vector_only", "no_decay", "no_importance", "no_mmr"}."""
+        ablation = ablation or set()
+        origins = [o.value for o in (require_origin or {o for o in Origin})]
+        key = self._cache_key(
+            query=query, top_k=top_k, mrr_top_k=mrr_top_k, origins=origins, ablation=ablation
+        )
+        cached = self._cached(key)
+        if cached is not None:
+            return cached
+
+        q_emb = await self.llm.embed_one(query)
+        rows = await self._search_rows(q_emb, query, origins, top_k)
 
         hits: list[MemoryHit] = []
         pairs: list[tuple[MemoryHit, np.ndarray]] = []
@@ -207,22 +251,16 @@ class MemoryIndex:
 
         pairs.sort(key=lambda p: p[0].score, reverse=True)
         if "no_mmr" in ablation:
-            return [hit for hit, _ in pairs[: mrr_top_k or top_k]]
-        return self._mmr(pairs, top_k=mrr_top_k or top_k)
+            hits = [hit for hit, _ in pairs[: mrr_top_k or top_k]]
+        else:
+            hits = self._mmr(pairs, top_k=mrr_top_k or top_k)
+        self._store(key, hits)
+        return hits
 
-    async def escalate(self, query: str, *, top_k: int = 5, mrr_top_k: int = 5) -> list[MemoryHit]:
-        """Escalation lane — direct scan of daily notes with decay disabled.
-
-        The default lane is a *precision* device: recency decay deliberately
-        demotes old episodic facts. Temporal/multi-hop questions ("when did we
-        talk about X?", "what happened last month?") are exactly the case the
-        default lane hides, so this lane trades precision tuning away: daily
-        notes only, flat decay, hybrid FTS+vector ranking, MMR diversity.
-        """
-        q_emb = await self.llm.embed_one(query)
+    async def _escalate_rows(self, q_emb, query: str, top_k: int) -> list[asyncpg.Record]:
         async with self._pool.acquire() as conn:
             await register_vector(conn)
-            rows = await conn.fetch(
+            return await conn.fetch(
                 """
                 SELECT content, path, importance, origin, observed_at, evergreen, embedding,
                        (1 - (embedding <=> $1::vector)) AS vscore,
@@ -236,6 +274,25 @@ class MemoryIndex:
                 query,
                 top_k * 6,
             )
+
+    async def escalate(self, query: str, *, top_k: int = 5, mrr_top_k: int = 5) -> list[MemoryHit]:
+        """Escalation lane — direct scan of daily notes with decay disabled.
+
+        The default lane is a *precision* device: recency decay deliberately
+        demotes old episodic facts. Temporal/multi-hop questions ("when did we
+        talk about X?", "what happened last month?") are exactly the case the
+        default lane hides, so this lane trades precision tuning away: daily
+        notes only, flat decay, hybrid FTS+vector ranking, MMR diversity.
+        """
+        key = self._cache_key(
+            query=query, top_k=top_k, mrr_top_k=mrr_top_k, origins=["escalate"], ablation=()
+        )
+        cached = self._cached(key)
+        if cached is not None:
+            return cached
+
+        q_emb = await self.llm.embed_one(query)
+        rows = await self._escalate_rows(q_emb, query, top_k)
 
         pairs: list[tuple[MemoryHit, np.ndarray]] = []
         for row in rows:
@@ -256,7 +313,9 @@ class MemoryIndex:
             pairs.append((hit, np.asarray(row["embedding"].to_list(), dtype=float)))
 
         pairs.sort(key=lambda p: p[0].score, reverse=True)
-        return self._mmr(pairs, top_k=mrr_top_k or top_k)
+        hits = self._mmr(pairs, top_k=mrr_top_k or top_k)
+        self._store(key, hits)
+        return hits
 
     @staticmethod
     def _mmr(pairs: list[tuple[MemoryHit, np.ndarray]], *, top_k: int, lam: float = 0.7) -> list[MemoryHit]:
@@ -287,6 +346,7 @@ class MemoryIndex:
         return [hit for hit, _ in selected]
 
     async def forget_entry(self, path: str, chunk_index: int) -> None:
+        self.clear_cache()
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "DELETE FROM memory_chunks WHERE path = $1 AND chunk_index = $2",

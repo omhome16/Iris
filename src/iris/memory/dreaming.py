@@ -23,6 +23,7 @@ from pathlib import Path
 
 from iris.config import settings
 from iris.memory.files import ConcurrencyError, WorkspaceFiles
+from iris.memory.index import MemoryIndex
 from iris.memory.llm import LLMClient
 from iris.memory.provenance import Origin, Provenance
 

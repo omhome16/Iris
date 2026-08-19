@@ -14,7 +14,10 @@ Formatting is a pure function so the digest can be tested without a broker.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
+from typing import Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -23,6 +26,31 @@ from iris.agent.runtime import Runtime
 from iris.config import settings
 
 log = logging.getLogger("iris.scheduler")
+
+NIGHTLY_JOB_ID = "nightly-sleep"
+
+
+def owner_sleep_hour(workspace_root: Path) -> int:
+    """The owner's chosen dream hour from onboarding (config/iris.json),
+    falling back to the settings env var when not set yet."""
+    try:
+        data = json.loads((workspace_root / "config" / "iris.json").read_text(encoding="utf-8"))
+        pref = str(data.get("sleep_pref", "")).strip()
+        if pref.isdigit() and 0 <= int(pref) <= 23:
+            return int(pref)
+    except Exception:  # noqa: BLE001 - a broken config must not kill boot
+        pass
+    return settings.nightly_sleep_hour
+
+
+def reschedule_nightly(scheduler: AsyncIOScheduler, hour: int) -> None:
+    """Re-register the nightly sleep job at a new hour (no restart needed)."""
+    scheduler.reschedule_job(
+        NIGHTLY_JOB_ID,
+        trigger=CronTrigger(hour=hour, minute=0),
+        misfire_grace_time=3600,
+    )
+    log.info("nightly sleep rescheduled to hour %s", hour)
 
 
 def format_morning_brief(retention: dict, rot: dict, dreams: dict | None = None) -> str:
@@ -67,7 +95,17 @@ async def _morning_brief(runtime: Runtime) -> None:
         retention = await runtime.forgetting.retention_report()
         rot = await runtime.forgetting.rot_report()
         dreams = None
-        brief = format_morning_brief(retention, rot, dreams)
+        brief = format_morning_brief(
+            {"chunks": retention},
+            {
+                "count": len(rot),
+                "entries": [
+                    {"content": e.content, "retention": e.retention, "age_days": e.age_days}
+                    for e in rot
+                ],
+            },
+            dreams,
+        )
         await runtime.telegram.send_message(settings.owner_chat_id, brief)
         log.info("morning brief sent to owner")
     except Exception as exc:  # noqa: BLE001
@@ -78,9 +116,9 @@ def build_scheduler(runtime: Runtime) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.iris_timezone)
     scheduler.add_job(
         _nightly_sleep,
-        CronTrigger(hour=settings.nightly_sleep_hour, minute=0),
+        CronTrigger(hour=owner_sleep_hour(runtime.files.root), minute=0),
         args=[runtime],
-        id="nightly-sleep",
+        id=NIGHTLY_JOB_ID,
         replace_existing=True,
         misfire_grace_time=3600,
     )

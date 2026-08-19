@@ -95,6 +95,15 @@ class SkillLibrary:
         self.write(skill)
         return skill
 
+    def revise(self, name: str, *, delta: float = 0.1) -> Skill | None:
+        """Lower success score after a failed apply (floor 0.0)."""
+        skill = self.get(name)
+        if skill is None:
+            return None
+        skill.success_score = max(0.0, skill.success_score - delta)
+        self.write(skill)
+        return skill
+
     def match_triggers(self, text: str) -> list[Skill]:
         """Skills whose trigger phrases appear in the inbound text (casefold)."""
         low = text.casefold()

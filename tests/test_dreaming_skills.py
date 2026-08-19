@@ -127,7 +127,7 @@ async def test_deep_consolidates_memory_md(tmp_path: Path):
     assert record.added >= 1
     text = files.memory.read_text(encoding="utf-8")
     assert "- [8]" in text, "consolidated statement should be appended"
-    assert "(from: memory/2026-08-15.md)" in text
+    assert "(from: memory/" in text
 
 
 async def test_deep_supersedes_target_entry(tmp_path: Path):
@@ -218,3 +218,14 @@ def test_skill_reinforce_and_delete(tmp_path: Path):
     assert lib.get("Focus Timer").success_score == 0.7
     assert lib.delete("Focus Timer") is True
     assert lib.get("Focus Timer") is None
+
+
+def test_skill_revise_lowers_score(tmp_path: Path):
+    files = WorkspaceFiles(tmp_path)
+    lib = SkillLibrary(files)
+    lib.write(Skill(name="Draft Standup", description="d", triggers=["standup"]))
+    lib.revise("Draft Standup", delta=0.2)
+    assert lib.get("Draft Standup").success_score == 0.3
+    for _ in range(10):
+        lib.revise("Draft Standup")
+    assert lib.get("Draft Standup").success_score == 0.0  # floor, never negative

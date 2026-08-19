@@ -21,7 +21,7 @@ from pathlib import Path
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import Depends, FastAPI, File, Form, UploadFile
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
 
@@ -39,6 +39,7 @@ from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
 from iris.scheduler import build_scheduler
+from iris.security import require_token, warn_if_unset
 from iris.voice import transcribe
 
 log = logging.getLogger("iris")
@@ -51,7 +52,11 @@ def _checkpointer_dsn(dsn: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     files = WorkspaceFiles(Path(settings.workspace_dir))
-    llm = LLMClient()
+
+    from iris.ledger import CostLedger
+
+    ledger = CostLedger(files.root / "config" / "llm_calls.jsonl")
+    llm = LLMClient(ledger=ledger)
     index = MemoryIndex(settings.postgres_dsn, llm)
     await index.connect()
 
@@ -103,6 +108,24 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         log.info("scheduler started: %s", [j.id for j in scheduler.get_jobs()])
 
+        from iris.tasks import TaskScheduler, TaskStore
+
+        task_scheduler = TaskScheduler(
+            TaskStore(files.root / "config" / "tasks.json"),
+            runtime,
+            graph,
+            scheduler,
+        )
+        task_scheduler.register_all()
+        runtime.tasks = task_scheduler
+
+        def _on_onboarded() -> None:
+            from iris.scheduler import owner_sleep_hour, reschedule_nightly
+
+            reschedule_nightly(scheduler, owner_sleep_hour(files.root))
+
+        runtime.on_onboarded = _on_onboarded
+
         app.state.runtime = runtime
         app.state.graph = graph
         try:
@@ -114,6 +137,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Iris", version="0.1.0", lifespan=lifespan)
+warn_if_unset()
 
 
 class ChatRequest(BaseModel):
@@ -133,7 +157,9 @@ async def health() -> dict:
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest) -> ChatResponse:
+async def chat(
+    req: ChatRequest, _token: None = Depends(require_token)
+) -> ChatResponse:
     """One chat turn through the durable graph. Routes to the onboarding
     wizard until identity is born; then the ReAct loop."""
     graph: ChatGraph = app.state.graph
@@ -151,7 +177,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
 
 
 @app.post("/voice")
-async def voice_turn(user_id: str = Form(...), audio: UploadFile = File(...)) -> dict:
+async def voice_turn(
+    user_id: str = Form(...),
+    audio: UploadFile = File(...),
+    _token: None = Depends(require_token),
+) -> dict:
     """Voice note → Groq Whisper transcript → the same chat graph as /chat.
 
     Called by the Telegram bridge, which downloads the voice message and
@@ -185,7 +215,7 @@ async def voice_turn(user_id: str = Form(...), audio: UploadFile = File(...)) ->
 
 
 @app.get("/onboarding")
-async def onboarding_status() -> dict:
+async def onboarding_status(_token: None = Depends(require_token)) -> dict:
     wizard = OnboardingWizard(app.state.runtime.files)
     return {
         "onboarded": wizard.onboarded,
@@ -195,7 +225,7 @@ async def onboarding_status() -> dict:
 
 
 @app.post("/sleep")
-async def sleep() -> dict:
+async def sleep(_token: None = Depends(require_token)) -> dict:
     """Run the dream graph: Light → REM → Deep → DREAMS.md, then reindex."""
     runtime: Runtime = app.state.runtime
     record = await runtime.dreams.sleep()
@@ -216,7 +246,7 @@ async def sleep() -> dict:
 
 
 @app.get("/rot")
-async def rot() -> dict:
+async def rot(_token: None = Depends(require_token)) -> dict:
     """Memory rot report — decayed entries the owner may want to /forget."""
     forgetting: ForgettingEngine = app.state.runtime.forgetting
     entries = await forgetting.rot_report()
@@ -237,7 +267,7 @@ async def rot() -> dict:
 
 
 @app.get("/retention")
-async def retention() -> dict:
+async def retention(_token: None = Depends(require_token)) -> dict:
     """Per-chunk retention stats + decay curve — dashboard feed."""
     forgetting: ForgettingEngine = app.state.runtime.forgetting
     rows = await forgetting.retention_report()
@@ -246,7 +276,7 @@ async def retention() -> dict:
 
 
 @app.get("/mind")
-async def mind() -> dict:
+async def mind(_token: None = Depends(require_token)) -> dict:
     """Full memory snapshot — what Iris remembers, her dreams and skills.
     Feeds the /mind command on Telegram."""
     runtime: Runtime = app.state.runtime
@@ -254,17 +284,21 @@ async def mind() -> dict:
     dreams = files.read(files.dreams)[-2000:] if files.dreams.exists() else ""
     skills = [{"name": s.name, "description": s.description} for s in runtime.skills.list()]
     stats = await runtime.index.stats()
+    from iris.memory.reflection import ReflectionPass
+
+    flags = ReflectionPass(runtime.llm, files.root / "config" / "hallucination_flags.jsonl").count()
     return {
         "memory": files.read(files.memory),
         "user": files.read(files.user),
         "dreams_tail": dreams,
         "skills": skills,
         "stats": stats,
+        "hallucination_flags": flags,
     }
 
 
 @app.get("/skills")
-async def skills_list() -> dict:
+async def skills_list(_token: None = Depends(require_token)) -> dict:
     runtime: Runtime = app.state.runtime
     return {
         "skills": [
@@ -279,6 +313,28 @@ async def skills_list() -> dict:
     }
 
 
+@app.get("/tasks")
+async def tasks_list(_token: None = Depends(require_token)) -> dict:
+    """Pending one-off scheduled tasks (dashboard + /tasks feed)."""
+    runtime: Runtime = app.state.runtime
+    tasks = runtime.tasks.pending() if runtime.tasks is not None else []
+    return {"tasks": [t.to_dict() for t in tasks]}
+
+
+@app.get("/costs")
+async def costs(_token: None = Depends(require_token)) -> dict:
+    """LLM spend rollups from the append-only cost ledger."""
+    runtime: Runtime = app.state.runtime
+    ledger = runtime.llm.ledger
+    if ledger is None:
+        return {"totals": {"requests": 0, "cost": 0.0}, "daily": [], "weekly": []}
+    return {
+        "totals": ledger.totals(),
+        "daily": ledger.daily_totals(),
+        "weekly": ledger.weekly_totals(),
+    }
+
+
 class ForgetRequest(BaseModel):
     query: str
 
@@ -289,7 +345,9 @@ class ForgetConfirmRequest(BaseModel):
 
 
 @app.post("/forget")
-async def forget_search(req: ForgetRequest) -> dict:
+async def forget_search(
+    req: ForgetRequest, _token: None = Depends(require_token)
+) -> dict:
     """HITL phase 1: find candidate memories matching the query."""
     runtime: Runtime = app.state.runtime
     hits = await runtime.index.search(req.query, top_k=3, mrr_top_k=1)
@@ -308,7 +366,9 @@ async def forget_search(req: ForgetRequest) -> dict:
 
 
 @app.post("/forget/confirm")
-async def forget_confirm(req: ForgetConfirmRequest) -> dict:
+async def forget_confirm(
+    req: ForgetConfirmRequest, _token: None = Depends(require_token)
+) -> dict:
     """HITL phase 2: retire the entry. Supersession marker in the file
     (source of truth), chunk dropped from the index, reindex."""
     runtime: Runtime = app.state.runtime

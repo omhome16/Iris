@@ -24,6 +24,8 @@
       <a href="#dreams" class="nav-link">dreams</a>
       <a href="#decay" class="nav-link">decay</a>
       <a href="#skills" class="nav-link">skills</a>
+      <a href="#tasks" class="nav-link">tasks</a>
+      <a href="#costs" class="nav-link">costs</a>
     </nav>
     <div class="topbar-actions">
       <span class="status" id="status"><span class="status-dot" aria-hidden="true"></span><span id="status-text">connecting</span></span>
@@ -56,6 +58,21 @@
         <span class="kpi-label">skills</span>
         <span class="kpi-value mono" id="kpi-skills">—</span>
         <span class="kpi-foot mono">procedural memory</span>
+      </div>
+      <div class="kpi card">
+        <span class="kpi-label">scheduled tasks</span>
+        <span class="kpi-value mono" id="kpi-tasks">—</span>
+        <span class="kpi-foot mono">one-off future actions</span>
+      </div>
+      <div class="kpi card">
+        <span class="kpi-label">llm spend</span>
+        <span class="kpi-value mono" id="kpi-cost">—</span>
+        <span class="kpi-foot mono" id="cost-foot">cost ledger</span>
+      </div>
+      <div class="kpi card">
+        <span class="kpi-label">hallucination flags</span>
+        <span class="kpi-value mono" id="kpi-flags">—</span>
+        <span class="kpi-foot mono">reflection pass</span>
       </div>
     </section>
 
@@ -116,6 +133,22 @@
             <span class="card-meta mono">procedural</span>
           </div>
           <div class="skill-list" id="skill-list">loading…</div>
+        </section>
+
+        <section class="card" id="tasks">
+          <div class="card-head">
+            <h2 class="card-title">scheduled tasks</h2>
+            <span class="card-meta mono">pending · one-off</span>
+          </div>
+          <div class="skill-list" id="task-list">loading…</div>
+        </section>
+
+        <section class="card" id="costs">
+          <div class="card-head">
+            <h2 class="card-title">llm spend</h2>
+            <span class="card-meta mono" id="cost-requests">ledger</span>
+          </div>
+          <div class="skill-list" id="cost-list">loading…</div>
         </section>
 
       </div>

@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     sandbox_dir: str = "./workspace/sandbox"  # the only file system Iris may touch
     iris_timezone: str = "UTC"
 
+    # Shared-secret bearer auth for iris-core's HTTP API. Empty = auth is
+    # disabled (dev default, logged at boot); set IRIS_API_TOKEN in .env to
+    # require `Authorization: Bearer <token>` on every route except /health.
+    iris_api_token: str = ""
+
     # ── Context engineering (bootstrap budget) ───────────────────────────
     # How many tokens of curated memory may enter the prompt at session start.
     # Stable-prefix ordering makes this region cache-friendly with two-tier
@@ -74,6 +79,17 @@ class Settings(BaseSettings):
     recency_half_life_days: int = 30
     hybrid_top_k: int = 20
     mrr_top_k: int = 5  # after MMR diversity
+
+    # ── Graph ────────────────────────────────────────────────────────────
+    # Hard cap on LangGraph steps per turn (agent→tools cycles count 2 each).
+    # Exceeding it is caught and turned into a graceful message, never a 500.
+    graph_recursion_limit: int = 40
+
+    # ── Recall cache (semantic memory cache) ─────────────────────────────
+    # In-memory query→hits cache in front of search/escalate. Disable for
+    # deterministic eval-lab runs (IRIS_RECALL_CACHE=0).
+    recall_cache_enabled: bool = True
+    recall_cache_ttl_seconds: float = 60.0
 
     # ── Indexing ─────────────────────────────────────────────────────────
     chunk_tokens: int = 400

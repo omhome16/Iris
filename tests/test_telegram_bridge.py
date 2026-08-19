@@ -20,13 +20,14 @@ from server import CommandDispatcher  # noqa: E402
 class FakeCoreTransport(httpx.AsyncBaseTransport):
     """Serves the iris-core endpoints the dispatcher calls, in-memory."""
 
-    def __init__(self, mind=None, retention=None, rot=None, skills=None, forget=None, sleep=None):
+    def __init__(self, mind=None, retention=None, rot=None, skills=None, forget=None, sleep=None, tasks=None):
         self.mind = mind or {"memory": "M", "user": "U", "dreams_tail": "D", "skills": [], "stats": {}}
         self.retention = retention or {"chunks": [], "curve": []}
         self.rot = rot or {"count": 0, "entries": []}
         self.skills = skills or {"skills": []}
         self.forget = forget or {"candidates": []}
         self.sleep = sleep or {"staged": 0, "promoted": 0, "themes": 0, "added": 0, "superseded": 0}
+        self.tasks = tasks or {"tasks": []}
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         url, method = str(request.url), request.method
@@ -39,6 +40,8 @@ class FakeCoreTransport(httpx.AsyncBaseTransport):
             payload = self.rot
         elif url.endswith("/skills") and method == "GET":
             payload = self.skills
+        elif url.endswith("/tasks") and method == "GET":
+            payload = self.tasks
         elif url.endswith("/sleep") and method == "POST":
             payload = self.sleep
         elif url.endswith("/forget") and method == "POST":
@@ -55,6 +58,53 @@ def dispatcher() -> CommandDispatcher:
     client = httpx.AsyncClient(transport=FakeCoreTransport())
     d = CommandDispatcher("http://core", client=client)
     yield d
+
+
+class FakeBridgeTransport(httpx.AsyncBaseTransport):
+    """Serves the Telegram file download + iris-core /voice, in-memory."""
+
+    def __init__(self):
+        self.voice_posts: list[dict] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(f"{server.BOT_API}/"):
+            return httpx.Response(200, content=b"fake audio bytes", request=request)
+        if str(request.url).endswith("/voice"):
+            self.voice_posts.append(dict(request.headers))
+            return httpx.Response(
+                200,
+                json={"reply": "heard you", "transcript": "the owner said hi"},
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+
+@pytest.mark.anyio
+async def test_handle_voice_uses_bot_token(monkeypatch: pytest.MonkeyPatch):
+    """Regression: _handle_voice must not raise NameError (undefined
+    TELEGRAM_BOT_TOKEN); the download URL uses the BOT_API constant."""
+    transport = FakeBridgeTransport()
+
+    async def fake_tg(method: str, **params) -> dict:
+        assert method == "getFile"
+        return {"file_path": "audio/file_1.ogg"}
+
+    sent: list[str] = []
+
+    async def fake_send(chat_id: int, text: str) -> bool:
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(server, "_tg", fake_tg)
+    monkeypatch.setattr(server, "send_to_chat", fake_send)
+    real_client = server.httpx.AsyncClient
+    monkeypatch.setattr(
+        server.httpx, "AsyncClient", lambda *a, **k: real_client(transport=transport)
+    )
+
+    await server._handle_voice(123, {"file_id": "file_1"})
+    assert sent[-1] == "heard you"
+    assert transport.voice_posts, "/voice must be called on iris-core"
 
 
 @pytest.mark.anyio
@@ -121,6 +171,27 @@ async def test_mind_formats_memory_and_skills(dispatcher: CommandDispatcher):
     )
     reply = await dispatcher.dispatch(1, "/mind")
     assert "M job" in reply and "U name" in reply and "skill_a" in reply and "42 chunks" in reply
+
+
+@pytest.mark.anyio
+async def test_tasks_command_lists_pending(dispatcher: CommandDispatcher):
+    dispatcher._client = httpx.AsyncClient(
+        transport=FakeCoreTransport(
+            tasks={
+                "tasks": [
+                    {
+                        "id": "abc123",
+                        "run_at": "2026-08-22T09:00:00+06:00",
+                        "instruction": "water the plants",
+                    }
+                ]
+            }
+        )
+    )
+    reply = await dispatcher.dispatch(1, "/tasks")
+    assert "1 scheduled task" in reply
+    assert "2026-08-22" in reply
+    assert "water the plants" in reply
 
 
 @pytest.mark.anyio

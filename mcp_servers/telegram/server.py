@@ -30,8 +30,15 @@ log = logging.getLogger("telegram-mcp")
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 IRIS_CORE_URL = os.environ.get("IRIS_CORE_URL", "http://127.0.0.1:8000").rstrip("/")
+IRIS_API_TOKEN = os.environ.get("IRIS_API_TOKEN", "")
 OWNER_FILE = Path(os.environ.get("OWNER_FILE", "data/owner.json"))
 BOT_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+
+def _core_headers() -> dict[str, str]:
+    if IRIS_API_TOKEN:
+        return {"Authorization": f"Bearer {IRIS_API_TOKEN}"}
+    return {}
 
 server = MCPServer(
     name="telegram",
@@ -107,6 +114,7 @@ HELP_TEXT = (
     "/wake — morning briefing (retention + rot + last dream)\n"
     "/forget <text> — retire a memory (asks for confirmation)\n"
     "/skills — list my procedural memory\n"
+    "/tasks — pending scheduled tasks\n"
     "/rot — decayed memories\n"
     "/help — this message\n\n"
     "Anything else: just talk to me."
@@ -143,24 +151,27 @@ class CommandDispatcher:
             if cmd == "/help":
                 return HELP_TEXT
             if cmd == "/mind":
-                r = await client.get(f"{self.core_url}/mind")
+                r = await client.get(f"{self.core_url}/mind", headers=_core_headers())
                 return _format_mind(r.json())
             if cmd == "/sleep":
-                r = await client.post(f"{self.core_url}/sleep")
+                r = await client.post(f"{self.core_url}/sleep", headers=_core_headers())
                 return _format_sleep(r.json())
             if cmd == "/wake":
-                ret = await client.get(f"{self.core_url}/retention")
-                rot = await client.get(f"{self.core_url}/rot")
+                ret = await client.get(f"{self.core_url}/retention", headers=_core_headers())
+                rot = await client.get(f"{self.core_url}/rot", headers=_core_headers())
                 return _format_wake(ret.json(), rot.json())
             if cmd == "/rot":
-                r = await client.get(f"{self.core_url}/rot")
+                r = await client.get(f"{self.core_url}/rot", headers=_core_headers())
                 return _format_rot(r.json())
             if cmd == "/retention":
-                r = await client.get(f"{self.core_url}/retention")
+                r = await client.get(f"{self.core_url}/retention", headers=_core_headers())
                 return _format_retention(r.json())
             if cmd == "/skills":
-                r = await client.get(f"{self.core_url}/skills")
+                r = await client.get(f"{self.core_url}/skills", headers=_core_headers())
                 return _format_skills(r.json())
+            if cmd == "/tasks":
+                r = await client.get(f"{self.core_url}/tasks", headers=_core_headers())
+                return _format_tasks(r.json())
             if cmd == "/forget":
                 return await self._forget(chat_id, arg, client)
             if cmd == "/forget-confirm":
@@ -176,7 +187,9 @@ class CommandDispatcher:
     async def _forget(self, chat_id: int, arg: str, client: httpx.AsyncClient) -> str:
         if not arg.strip():
             return "Usage: /forget <what to forget>"
-        r = await client.post(f"{self.core_url}/forget", json={"query": arg})
+        r = await client.post(
+            f"{self.core_url}/forget", json={"query": arg}, headers=_core_headers()
+        )
         data = r.json()
         if not data.get("candidates"):
             return "Nothing in memory matched that."
@@ -194,6 +207,7 @@ class CommandDispatcher:
         r = await client.post(
             f"{self.core_url}/forget/confirm",
             json={"path": p.path, "chunk_index": p.chunk_index},
+            headers=_core_headers(),
         )
         data = r.json()
         if not data.get("ok"):
@@ -257,6 +271,16 @@ def _format_skills(data: dict) -> str:
     return "\n".join(f"• {s['name']}: {s['description']}" for s in skills)
 
 
+def _format_tasks(data: dict) -> str:
+    tasks = data.get("tasks", [])
+    if not tasks:
+        return "No scheduled tasks."
+    out = [f"{len(tasks)} scheduled task(s):"]
+    for t in sorted(tasks, key=lambda t: t.get("run_at", "")):
+        out.append(f"• {t.get('run_at', '?')} — {t.get('instruction', '')[:80]}")
+    return "\n".join(out)
+
+
 async def _typing_loop(chat_id: int) -> None:
     """Repeat the Telegram 'typing…' action every few seconds until the turn
     is done — Iris feels alive instead of frozen while the LLM thinks."""
@@ -286,14 +310,13 @@ async def _handle_voice(chat_id: int, voice: dict) -> None:
         if not file_path:
             raise RuntimeError("telegram returned no file path")
         async with httpx.AsyncClient(timeout=60) as client:
-            dl = await client.get(
-                f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
-            )
+            dl = await client.get(f"{BOT_API}/{file_path}")
             dl.raise_for_status()
             r = await client.post(
                 f"{IRIS_CORE_URL}/voice",
                 data={"user_id": str(chat_id)},
                 files={"audio": ("voice.ogg", dl.content, "audio/ogg")},
+                headers=_core_headers(),
                 timeout=180,
             )
             data = r.json()
@@ -348,6 +371,7 @@ async def _poll_loop() -> None:
                         r = await client.post(
                             f"{IRIS_CORE_URL}/chat",
                             json={"message": text, "session_id": str(chat_id)},
+                            headers=_core_headers(),
                         )
                         data = r.json()
                         reply = data.get("reply", "I'm here.")
