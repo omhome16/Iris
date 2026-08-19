@@ -67,7 +67,7 @@ class FakeBridgeTransport(httpx.AsyncBaseTransport):
         self.voice_posts: list[dict] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        if str(request.url).startswith(f"{server.BOT_API}/"):
+        if str(request.url).startswith(f"{server.FILE_API}/"):
             return httpx.Response(200, content=b"fake audio bytes", request=request)
         if str(request.url).endswith("/voice"):
             self.voice_posts.append(dict(request.headers))

@@ -11,10 +11,17 @@ outside her box — `.env`, system files, the workspace itself: all unreachable.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 MAX_FILE_BYTES = 200_000  # read cap — a file larger than this is truncated
 MAX_WRITE_CHARS = 50_000  # write cap — keep writes human-sized
+
+# Host-OS independent attack strings: pathlib parses backslashes as literal
+# filename characters on POSIX (a harmless oddly-named file inside the box),
+# but the validator must reject them regardless so behaviour is identical on
+# every host (and to encode Windows-style traversal attacks).
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
 
 class SandboxError(Exception):
@@ -31,6 +38,10 @@ class Sandbox:
         on any traversal attempt (.., absolute, drive, symlink escape)."""
         if not rel or rel in (".", "/", "\\"):
             return self.root
+        if "\\" in rel:
+            raise SandboxError("backslashes are not allowed in sandbox paths")
+        if _DRIVE_RE.match(rel):
+            raise SandboxError("drive-letter paths are not allowed")
         p = Path(rel)
         if p.is_absolute() or p.drive:
             raise SandboxError("absolute paths are not allowed")

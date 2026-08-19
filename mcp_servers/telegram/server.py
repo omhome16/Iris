@@ -33,6 +33,7 @@ IRIS_CORE_URL = os.environ.get("IRIS_CORE_URL", "http://127.0.0.1:8000").rstrip(
 IRIS_API_TOKEN = os.environ.get("IRIS_API_TOKEN", "")
 OWNER_FILE = Path(os.environ.get("OWNER_FILE", "data/owner.json"))
 BOT_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"  # downloads only
 
 
 def _core_headers() -> dict[str, str]:
@@ -310,7 +311,9 @@ async def _handle_voice(chat_id: int, voice: dict) -> None:
         if not file_path:
             raise RuntimeError("telegram returned no file path")
         async with httpx.AsyncClient(timeout=60) as client:
-            dl = await client.get(f"{BOT_API}/{file_path}")
+            # Telegram serves file downloads from the /file/ base URL, not
+            # the Bot API one — https://api.telegram.org/file/bot<token>/<path>
+            dl = await client.get(f"{FILE_API}/{file_path}")
             dl.raise_for_status()
             r = await client.post(
                 f"{IRIS_CORE_URL}/voice",

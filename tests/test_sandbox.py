@@ -50,7 +50,9 @@ def test_traversal_is_rejected(box: Sandbox, tmp_path: Path):
 
 
 def test_absolute_path_rejected(box: Sandbox, tmp_path: Path):
-    with pytest.raises(SandboxError, match="absolute"):
+    # On POSIX this is rejected as absolute; on Windows it first trips the
+    # backslash check — the guarantee is the same either way.
+    with pytest.raises(SandboxError, match="(absolute|backslashes|drive)"):
         box.read(str(tmp_path / "sandbox" / "whatever.md"))
 
 
