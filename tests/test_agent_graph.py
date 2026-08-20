@@ -25,40 +25,52 @@ from iris.sandbox import Sandbox
 
 # ── onboarding wizard ───────────────────────────────────────────────────────
 
-def test_wizard_flow(tmp_path: Path):
-    files = WorkspaceFiles(tmp_path)
-    w = OnboardingWizard(files)
-    assert w.onboarded is False
-    assert w.current_prompt() == "What should I call you?"
+async def test_wizard_flow(tmp_path: Path):
+    from fakes import WizardLLM
 
-    assert w.apply_answer("Omar") == "How would you like me to be? (e.g. warm and curious, dry and efficient, playful)"
-    assert w.apply_answer("warm and curious") == "Tone for messages? (e.g. short and direct, friendly and detailed)"
-    assert w.apply_answer("short and direct") == "Your timezone? (e.g. Asia/Kolkata, UTC, America/New_York)"
-    assert w.apply_answer("Asia/Kolkata") == "When should I run my nightly dream consolidation? (hour 0-23, e.g. 4)"
-    reply = w.apply_answer("4")
+    files = WorkspaceFiles(tmp_path)
+    w = OnboardingWizard(files, WizardLLM())
+    assert w.onboarded is False
+    assert "call you" in w.current_prompt()
+
+    assert "call you" in w.greet()
+    assert w.state.asked is True
+
+    await w.apply_answer("Omar")
+    assert w.state.owner_name == "Omar"
+    assert w.state.personality == ""
+    await w.apply_answer("warm and curious")
+    await w.apply_answer("short and direct")
+    await w.apply_answer("UTC")
+    assert w.state.timezone == "UTC"
+    reply = await w.apply_answer("4")
 
     assert w.onboarded is True
     assert "Omar" in reply
     user_md = files.user.read_text(encoding="utf-8")
     assert "Name: Omar" in user_md
-    assert "Asia/Kolkata" in user_md
+    assert "Timezone: UTC" in user_md
     assert files.config_file().exists(), "state must persist to config/iris.json"
 
 
-def test_wizard_persists_across_instances(tmp_path: Path):
+async def test_wizard_persists_across_instances(tmp_path: Path):
+    from fakes import WizardLLM
+
     files = WorkspaceFiles(tmp_path)
-    w = OnboardingWizard(files)
-    w.apply_answer("Aria")
-    w2 = OnboardingWizard(files)  # fresh instance reads disk
+    w = OnboardingWizard(files, WizardLLM())
+    await w.apply_answer("Aria")
+    w2 = OnboardingWizard(files, WizardLLM())  # fresh instance reads disk
     assert w2.state.owner_name == "Aria"
     assert w2.state.step == 1
 
 
-def test_wizard_rejects_nothing_after_done(tmp_path: Path):
+async def test_wizard_rejects_nothing_after_done(tmp_path: Path):
+    from fakes import WizardLLM
+
     files = WorkspaceFiles(tmp_path)
-    w = OnboardingWizard(files)
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Aria", "calm", "detailed", "UTC", "2"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)
     assert w.onboarded
     assert "Aria" in w.current_prompt()  # welcome-back greeting
 
@@ -67,6 +79,9 @@ def test_wizard_rejects_nothing_after_done(tmp_path: Path):
 
 class FakeLLM(LLMClient):
     """Deterministic: no tools, echo-ish reply. No network."""
+
+    async def complete(self, messages, **kwargs):
+        return json.dumps({"message": "ok", "profile": {}, "complete": False})
 
     async def complete_with_tools(self, messages, tools=None, **kwargs):
         return "ok", [], ""
@@ -138,8 +153,10 @@ async def test_graph_routes_new_user_to_onboarding(tmp_path: Path):
 
 
 async def test_graph_onboards_then_chats(tmp_path: Path):
+    from fakes import WizardLLM
+
     files = WorkspaceFiles(tmp_path)
-    graph = ChatGraph(make_runtime(files, FakeLLM()), MemorySaver())
+    graph = ChatGraph(make_runtime(files, WizardLLM()), MemorySaver())
     for answer in ["Hi", "Omar", "warm", "short", "UTC", "4"]:
         reply = await graph.respond(answer, session_id="t2")
     # onboarded → next message routes to the ReAct loop, not the wizard
@@ -149,8 +166,10 @@ async def test_graph_onboards_then_chats(tmp_path: Path):
 
 
 async def test_onboarding_completion_fires_hook(tmp_path: Path):
+    from fakes import WizardLLM
+
     files = WorkspaceFiles(tmp_path)
-    runtime = make_runtime(files, FakeLLM())
+    runtime = make_runtime(files, WizardLLM())
     fired = []
     runtime.on_onboarded = lambda: fired.append(True)
     graph = ChatGraph(runtime, MemorySaver())
@@ -160,11 +179,13 @@ async def test_onboarding_completion_fires_hook(tmp_path: Path):
 
 
 async def test_graph_tool_loop_calls_remember(tmp_path: Path):
+    from fakes import WizardLLM
+
     files = WorkspaceFiles(tmp_path)
     # onboarded already
-    w = OnboardingWizard(files)
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)
     graph = ChatGraph(make_runtime(files, RememberLLM()), MemorySaver())
     reply = await graph.respond("please remember this", session_id="t3")
     assert reply == "remembered"
@@ -176,25 +197,27 @@ async def test_tool_loop_hits_recursion_cap_gracefully(
 ):
     """An agent that never stops calling tools must get the graceful message,
     not a GraphRecursionError exploding out of respond()."""
+    from fakes import WizardLLM
     from iris.config import settings
 
     monkeypatch.setattr(settings, "graph_recursion_limit", 8)  # ~3 tool rounds
     files = WorkspaceFiles(tmp_path)
-    w = OnboardingWizard(files)
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)
     graph = ChatGraph(make_runtime(files, LoopLLM()), MemorySaver())
     reply = await graph.respond("search forever", session_id="t-loop")
     assert "one step at a time" in reply
 
 
 async def test_skill_use_reinforces_success_score(tmp_path: Path):
+    from fakes import WizardLLM
     from iris.memory.skills import Skill
 
     files = WorkspaceFiles(tmp_path)
-    w = OnboardingWizard(files)
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)
     runtime = make_runtime(files, ApplySkillLLM("Draft Standup"))
     runtime.skills.write(
         Skill(name="Draft Standup", description="d", triggers=["standup"], success_score=0.5)
@@ -272,6 +295,7 @@ def test_tool_schemas_are_valid(tmp_path: Path):
     assert names == {
         "memory_search",
         "remember",
+        "note",
         "inspect_mind",
         "forget",
         "skill_write",
@@ -423,11 +447,13 @@ class NoopReindexer:
         return 0
 
 
-def _forget_runtime(tmp_path: Path, llm: LLMClient) -> tuple[WorkspaceFiles, Runtime]:
+async def _forget_runtime(tmp_path: Path, llm: LLMClient) -> tuple[WorkspaceFiles, Runtime]:
+    from fakes import WizardLLM
+
     files = WorkspaceFiles(tmp_path)
-    w = OnboardingWizard(files)
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)
     files.write_curated(files.memory, "# MEMORY.md — Iris long-term memory\n\nThe owner's lease ends March 2027\n")
     runtime = make_runtime(files, llm)
     runtime.index = HitIndex()  # type: ignore[assignment]
@@ -436,7 +462,7 @@ def _forget_runtime(tmp_path: Path, llm: LLMClient) -> tuple[WorkspaceFiles, Run
 
 
 async def test_forget_halts_for_approval_then_supersedes(tmp_path: Path):
-    files, runtime = _forget_runtime(tmp_path, ForgetLLM())
+    files, runtime = await _forget_runtime(tmp_path, ForgetLLM())
     graph = ChatGraph(runtime, MemorySaver())
     with pytest.raises(ApprovalRequired) as exc:
         await graph.respond("forget about my lease", session_id="t-approve")
@@ -448,7 +474,7 @@ async def test_forget_halts_for_approval_then_supersedes(tmp_path: Path):
 
 
 async def test_forget_cancelled_resume_leaves_memory_intact(tmp_path: Path):
-    files, runtime = _forget_runtime(tmp_path, ForgetLLM(confirm="cancelled it"))
+    files, runtime = await _forget_runtime(tmp_path, ForgetLLM(confirm="cancelled it"))
     graph = ChatGraph(runtime, MemorySaver())
     with pytest.raises(ApprovalRequired):
         await graph.respond("forget about my lease", session_id="t-cancel")

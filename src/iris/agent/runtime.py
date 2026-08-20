@@ -6,6 +6,7 @@ agent code free of global state.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -20,6 +21,11 @@ from iris.memory.skills import SkillLibrary
 from iris.sandbox import Sandbox
 from iris.tasks import TaskScheduler
 from iris.trace import TraceLogger
+
+# The session whose turn is being executed, visible to tools (set by the
+# graph's tools node). Tools like schedule_task use it to keep tasks bound
+# to the conversation they were created in instead of a hardcoded thread.
+current_session: ContextVar[str] = ContextVar("iris_current_session", default="")
 
 
 @dataclass(slots=True)

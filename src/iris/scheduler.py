@@ -87,6 +87,30 @@ async def _nightly_sleep(runtime: Runtime) -> None:
         log.warning("nightly sleep failed: %s", exc)
 
 
+def _last_dream(dreams_md: str) -> dict | None:
+    """Pull the last dream cycle's headline numbers from DREAMS.md.
+
+    The brief's dreams section always passed None before — the dream record
+    was never surfaced, so the owner's morning digest never mentioned the
+    night's consolidation."""
+    import re
+
+    entries = re.findall(
+        r"- staged=(\d+) promoted=(\d+) themes=(\d+) added=(\d+) superseded=(\d+)",
+        dreams_md,
+    )
+    if not entries:
+        return None
+    staged, promoted, themes, added, superseded = entries[-1]
+    return {
+        "staged": int(staged),
+        "promoted": int(promoted),
+        "themes": int(themes),
+        "added": int(added),
+        "superseded": int(superseded),
+    }
+
+
 async def _morning_brief(runtime: Runtime) -> None:
     if not settings.owner_chat_id or runtime.telegram is None:
         log.info("morning brief skipped (owner chat id or telegram channel missing)")
@@ -95,6 +119,9 @@ async def _morning_brief(runtime: Runtime) -> None:
         retention = await runtime.forgetting.retention_report()
         rot = await runtime.forgetting.rot_report()
         dreams = None
+        dreams_md = runtime.files.read(runtime.files.dreams)
+        if dreams_md:
+            dreams = _last_dream(dreams_md)
         brief = format_morning_brief(
             {"chunks": retention},
             {

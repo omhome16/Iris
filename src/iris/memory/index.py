@@ -15,6 +15,7 @@ score importance at write time, not query time).
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from dataclasses import dataclass, field
@@ -28,6 +29,8 @@ from pgvector.asyncpg import register_vector
 from iris.config import settings
 from iris.memory.llm import LLMClient
 from iris.memory.provenance import Origin, Provenance
+
+log = logging.getLogger("iris.memory.index")
 
 _SCHEMA = f"""
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -134,6 +137,42 @@ class MemoryIndex:
             self._pool = await asyncpg.create_pool(
                 dsn, min_size=1, max_size=5, init=init_conn
             )
+            await self._ensure_embedding_dim()
+
+    async def _ensure_embedding_dim(self) -> None:
+        """The schema bakes `embedding_dim` into the column at CREATE TABLE.
+        If the model was switched (different vector size), the column type no
+        longer matches and every insert fails. The index is a derived view
+        over the Markdown files — it is rebuildable — so a mismatched table
+        is dropped and recreated; the boot-time `reindex_all` repopulates it."""
+        async with self._pool.acquire() as conn:
+            typmod = await conn.fetchval(
+                """
+                SELECT atttypmod
+                FROM pg_attribute
+                WHERE attrelid = 'memory_chunks'::regclass
+                  AND attname = 'embedding'
+                """
+            )
+        # pgvector stores the vector length in atttypmod itself (1536 for a
+        # vector(1536) column; -1 = no fixed length). Reading it as
+        # `atttypmod - 4` mis-decoded 1536 as 1532 and dropped the table on
+        # every connect.
+        dim = typmod if (typmod is not None and typmod > 0) else None
+        if dim is None or dim == settings.embedding_dim:
+            return
+        log.warning(
+            "embedding column dim %s != configured %s — dropping and recreating "
+            "memory_chunks (index is rebuildable from files)",
+            dim,
+            settings.embedding_dim,
+        )
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("DROP TABLE IF EXISTS memory_chunks")
+                await conn.execute(_SCHEMA)
+                await register_vector(conn)
+        self.clear_cache()
 
     async def close(self) -> None:
         if self._pool:
@@ -178,6 +217,39 @@ class MemoryIndex:
         self.clear_cache()
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM memory_chunks WHERE path = $1", path)
+
+    async def replace_file_chunks(self, path: str, records: list[ChunkRecord]) -> None:
+        """Atomically replace one file's chunks: DELETE + INSERT in a single
+        transaction. A crash mid-reindex used to leave the file half-indexed
+        (old chunks for stale content deleted, new ones not yet written)."""
+        if not records:
+            await self.delete_file_chunks(path)
+            return
+        embeddings = await self.llm.embed([r.content for r in records])
+        self.clear_cache()
+        async with self._pool.acquire() as conn:
+            await register_vector(conn)
+            async with conn.transaction():
+                await conn.execute("DELETE FROM memory_chunks WHERE path = $1", path)
+                for record, emb in zip(records, embeddings):
+                    await conn.execute(
+                        """
+                        INSERT INTO memory_chunks
+                            (path, chunk_index, content, origin, importance,
+                             supersedes, trigger_phrases, observed_at, evergreen, embedding)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                        """,
+                        record.path,
+                        record.chunk_index,
+                        record.content,
+                        record.provenance.origin.value,
+                        record.importance,
+                        record.provenance.supersedes,
+                        record.trigger_phrases,
+                        record.provenance.observed_date,
+                        record.evergreen,
+                        emb,
+                    )
 
     # ── recall (default lane: deterministic, no model call) ───────────────
     async def _search_rows(self, q_emb, query: str, origins: list[str], top_k: int) -> list[asyncpg.Record]:
@@ -326,6 +398,10 @@ class MemoryIndex:
             return []
         selected: list[tuple[MemoryHit, np.ndarray]] = []
         pool = pairs[:]
+        # Embeddings are stored as-is; embeddings from different providers are
+        # not guaranteed unit-length, and dot product is only a cosine when
+        # both vectors are normalized. Normalize defensively.
+        pool = [(hit, emb / (np.linalg.norm(emb) or 1.0)) for hit, emb in pool]
         while pool and len(selected) < top_k:
             best: tuple[MemoryHit, np.ndarray] | None = None
             best_val = -1.0

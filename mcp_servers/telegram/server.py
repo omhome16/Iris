@@ -94,6 +94,10 @@ async def send_message(chat_id: int, text: str) -> str:
 @server.tool(name="send_photo", description="Send a photo (by URL) to a Telegram chat.")
 async def send_photo(chat_id: int, photo_url: str, caption: str = "") -> str:
     try:
+        if not _url_is_public(photo_url):
+            return json.dumps(
+                {"ok": False, "error": "refusing non-public URL (SSRF guard)"}
+            )
         async with httpx.AsyncClient(timeout=60) as client:
             dl = await client.get(photo_url)
             dl.raise_for_status()
@@ -104,6 +108,32 @@ async def send_photo(chat_id: int, photo_url: str, caption: str = "") -> str:
         return json.dumps({"ok": result is not None, "chat_id": chat_id})
     except Exception as exc:  # noqa: BLE001 - a failed send must not break the turn
         return json.dumps({"ok": False, "error": str(exc)})
+
+
+def _url_is_public(url: str) -> bool:
+    """SSRF guard for the photo-download fetch: only http(s) URLs whose host
+    resolves to a public IP may be fetched. Prevents the bridge from being
+    used to probe internal services (metadata endpoints, LAN hosts)."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parts = urlparse(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return False
+        host = parts.hostname.rstrip(".")
+        infos = socket.getaddrinfo(host, None)
+    except Exception:  # noqa: BLE001 - unparseable/unresolvable → refuse
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if not ip.is_global or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
 
 
 @server.tool(name="get_chat_history", description="Recent messages in a chat (in-memory bridge log).")
@@ -515,7 +545,9 @@ async def _poll_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - polling must never die
-            log.warning("poll error: %s", exc)
+            # str(exc) is empty for some transport exceptions — include the
+            # type name so the error is actually diagnosable in the log.
+            log.warning("poll error (%s): %s", type(exc).__name__, exc or "(no detail)")
             await asyncio.sleep(3)
 
 

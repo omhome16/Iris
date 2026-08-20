@@ -90,10 +90,12 @@ def make_runtime(files: WorkspaceFiles, llm: LLMClient) -> Runtime:
 
 
 async def test_chat_turn_records_trace(tmp_path: Path):
+    from fakes import WizardLLM
+
     files = WorkspaceFiles(tmp_path)
-    w = OnboardingWizard(files)
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)
     graph = ChatGraph(make_runtime(files, FakeLLM()), MemorySaver())
     await graph.respond("hello there", session_id="t-trace")
     traces = TraceLogger(files.root / "config" / "traces.jsonl").recent()

@@ -15,6 +15,7 @@ build/
 # iris runtime
 workspace/.dreams/
 workspace/config/iris.json
+workspace/config/*.jsonl
 *.sqlite3
 *.log
 

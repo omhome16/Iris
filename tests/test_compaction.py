@@ -103,10 +103,13 @@ def make_runtime(files: WorkspaceFiles, llm: LLMClient) -> Runtime:
     )
 
 
-def _onboard(files: WorkspaceFiles) -> None:
-    w = OnboardingWizard(files)
+async def _onboard(files: WorkspaceFiles) -> None:
+    from fakes import WizardLLM
+    from iris.onboarding import OnboardingWizard
+
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)
 
 
 async def test_compaction_triggers_and_flushes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -115,7 +118,7 @@ async def test_compaction_triggers_and_flushes(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(settings, "compaction_trigger_tokens", 10)
     monkeypatch.setattr(settings, "compaction_keep_tokens", 8)
     files = WorkspaceFiles(tmp_path)
-    _onboard(files)
+    await _onboard(files)
     llm = CompactLLM()
     graph = ChatGraph(make_runtime(files, llm), MemorySaver())
 
@@ -134,7 +137,7 @@ async def test_compaction_summary_injected(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(settings, "compaction_trigger_tokens", 10)
     monkeypatch.setattr(settings, "compaction_keep_tokens", 8)
     files = WorkspaceFiles(tmp_path)
-    _onboard(files)
+    await _onboard(files)
     llm = CompactLLM()
     graph = ChatGraph(make_runtime(files, llm), MemorySaver())
 
@@ -164,7 +167,7 @@ async def test_compaction_survives_llm_failure(tmp_path: Path, monkeypatch: pyte
             return "still alive", [], ""
 
     files = WorkspaceFiles(tmp_path)
-    _onboard(files)
+    await _onboard(files)
     graph = ChatGraph(make_runtime(files, FailingLLM()), MemorySaver())
 
     for i in range(6):
@@ -178,7 +181,7 @@ async def test_compaction_survives_llm_failure(tmp_path: Path, monkeypatch: pyte
 
 async def test_compaction_never_fires_on_short_chats(tmp_path: Path):
     files = WorkspaceFiles(tmp_path)
-    _onboard(files)
+    await _onboard(files)
     llm = CompactLLM()
     graph = ChatGraph(make_runtime(files, llm), MemorySaver())
 

@@ -1,5 +1,6 @@
-"""Research subagent: bounded cheap-tier digging + deep_dive tool + the
-temporal-question research hook in context assembly."""
+﻿"""Research subagent: bounded cheap-tier digging + deep_dive tool. The
+subagent now runs only when the agent calls the deep_dive tool â€” context
+assembly never auto-runs it (memory orchestration v2)."""
 
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ class ResearchLLM(LLMClient):
 
 
 class LoopLLM(ResearchLLM):
-    """Never stops calling tools — the round cap must stop it."""
+    """Never stops calling tools â€” the round cap must stop it."""
 
     async def complete_with_tools(self, messages, tools=None, **kwargs):
         return "", [{"name": "memory_search", "args": {"query": "more"}}], ""
@@ -76,17 +77,19 @@ def test_deep_dive_tool_is_registered(tmp_path: Path):
     assert "deep_dive" in names
 
 
-async def test_temporal_question_injects_research_into_context(tmp_path: Path, monkeypatch):
+async def test_deep_dive_runs_only_when_agent_invokes_it(tmp_path: Path, monkeypatch):
+    """v2: the research subagent never auto-runs. The agent calls the
+    deep_dive tool, gets the report as the tool result, and replies."""
     from iris.config import settings
 
     monkeypatch.setattr(settings, "mrr_top_k", 3)
     monkeypatch.setattr(settings, "trigger_inject_max", 3)
     files = WorkspaceFiles(tmp_path)
-    _onboard(files)
+    await _onboard(files)
 
     class MainLLM(LLMClient):
-        """Research subagent (calls 1-2) then the main agent (call 3+).
-        Records every system prompt it saw."""
+        """Call 1 â†’ deep_dive tool; call 2 (inside the subagent) reports;
+        call 3 answers."""
 
         def __init__(self) -> None:
             self.calls = 0
@@ -96,7 +99,7 @@ async def test_temporal_question_injects_research_into_context(tmp_path: Path, m
             self.calls += 1
             self.systems.append(messages[0]["content"])
             if self.calls == 1:
-                return "", [{"name": "memory_search", "args": {"query": "beach trip", "top_k": 5}}], ""
+                return "", [{"name": "deep_dive", "args": {"query": "beach trip"}}], ""
             if self.calls == 2:
                 return "Report: the beach trip was in August.", [], ""
             return "ok", [], ""
@@ -109,10 +112,40 @@ async def test_temporal_question_injects_research_into_context(tmp_path: Path, m
 
     reply = await graph.respond("when did we go to the beach?", session_id="r1")
     assert reply == "ok"
-    assert any("Deep research report" in s and "beach trip was in August" in s for s in llm.systems)
+    assert llm.calls == 3
+    assert not any("Deep research report" in s for s in llm.systems), (
+        "research must not be injected into the assembled context"
+    )
 
 
-def _onboard(files: WorkspaceFiles) -> None:
-    w = OnboardingWizard(files)
+async def test_no_auto_research_without_agent_invocation(tmp_path: Path, monkeypatch):
+    """A temporal question alone must not launch the subagent (v2: the
+    agent decides; retrieval is a tool call, not a regex)."""
+    from iris.config import settings
+
+    monkeypatch.setattr(settings, "mrr_top_k", 3)
+    monkeypatch.setattr(settings, "trigger_inject_max", 3)
+    files = WorkspaceFiles(tmp_path)
+    await _onboard(files)
+
+    class QuietLLM(LLMClient):
+        async def complete_with_tools(self, messages, tools=None, **kwargs):
+            return "I don't remember that yet.", [], ""
+
+    llm = QuietLLM()
+    runtime = make_runtime(files, llm)
+    runtime.index = StubIndex()  # type: ignore[assignment]
+    runtime.research = ResearchSubagent(runtime)
+    graph = ChatGraph(runtime, MemorySaver())
+
+    reply = await graph.respond("when did we go to the beach?", session_id="r2")
+    assert reply == "I don't remember that yet."
+
+
+async def _onboard(files: WorkspaceFiles) -> None:
+    from fakes import WizardLLM
+    from iris.onboarding import OnboardingWizard
+
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)

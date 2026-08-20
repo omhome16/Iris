@@ -1,4 +1,4 @@
-"""Scheduled tasks: time parsing, JSON persistence, APScheduler registration."""
+﻿"""Scheduled tasks: time parsing, JSON persistence, APScheduler registration."""
 
 from __future__ import annotations
 
@@ -106,8 +106,8 @@ async def test_run_task_executes_and_cleans_up(tmp_path: Path, monkeypatch: pyte
     scheduler = AsyncIOScheduler(timezone=settings.iris_timezone)
 
     class FakeGraph:
-        async def respond(self, message, *, session_id):
-            self.got = (message, session_id)
+        async def respond(self, message, *, session_id, origin="owner"):
+            self.got = (message, session_id, origin)
             return "here is the summary"
 
     class FakeTelegram:
@@ -125,6 +125,6 @@ async def test_run_task_executes_and_cleans_up(tmp_path: Path, monkeypatch: pyte
     ts = TaskScheduler(store, runtime=runtime, graph=graph, scheduler=scheduler)
     await ts._run_task(task)
 
-    assert graph.got == ("send me the weekly summary", "default")
+    assert graph.got == ("send me the weekly summary", "default", "task")
     assert telegram.sent and "here is the summary" in telegram.sent[0]
     assert store.list() == [], "fired task must be removed"

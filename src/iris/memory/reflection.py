@@ -100,10 +100,34 @@ class ReflectionPass:
             return 0
 
 
+_RETRIEVAL_TOOLS = ("memory_search", "deep_dive")
+
+
+def _tool_call_names(state: dict) -> dict[str, str]:
+    """tool_call_id → tool name, resolved from the AI messages that issued
+    the calls. More robust than reading `.name` off each tool message, which
+    can be lost through checkpoint serialization."""
+    names: dict[str, str] = {}
+    for m in state.get("messages", []):
+        for tc in getattr(m, "tool_calls", None) or []:
+            cid = tc.get("id")
+            if cid:
+                names[cid] = tc.get("name", "")
+    return names
+
+
 def retrieved_excerpts(state: dict) -> list[str]:
-    """Tool-result contents of memory_search calls in this turn's messages."""
+    """Tool-result contents of *memory retrieval* calls in this turn's
+    messages. Only memory_search/deep_dive results are evidence the reply can
+    be checked against — file reads, web searches and other tools are not
+    memory, and running the reflection pass over them produced token waste
+    and false positive flags."""
+    names = _tool_call_names(state)
     out: list[str] = []
     for m in state.get("messages", []):
-        if getattr(m, "type", "") == "tool":
+        if getattr(m, "type", "") != "tool":
+            continue
+        name = getattr(m, "name", "") or names.get(getattr(m, "tool_call_id", ""), "")
+        if name in _RETRIEVAL_TOOLS:
             out.append(str(m.content))
     return [t for t in out if t][-6:]

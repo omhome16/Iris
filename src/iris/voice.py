@@ -18,7 +18,7 @@ from iris.config import settings
 log = logging.getLogger("iris.voice")
 
 VOICE_MODEL = "groq/whisper-large-v3-turbo"
-MAX_AUDIO_MB = 25  # Telegram bot API limit
+MAX_AUDIO_MB = 20  # Telegram bot API hard limit (was 25 — oversize uploads were rejected server-side)
 
 
 async def transcribe(audio_path: Path) -> str:

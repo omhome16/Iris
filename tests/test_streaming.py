@@ -1,4 +1,4 @@
-"""Streaming chat: thinking / text / tool-call events surface through
+﻿"""Streaming chat: thinking / text / tool-call events surface through
 respond_stream, and complete_with_tools returns the thinking text."""
 
 from __future__ import annotations
@@ -41,19 +41,20 @@ class StreamLLM(LLMClient):
         return "ok", [], "thinking text"
 
 
-def _onboard(files) -> None:
+async def _onboard(files) -> None:
+    from fakes import WizardLLM
     from iris.onboarding import OnboardingWizard
 
-    w = OnboardingWizard(files)
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)
 
 
 async def test_respond_stream_emits_thinking_text_tool_call(tmp_path: Path):
     from iris.memory.files import WorkspaceFiles
 
     files = WorkspaceFiles(tmp_path)
-    _onboard(files)
+    await _onboard(files)
     llm = StreamLLM()
     graph = ChatGraph(make_runtime(files, llm), MemorySaver())
 
@@ -77,7 +78,7 @@ async def test_respond_stream_final_reply_in_updates(tmp_path: Path):
     from iris.memory.files import WorkspaceFiles
 
     files = WorkspaceFiles(tmp_path)
-    _onboard(files)
+    await _onboard(files)
     llm = StreamLLM()
     graph = ChatGraph(make_runtime(files, llm), MemorySaver())
 

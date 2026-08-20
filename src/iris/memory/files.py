@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from iris.config import settings
 from iris.memory.chunking import estimate_tokens
@@ -50,8 +51,16 @@ class WorkspaceFiles:
     def dreams(self) -> Path:
         return self.root / "DREAMS.md"
 
+    def today(self) -> date:
+        """The owner's *today* — daily notes, traces, and dreams must all be
+        dated in the timezone gathered during onboarding, not the server's."""
+        try:
+            return datetime.now(ZoneInfo(settings.iris_timezone)).date()
+        except Exception:  # noqa: BLE001 - bad tz config, fall back to UTC
+            return datetime.now(ZoneInfo("UTC")).date()
+
     def daily_note(self, day: date | None = None) -> Path:
-        return self.root / "memory" / f"{(day or date.today()).isoformat()}.md"
+        return self.root / "memory" / f"{(day or self.today()).isoformat()}.md"
 
     def skills_dir(self) -> Path:
         return self.root / "skills"
@@ -68,15 +77,18 @@ class WorkspaceFiles:
             return ""
         text = path.read_text(encoding="utf-8")
         if max_tokens and estimate_tokens(text) > max_tokens:
+            # Keep the TAIL: curated files are append-mostly, so the newest
+            # facts live at the end. Truncating the head preserved stale
+            # entries and silently dropped what changed most recently.
             tokens = text.split()
-            text = " ".join(tokens[:max_tokens]) + "\n\n[truncated: budget exceeded]"
+            text = " ".join(tokens[-max_tokens:]) + "\n\n[truncated: budget exceeded]"
         return text
 
     def bootstrap_memory(self) -> str:
-        return self.read(self.memory, max_tokens=4000)
+        return self.read(self.memory, max_tokens=settings.bootstrap_budget_tokens)
 
     def bootstrap_user(self) -> str:
-        return self.read(self.user, max_tokens=1500)
+        return self.read(self.user, max_tokens=settings.user_profile_budget_tokens)
 
     def read_daily(self, day: date | None = None) -> str:
         return self.read(self.daily_note(day))
@@ -86,9 +98,7 @@ class WorkspaceFiles:
         path = self.daily_note(day)
         with path.open("a", encoding="utf-8") as fh:
             if stamp:
-                from datetime import datetime
-
-                fh.write(f"\n## {datetime.now().isoformat(timespec='seconds')}\n")
+                fh.write(f"\n## {datetime.now(ZoneInfo(settings.iris_timezone)).isoformat(timespec='seconds')}\n")
             fh.write(text.rstrip() + "\n")
 
     def append_dreams(self, entry: str) -> None:

@@ -233,9 +233,9 @@ uv sync                   # install deps into .venv
 ### 2. Run (local dev, Windows-friendly)
 
 ```bash
-uv run python scripts/run_core.py      # API on :8000 (handles the Windows event-loop quirks)
-uv run python mcp_servers/telegram/server.py   # Telegram MCP bridge on :8100
-uv run python dashboard/app.py         # dashboard on :8080
+uv run python scripts/run_core.py          # API on :8000 (handles the Windows event-loop quirks)
+uv run python scripts/run_bridge.py        # Telegram MCP bridge on :8100 (loads .env)
+uv run uvicorn dashboard.app:app --port 8080   # dashboard on :8080
 ```
 
 Or one shot with Docker (everything, ports 8000/8080/8100 + Postgres on 5433):

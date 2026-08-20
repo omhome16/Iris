@@ -45,16 +45,16 @@ class Settings(BaseSettings):
     embedding_dim: int = 1536  # MRL: gemini-embedding-001 supports 128-3072
 
     groq_api_key: str = ""
-    groq_strong_model: str = "groq/llama-3.3-70b-versatile"
-    groq_cheap_model: str = "groq/llama-3.1-8b-instant"
+    groq_strong_model: str = "groq/qwen/qwen3.6-27b"
+    groq_cheap_model: str = "groq/groq/compound-mini"
 
     openrouter_api_key: str = ""
-    openrouter_strong_model: str = "openrouter/deepseek/deepseek-chat-v3.1:free"
-    openrouter_cheap_model: str = "openrouter/meta-llama/llama-3.1-8b-instruct:free"
+    openrouter_strong_model: str = "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+    openrouter_cheap_model: str = "openrouter/nvidia/nemotron-nano-9b-v2:free"
 
     ollama_base_url: str = "http://localhost:11434"
-    ollama_strong_model: str = "ollama/llama3.1:8b"
-    ollama_cheap_model: str = "ollama/llama3.1:8b"
+    ollama_strong_model: str = "ollama/qwen2.5-coder:3b"
+    ollama_cheap_model: str = "ollama/qwen2.5-coder:3b"
     ollama_embedding_model: str = "ollama/nomic-embed-text"
     ollama_embedding_dim: int = 768
 
@@ -160,7 +160,6 @@ class Settings(BaseSettings):
     context_header_tokens: int = 60
 
     # ── Sleep / dreaming ─────────────────────────────────────────────────
-    dream_staging_dir: str = "memory/.dreams"
     dream_candidate_max: int = 200
     nightly_sleep_hour: int = 4  # best-effort nightly sweep (24h clock, local tz)
     morning_brief_hour: int = 8  # Telegram digest to owner_chat_id (needs it set)
@@ -169,6 +168,10 @@ class Settings(BaseSettings):
     dream_light_weights: tuple[float, float, float, float, float] = (0.25, 0.30, 0.10, 0.10, 0.25)
     dream_gate_score: float = 0.5
     dream_gate_importance: float = 6.0
+    # Light phase also scans the last N daily notes for agent-written
+    # "(note)" lines — the episodic write surface since the write-path
+    # extraction pipeline was removed.
+    dream_note_scan_days: int = 7
 
     # ── Recall feedback ───────────────────────────────────────────────────
     # Every memory_search hit is logged to .dreams/recall_feedback.jsonl

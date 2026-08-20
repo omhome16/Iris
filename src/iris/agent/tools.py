@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from langgraph.types import interrupt
 
-from iris.agent.runtime import Runtime
+from iris.agent.runtime import Runtime, current_session
 from iris.config import settings
 from iris.ingest import fetch_text, ingest_url, web_search
 from iris.memory.files import ConcurrencyError
@@ -323,6 +323,46 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         )
     )
 
+    async def note(fact: str, importance: float = 5.0, triggers: list[str] | None = None) -> str:
+        """Agent-owned durable fact: append a provenance-tagged line to
+        today's daily note. ADD-only; promotion happens in the sleep graph."""
+        if not fact.strip():
+            return _err("fact is empty")
+        if len(fact) > 500:
+            return _err("fact too long (max 500 chars)")
+        entry = f"- [{int(importance)}] {fact.strip()}"
+        if triggers:
+            entry += f" (triggers: {', '.join(t.strip() for t in triggers[:5] if t.strip())})"
+        entry += " (note)"
+        try:
+            runtime.files.append_daily(entry, stamp=False)
+            await runtime.reindexer.index_daily_note(rel=f"memory/{runtime.files.today().isoformat()}.md")
+        except Exception as exc:  # noqa: BLE001 - tool errors surface as JSON
+            return _err(str(exc))
+        return _ok(entry=entry)
+
+    tools.append(
+        Tool(
+            "note",
+            "Record a durable fact the owner revealed this turn into today's "
+            "daily note (episodic memory). It becomes searchable immediately "
+            "and is consolidated into MEMORY.md at the next sleep. Use only "
+            "for genuinely NEW facts — never for what is already in your "
+            "context or what you just retrieved. Importance 1-10, 2-5 "
+            "trigger phrases that would cue the fact later.",
+            {
+                "type": "object",
+                "properties": {
+                    "fact": {"type": "string", "description": "the fact, present tense, self-contained"},
+                    "importance": {"type": "number", "minimum": 1, "maximum": 10},
+                    "triggers": {"type": "array", "items": {"type": "string"}, "description": "trigger phrases"},
+                },
+                "required": ["fact"],
+            },
+            note,
+        )
+    )
+
     async def inspect_mind() -> str:
         files = runtime.files
         mem = files.read(files.memory)[:2000]
@@ -352,9 +392,16 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         """Retire a matching memory as superseded. Human-in-the-loop: the
         graph halts on an approval interrupt; only an explicit "approved"
         resume performs the write."""
-        hits = await runtime.index.search(query, top_k=3, mrr_top_k=1)
+        # Only curated owner memory is editable this way. Daily notes are
+        # append-only; matching them is pointless and previously produced a
+        # "found in index but not editable" dead end for every /forget on a
+        # daily-note hit (the old search covered all paths).
+        hits = await runtime.index.search(
+            query, top_k=3, mrr_top_k=1, require_origin={Origin.OWNER}
+        )
+        hits = [h for h in hits if h.path == "MEMORY.md"]
         if not hits:
-            return _err("no memory matched")
+            return _err("no matching memory in MEMORY.md")
         hit = hits[0]
         decision = interrupt(
             {
@@ -369,9 +416,36 @@ def build_tools(runtime: Runtime) -> list[Tool]:
             return _err("forget cancelled")
         current = runtime.files.read(runtime.files.memory)
         marker = f"(superseded {datetime.now().isoformat()[:10]})"
+        # The indexed chunk may carry a contextual-retrieval header (cheap
+        # model text prepended at index time), so an exact replace of
+        # `hit.content` against the raw file can miss even when the fact is
+        # there. Walk the file lines and retire the one that matches the
+        # hit's own text.
         new = current.replace(hit.content, f"{hit.content} {marker}")
         if new == current:
-            return _err("found in index but not editable in MEMORY.md (daily note); leaving intact")
+            probe = hit.content.strip()
+            if len(probe) > 40:
+                probe = probe.splitlines()[0][:120]
+            probe = probe[:120]
+            target_line = next(
+                (line for line in current.splitlines() if probe in line), None
+            )
+            if target_line is None:
+                # Last resort: any line containing the owner's query words.
+                words = [w for w in query.split() if len(w) > 3][:2]
+                target_line = next(
+                    (
+                        line
+                        for line in current.splitlines()
+                        if any(w in line for w in words)
+                    ),
+                    None,
+                )
+            if target_line is None:
+                return _err("could not locate the memory text in MEMORY.md; leaving intact")
+            new = current.replace(target_line, f"{target_line} {marker}")
+        if new == current:
+            return _err("could not locate the memory text in MEMORY.md; leaving intact")
         try:
             runtime.files.write_curated(runtime.files.memory, new)
             await runtime.reindexer.reindex_all()
@@ -440,17 +514,35 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         )
     )
 
-    async def skill_apply(name: str) -> str:
+    async def skill_apply(name: str, outcome: str = "success") -> str:
         skill = runtime.skills.get(name)
         if skill is None:
             return _err(f"no skill named {name!r}")
-        return _ok(name=name, procedure=skill.procedure)
+        score = skill.success_score
+        if outcome == "failed":
+            revised = runtime.skills.revise(name)
+            if revised is not None:
+                score = revised.success_score
+        elif outcome == "success":
+            reinforced = runtime.skills.reinforce(name)
+            if reinforced is not None:
+                score = reinforced.success_score
+        return _ok(name=name, procedure=skill.procedure, success=round(score, 2))
 
     tools.append(
         Tool(
             "skill_apply",
-            "Read the full procedure of a skill so you can execute it.",
-            {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+            "Read the full procedure of a skill so you can execute it. "
+            "Report the true outcome — 'success' if the procedure achieved "
+            "the goal, 'failed' if it didn't — so Iris's score stays honest.",
+            {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "outcome": {"type": "string", "enum": ["success", "failed"], "description": "how the procedure went"},
+                },
+                "required": ["name"],
+            },
             skill_apply,
         )
     )
@@ -483,7 +575,11 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         if runtime.tasks is None:
             return _err("scheduling is not enabled on this runtime")
         try:
-            task = runtime.tasks.schedule(when, instruction, session_id="task")
+            # Bind the task to the conversation it was created in (the
+            # current thread), not a shared hardcoded "task" thread — the
+            # scheduled run then has the context the owner was talking in.
+            session_id = current_session.get() or "task"
+            task = runtime.tasks.schedule(when, instruction, session_id=session_id)
         except ValueError as exc:
             return _err(str(exc))
         return _ok(id=task.id, run_at=task.run_at, instruction=task.instruction)
@@ -617,8 +713,14 @@ def get_tools(runtime: Runtime) -> list[Tool]:
     return build_tools(runtime)
 
 
-def tool_schemas(runtime: Runtime) -> list[dict]:
-    return [t.schema() for t in get_tools(runtime)]
+def tool_schemas(runtime: Runtime, origin: str = "owner") -> list[dict]:
+    """Tool schemas offered to the agent. Non-owner sessions (scheduled
+    tasks, cron, heartbeats) never produce durable memory candidates —
+    the schema strips note/remember/dream_now/skill_write entirely."""
+    if origin == "owner":
+        return [t.schema() for t in get_tools(runtime)]
+    blocked = {"note", "remember", "dream_now", "skill_write"}
+    return [t.schema() for t in get_tools(runtime) if t.name not in blocked]
 
 
 async def dispatch(runtime: Runtime, name: str, args: dict) -> str:

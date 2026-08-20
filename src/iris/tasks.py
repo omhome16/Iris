@@ -35,6 +35,7 @@ _RELATIVE_RE = re.compile(
     r"^in (\d+) (minute|minutes|hour|hours|day|days|week|weeks)$", re.IGNORECASE
 )
 _TIME_RE = re.compile(r"^(today|tomorrow)?\s*(\d{1,2}):(\d{2})$", re.IGNORECASE)
+_DAY_ONLY_RE = re.compile(r"^(today|tomorrow)$", re.IGNORECASE)
 
 DEFAULT_REMINDER_HOUR = 9  # bare "tomorrow" / "today" default time
 
@@ -80,6 +81,18 @@ def parse_when(when: str) -> datetime:
         if day_part == "tomorrow":
             base = now.date() + timedelta(days=1)
         candidate = datetime(base.year, base.month, base.day, hour, minute, tzinfo=tz)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return candidate
+
+    # Bare "tomorrow" / "today" — documented shorthand that was never
+    # parsed; DEFAULT_REMINDER_HOUR existed but was dead code.
+    m = _DAY_ONLY_RE.match(text)
+    if m:
+        day_part = m.group(1).casefold()
+        base = now.date() + (timedelta(days=1) if day_part == "tomorrow" else timedelta(0))
+        hour = settings.nightly_sleep_hour if day_part == "tomorrow" else DEFAULT_REMINDER_HOUR
+        candidate = datetime(base.year, base.month, base.day, hour, 0, tzinfo=tz)
         if candidate <= now:
             candidate += timedelta(days=1)
         return candidate
@@ -204,7 +217,7 @@ class TaskScheduler:
         """Fire the instruction through the chat graph, deliver the reply,
         then forget the task. Never raises out of the job."""
         try:
-            reply = await self.graph.respond(task.instruction, session_id=task.session_id)
+            reply = await self.graph.respond(task.instruction, session_id=task.session_id, origin="task")
         except Exception as exc:  # noqa: BLE001 - a fired task must never crash the scheduler
             log.warning("scheduled task %s failed: %s", task.id, exc)
             reply = f"I tried to handle a scheduled task but hit an error ({type(exc).__name__})."

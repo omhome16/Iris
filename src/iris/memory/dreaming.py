@@ -17,8 +17,9 @@ Deterministic-first design (OpenClaw lineage):
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from iris.config import settings
@@ -36,6 +37,11 @@ indices that support the statement).
 
 Respond ONLY with JSON: {"themes": [{"theme": "<short name>",
 "statement": "<consolidated>", "evidence": [0, 2]}]}"""
+
+# A note-tool line inside a daily note: "- [7] fact (triggers: a, b) (note)"
+_NOTE_LINE_RE = re.compile(
+    r"^-\s*\[(\d{1,2})\]\s*(.+?)(?:\s*\(triggers:\s*([^)]*)\))?\s*\(note\)\s*$"
+)
 
 
 @dataclass(slots=True)
@@ -107,8 +113,15 @@ class LightPhase:
             return []
         return [str(json.loads(line).get("content", "")).casefold() for line in lines if line.strip()]
 
-    def run(self, staging_dir: Path, feedback_file: Path | None = None) -> tuple[list[StagedSignal], int]:
-        """Read staging files, dedupe by normalized content, gate promotion.
+    def run(
+        self,
+        staging_dir: Path,
+        daily_dir: Path | None = None,
+        feedback_file: Path | None = None,
+        scan_days: int = 7,
+    ) -> tuple[list[StagedSignal], int]:
+        """Read staging files plus `(note)`-marked lines from recent daily
+        notes, dedupe by normalized content, gate promotion.
 
         Returns (promoted, staged_count). Demoted signals stay in staging
         files untouched — they get re-scored at the next sleep.
@@ -140,6 +153,17 @@ class LightPhase:
                 else:
                     by_content[key] = sig
 
+        if daily_dir is not None:
+            for sig in self._daily_note_signals(daily_dir, scan_days):
+                key = sig.content.casefold().strip()
+                existing = by_content.get(key)
+                if existing:
+                    existing.occurrences += 1
+                    if sig.importance > existing.importance:
+                        existing.importance = sig.importance
+                else:
+                    by_content[key] = sig
+
         recalled = self._recall_counts(feedback_file)
         for sig in by_content.values():
             if recalled:
@@ -153,6 +177,50 @@ class LightPhase:
             if s.promotable and self._gate(s)
         ]
         return promoted, len(by_content)
+
+    def _daily_note_signals(self, daily_dir: Path, scan_days: int) -> list[StagedSignal]:
+        """Parse agent-written `(note)` lines from recent daily notes into
+        staged signals. Dated by filename (episodic evidence, AGENT origin)."""
+        signals: list[StagedSignal] = []
+        try:
+            from zoneinfo import ZoneInfo
+
+            today = datetime.now(ZoneInfo(settings.iris_timezone)).date()
+        except Exception:  # noqa: BLE001 - bad tz config, fall back to UTC
+            today = date.today()
+        for i in range(max(1, scan_days)):
+            day = today - timedelta(days=i)
+            path = daily_dir / f"{day.isoformat()}.md"
+            if not path.exists():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:  # noqa: BLE001 - best-effort scan
+                continue
+            for line in lines:
+                m = _NOTE_LINE_RE.match(line.strip())
+                if m is None:
+                    continue
+                content = m.group(2).strip()
+                if not content:
+                    continue
+                triggers = [t.strip() for t in (m.group(3) or "").split(",") if t.strip()][:5]
+                observed = datetime.combine(day, datetime.min.time())
+                signals.append(
+                    StagedSignal(
+                        op="ADD",
+                        content=content,
+                        importance=float(m.group(1)),
+                        triggers=triggers,
+                        target="",
+                        provenance=Provenance(
+                            origin=Origin.AGENT,
+                            source=f"memory/{day.isoformat()}.md",
+                            observed_at=observed,
+                        ),
+                    )
+                )
+        return signals
 
     def _gate(self, signal: StagedSignal) -> bool:
         if signal.provenance.origin is Origin.OWNER:
@@ -171,7 +239,6 @@ class RemPhase:
     async def run(self, signals: list[StagedSignal]) -> list[DreamTheme]:
         if not signals:
             return []
-        idx = {id(s): i for i, s in enumerate(signals)}
         payload = await self.llm.complete(
             [
                 {"role": "system", "content": _REM_SYSTEM},
@@ -196,7 +263,16 @@ class RemPhase:
             statement = str(item.get("statement", "")).strip()
             if not statement:
                 continue
-            evidence = [int(i) for i in item.get("evidence", []) if 0 <= int(i) < len(signals)]
+            # Evidence indices come from the model; garbage entries must not
+            # crash the sleep graph (previously int(i) raised ValueError).
+            evidence: list[int] = []
+            for i in item.get("evidence", []):
+                try:
+                    idx_i = int(i)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= idx_i < len(signals):
+                    evidence.append(idx_i)
             imp = max((signals[i].importance for i in evidence), default=5.0)
             themes.append(DreamTheme(theme=str(item.get("theme", "general")), statement=statement, evidence=evidence, importance=imp))
         return themes or self._fallback(signals)
@@ -255,7 +331,7 @@ class DeepPhase:
 
         # new consolidated statements, deduped against what MEMORY.md already
         # says (cosine via the index; deterministic, no model call)
-        anchor = f"memory/{datetime.now().strftime('%Y-%m-%d')}.md"
+        anchor = f"memory/{self.files.today().isoformat()}.md"
         existing = "\n".join(lines)
         additions: list[str] = []
         for t in themes:
@@ -306,7 +382,9 @@ class DreamEngine:
     async def sleep(self) -> DreamRecord:
         promoted, staged = self.light.run(
             self.files.staging_dir(),
+            daily_dir=self.files.root / "memory",
             feedback_file=self.files.recall_feedback_path(),
+            scan_days=settings.dream_note_scan_days,
         )
         themes = await self.rem.run(promoted)
         record = await self.deep.run(themes, promoted)
@@ -316,8 +394,12 @@ class DreamEngine:
         return record
 
     def _consume(self, promoted: list[StagedSignal]) -> None:
-        """Remove promoted (now consolidated) signals from staging files so
-        the next sleep does not re-promote duplicates. Demoted signals stay."""
+        """Remove promoted (now consolidated) signals from staging files AND
+        from the daily notes they were staged from, so the next sleep does
+        not re-promote the same notes (which previously happened every
+        night: promoted (note) lines stayed in the daily notes, kept their
+        index entries, and re-entered the gate on the next sweep). Demoted
+        signals stay."""
         dropped = {s.content.casefold().strip() for s in promoted}
         for path in self.files.staging_dir().glob("staging-*.jsonl"):
             remaining = [
@@ -330,3 +412,27 @@ class DreamEngine:
                 path.write_text("\n".join(remaining) + "\n", encoding="utf-8")
             else:
                 path.unlink()
+
+        # Daily-note consumption: remove the exact promoted "(note)" lines
+        # from the files they were parsed out of. Append-only discipline
+        # applies to future writes; a *consumed* note line is no longer
+        # evidence and may be retired.
+        for sig in promoted:
+            source = sig.provenance.source
+            if not source or not source.startswith("memory/") or "/" not in source:
+                continue
+            path = self.files.root / source
+            if not path.exists():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:  # noqa: BLE001 - best-effort consumption
+                continue
+            cleaned = [
+                line
+                for line in lines
+                if not (line.strip().startswith("- ") and "(note)" in line
+                        and sig.content.casefold().strip() in line.casefold())
+            ]
+            if len(cleaned) != len(lines):
+                path.write_text("\n".join(cleaned) + ("\n" if cleaned else ""), encoding="utf-8")

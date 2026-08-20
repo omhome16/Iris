@@ -1,4 +1,4 @@
-"""Image turns: a photo arrives as a base64 data URI, becomes OpenAI-style
+﻿"""Image turns: a photo arrives as a base64 data URI, becomes OpenAI-style
 content blocks, and reaches the LLM as-is (LiteLLM translates to Gemini
 inline data). The write path logs the caption to the daily note."""
 
@@ -34,15 +34,18 @@ class CaptureLLM(LLMClient):
         return "{}"
 
 
-def _onboard(files: WorkspaceFiles) -> None:
-    w = OnboardingWizard(files)
+async def _onboard(files: WorkspaceFiles) -> None:
+    from fakes import WizardLLM
+    from iris.onboarding import OnboardingWizard
+
+    w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
-        w.apply_answer(a)
+        await w.apply_answer(a)
 
 
 async def test_image_turn_reaches_llm_as_content_blocks(tmp_path: Path):
     files = WorkspaceFiles(tmp_path)
-    _onboard(files)
+    await _onboard(files)
     llm = CaptureLLM()
     graph = ChatGraph(make_runtime(files, llm), MemorySaver())
 
@@ -58,7 +61,7 @@ async def test_image_turn_reaches_llm_as_content_blocks(tmp_path: Path):
 
 async def test_plain_message_stays_a_string(tmp_path: Path):
     files = WorkspaceFiles(tmp_path)
-    _onboard(files)
+    await _onboard(files)
     llm = CaptureLLM()
     graph = ChatGraph(make_runtime(files, llm), MemorySaver())
 

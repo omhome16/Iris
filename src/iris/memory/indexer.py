@@ -63,7 +63,14 @@ class Reindexer:
             origin, evergreen = self.tier_for(rel)
             if origin is Origin.SYSTEM:
                 continue
-            out.append((rel, path.read_text(encoding="utf-8"), origin, evergreen))
+            text = path.read_text(encoding="utf-8")
+            # "not yet born" placeholders (USER.md/MEMORY.md before onboarding
+            # or first dream) carry no facts — nothing worth indexing. The
+            # marker never appears in real content, so a single occurrence is
+            # enough to skip (the old check required it twice and never fired).
+            if "_Empty" in text:
+                continue
+            out.append((rel, text, origin, evergreen))
         return out
 
     async def reindex_all(self) -> int:
@@ -102,8 +109,7 @@ class Reindexer:
                     evergreen=evergreen,
                 )
             )
-        await self.index.delete_file_chunks(rel)
-        await self.index.upsert_chunks(records)
+        await self.index.replace_file_chunks(rel, records)
         return len(records)
 
     async def index_daily_note(self, rel: str = "") -> None:

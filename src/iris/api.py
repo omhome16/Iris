@@ -35,6 +35,7 @@ from iris.memory.dreaming import DreamEngine
 from iris.memory.files import ConcurrencyError, WorkspaceFiles
 from iris.memory.forgetting import ForgettingEngine, decay_curve
 from iris.memory.index import MemoryIndex
+from iris.memory.provenance import Origin
 from iris.memory.indexer import Reindexer
 from iris.memory.llm import LLMClient
 from iris.memory.skills import SkillLibrary
@@ -52,6 +53,34 @@ def _checkpointer_dsn(dsn: str) -> str:
     return dsn.replace("postgresql+psycopg://", "postgresql://")
 
 
+def _sync_owner_chat_id() -> bool:
+    """The Telegram bridge learns the owner's chat id at the first /start and
+    persists it to data/owner.json. The core previously relied on a copy in
+    .env (OWNER_CHAT_ID) that nothing ever updated — so morning briefs and
+    scheduled deliveries stayed silent after the bridge discovered the owner.
+    Sync the bridge's answer into settings when the env value is unset."""
+    if settings.owner_chat_id:
+        return True
+    env_file = os.environ.get("OWNER_FILE", "")
+    candidates: list[Path] = [Path(env_file)] if env_file else []
+    candidates += [
+        Path(settings.workspace_dir).parent / "mcp_servers" / "telegram" / "data" / "owner.json",
+        Path("mcp_servers") / "telegram" / "data" / "owner.json",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            chat_id = int(json.loads(path.read_text(encoding="utf-8")).get("chat_id"))
+        except Exception:  # noqa: BLE001 - best-effort sync
+            continue
+        if chat_id:
+            settings.owner_chat_id = chat_id
+            log.info("owner chat id synced from bridge (%s): %s", path, chat_id)
+            return True
+    return False
+
+
 def _text_of(content: object) -> str:
     """Text from a message content that may be a plain string or a list of
     content blocks (OpenAI image/text format)."""
@@ -67,6 +96,7 @@ def _text_of(content: object) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     files = WorkspaceFiles(Path(settings.workspace_dir))
+    _sync_owner_chat_id()
 
     from iris.ledger import CostLedger
 
@@ -110,15 +140,20 @@ async def lifespan(app: FastAPI):
         else:
             # Bridge may still be starting; retry in the background so the
             # channel appears as soon as it is reachable (no boot dependency).
+            # Previously the retry gave up after 10x5s and the channel stayed
+            # dead until restart — matching the repeated "telegram MCP
+            # unavailable" errors in the logs.
             log.warning("telegram channel not connected; retrying in background")
 
             async def _retry_telegram() -> None:
-                for _ in range(10):
-                    await asyncio.sleep(5)
+                delay = 5.0
+                while True:
+                    await asyncio.sleep(delay)
                     if await telegram.connect():
                         runtime.telegram = telegram
                         log.info("telegram channel connected on retry")
                         return
+                    delay = min(delay * 1.5, 120.0)
 
             asyncio.create_task(_retry_telegram())
 
@@ -269,9 +304,9 @@ async def chat_stream(
             req.message, session_id=req.session_id, image=req.image
         ):
             if mode == "custom":
-                yield {"data": json.dumps(data)}
+                yield f"data: {json.dumps(data)}\n\n"
             elif mode == "error":
-                yield {"data": json.dumps({"kind": "reply", "text": data})}
+                yield f"data: {json.dumps({'kind': 'reply', 'text': data})}\n\n"
             elif mode == "updates":
                 for node, update in (data or {}).items():
                     for m in (update or {}).get("messages", []):
@@ -279,7 +314,7 @@ async def chat_stream(
                         mcalls = m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)
                         mcontent = m.get("content") if isinstance(m, dict) else m.content
                         if mtype == "ai" and not mcalls:
-                            yield {"data": json.dumps({"kind": "reply", "text": _text_of(mcontent)})}
+                            yield f"data: {json.dumps({'kind': 'reply', 'text': _text_of(mcontent)})}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
@@ -465,9 +500,15 @@ class ForgetConfirmRequest(BaseModel):
 async def forget_search(
     req: ForgetRequest, _token: None = Depends(require_token)
 ) -> dict:
-    """HITL phase 1: find candidate memories matching the query."""
+    """HITL phase 1: find candidate memories matching the query.
+
+    Restricted to MEMORY.md: the confirm step only edits curated owner
+    memory, so returning daily-note candidates was a dead end."""
     runtime: Runtime = app.state.runtime
-    hits = await runtime.index.search(req.query, top_k=3, mrr_top_k=1)
+    hits = await runtime.index.search(
+        req.query, top_k=3, mrr_top_k=1, require_origin={Origin.OWNER}
+    )
+    hits = [h for h in hits if h.path == "MEMORY.md"]
     return {
         "candidates": [
             {
@@ -501,7 +542,18 @@ async def forget_confirm(
     if chunk is None:
         return {"ok": False, "error": "chunk not found in index"}
     marker = f"(superseded {datetime.now().isoformat()[:10]})"
+    # Indexed chunks may carry contextual-retrieval headers, so an exact
+    # replace can miss even when the fact is present in the raw file —
+    # fall back to a line-level match before giving up.
     new = content.replace(chunk["content"], f"{chunk['content']} {marker}")
+    if new == content:
+        probe = str(chunk["content"]).strip().splitlines()[0][:120]
+        target_line = next(
+            (line for line in content.splitlines() if probe in line), None
+        )
+        if target_line is None:
+            return {"ok": False, "error": "could not locate the entry text in MEMORY.md"}
+        new = content.replace(target_line, f"{target_line} {marker}")
     if new == content:
         return {"ok": False, "error": "could not locate the entry text in MEMORY.md"}
     try:

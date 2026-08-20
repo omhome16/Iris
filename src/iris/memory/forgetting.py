@@ -52,10 +52,10 @@ class ForgettingEngine:
         rows = await self.index.list_chunks()
         out = []
         for r in rows:
+            age = max(timedelta(0), (today or date.today()) - r["observed_at"]).days
             if r["evergreen"]:
                 retention = 1.0
             else:
-                age = max(timedelta(0), (today or date.today()) - r["observed_at"]).days
                 retention = retention_fraction(age)
             out.append(
                 {
@@ -63,6 +63,7 @@ class ForgettingEngine:
                     "chunk_index": r["chunk_index"],
                     "content": r["content"][:80],
                     "observed_at": r["observed_at"].isoformat(),
+                    "age_days": age,
                     "retention": round(retention, 4),
                     "evergreen": r["evergreen"],
                 }

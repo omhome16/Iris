@@ -75,6 +75,14 @@ def trim_messages(messages: list, keep_tokens: int) -> list:
         return messages  # everything already fits — nothing to trim
     while cutoff < len(messages) and getattr(messages[cutoff], "type", "") == "tool":
         cutoff += 1
+    # The front of the kept window must not be an AI message whose tool
+    # results were cut away: its dangling tool_calls make the provider
+    # (and LangGraph's message validation) choke on the next turn.
+    if cutoff < len(messages) and getattr(messages[cutoff], "type", "") == "ai" \
+            and getattr(messages[cutoff], "tool_calls", None):
+        cutoff += 1
+        while cutoff < len(messages) and getattr(messages[cutoff], "type", "") == "tool":
+            cutoff += 1
     return messages[cutoff:]
 
 
