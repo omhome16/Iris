@@ -1,4 +1,4 @@
-/* Iris console client — chat + live memory panels. Vanilla JS. */
+/* Iris console client — chat + collapsible memory sidebar. Vanilla JS. */
 
 const $ = (id) => document.getElementById(id);
 
@@ -36,7 +36,44 @@ $("theme-toggle").addEventListener("click", () => {
   localStorage.setItem("iris-theme", next);
 });
 
-/* ── Status + KPIs ─────────────────────────────────────────────── */
+/* ── Sidebar ───────────────────────────────────────────────────── */
+
+const SIDEBAR_KEY = "iris-sidebar-collapsed";
+
+function setSidebar(collapsed) {
+  $("sidebar").classList.toggle("collapsed", collapsed);
+  localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "0");
+}
+
+function isNarrow() {
+  return window.matchMedia("(max-width: 860px)").matches;
+}
+
+function initSidebar() {
+  const saved = localStorage.getItem(SIDEBAR_KEY);
+  setSidebar(saved === "1" ? true : saved === "0" ? false : isNarrow());
+}
+
+$("side-toggle").addEventListener("click", () => {
+  setSidebar(!$("sidebar").classList.contains("collapsed"));
+});
+
+document.querySelectorAll(".side-head").forEach((head) => {
+  head.addEventListener("click", () => {
+    const section = head.closest(".side-section");
+    if ($("sidebar").classList.contains("collapsed")) {
+      setSidebar(false);
+      section.classList.add("open");
+      head.setAttribute("aria-expanded", "true");
+      return;
+    }
+    const willOpen = !section.classList.contains("open");
+    section.classList.toggle("open", willOpen);
+    head.setAttribute("aria-expanded", String(willOpen));
+  });
+});
+
+/* ── Status ────────────────────────────────────────────────────── */
 
 async function refreshStatus() {
   try {
@@ -81,9 +118,50 @@ $("composer").addEventListener("submit", async (e) => {
   state.busy = true;
   $("send-btn").disabled = true;
   $("hint").textContent = "iris is thinking…";
+  const body = $("activity-body");
+  body.innerHTML = "";
+  let reply = "";
   try {
-    const res = await api("/api/chat", "POST", { message: text, session_id: state.session });
-    addMsg("iris", res.reply || res.error || "(no reply)");
+    const res = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text, session_id: state.session }),
+    });
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line.startsWith("data: ")) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+        if (ev.kind === "text") {
+          reply += ev.delta || "";
+          $("hint").textContent = "iris is typing…";
+        } else if (ev.kind === "reply") {
+          reply = ev.text || reply;
+        } else if (ev.kind === "thinking" && ev.delta) {
+          const row = document.createElement("div");
+          row.className = "act-thinking";
+          row.textContent = ev.delta;
+          body.appendChild(row);
+          body.scrollTop = body.scrollHeight;
+        } else if (ev.kind === "tool_call" && ev.call) {
+          const row = document.createElement("div");
+          row.className = "act-tool";
+          row.textContent = "🔧 " + (ev.call.name || "tool") + " " + JSON.stringify(ev.call.args || {});
+          body.appendChild(row);
+          body.scrollTop = body.scrollHeight;
+        }
+      }
+    }
+    addMsg("iris", reply || "(no reply)");
     $("hint").textContent = "";
     refreshPanels();
   } catch (err) {
@@ -95,41 +173,43 @@ $("composer").addEventListener("submit", async (e) => {
   input.focus();
 });
 
-/* ── Memory panels ─────────────────────────────────────────────── */
+/* ── Sidebar panels ────────────────────────────────────────────── */
 
 async function refreshPanels() {
-  const [mind, ret, rot, skills, tasks, costs] = await Promise.all([
+  const [mind, ret, rot, skills, tasks, costs, traces] = await Promise.all([
     api("/api/mind"),
     api("/api/retention"),
     api("/api/rot"),
     api("/api/skills"),
     api("/api/tasks"),
     api("/api/costs"),
+    api("/api/traces"),
   ]);
 
   if (mind.memory !== undefined) {
     state.memoryCache = mind;
     renderMemoryTab();
     $("dreams-body").textContent = mind.dreams_tail || "(no dreams yet)";
-    if (mind.hallucination_flags !== undefined) {
-      $("kpi-flags").textContent = mind.hallucination_flags;
-    }
+    const flags = mind.hallucination_flags ?? 0;
+    $("flags-num").textContent = flags;
+    $("count-flags").textContent = flags > 0 ? flags : "";
   }
 
   if (ret.chunks) {
-    $("kpi-chunks").textContent = ret.chunks.length;
-    $("kpi-byorigin").textContent = (mind.stats && mind.stats.by_origin
-      ? Object.entries(mind.stats.by_origin).map(([k, v]) => `${k} ${v}`).join(" · ")
-      : "by origin");
+    $("count-chunks").textContent = ret.chunks.length;
     const avg = ret.chunks.length
       ? (ret.chunks.reduce((a, c) => a + (c.retention ?? 1), 0) / ret.chunks.length).toFixed(2)
       : "—";
-    $("kpi-retention").textContent = avg;
+    $("memory-meta").textContent =
+      "avg retention " + avg + " · " +
+      (mind.stats && mind.stats.by_origin
+        ? Object.entries(mind.stats.by_origin).map(([k, v]) => `${k} ${v}`).join(" · ")
+        : "by origin");
     drawCurve(ret.curve || [], ret.chunks);
   }
 
   if (rot.entries) {
-    $("kpi-rot").textContent = rot.count ?? rot.entries.length;
+    $("count-rot").textContent = rot.count ?? rot.entries.length;
     const list = $("rot-list");
     list.innerHTML = "";
     if (!rot.entries.length) {
@@ -150,7 +230,7 @@ async function refreshPanels() {
   }
 
   if (skills.skills) {
-    $("kpi-skills").textContent = skills.skills.length;
+    $("count-skills").textContent = skills.skills.length;
     const list = $("skill-list");
     if (!skills.skills.length) {
       list.innerHTML = '<div class="empty">no skills yet — teach me one in chat</div>';
@@ -172,7 +252,7 @@ async function refreshPanels() {
   }
 
   if (tasks.tasks) {
-    $("kpi-tasks").textContent = tasks.tasks.length;
+    $("count-tasks").textContent = tasks.tasks.length;
     const list = $("task-list");
     if (!tasks.tasks.length) {
       list.innerHTML = '<div class="empty">no scheduled tasks</div>';
@@ -194,9 +274,9 @@ async function refreshPanels() {
   }
 
   if (costs.totals !== undefined) {
-    $("kpi-cost").textContent = "$" + costs.totals.cost.toFixed(2);
-    $("cost-requests").textContent = costs.totals.requests + " requests";
-    $("cost-foot").textContent = "today: $" + (costs.daily.length ? costs.daily[0].cost.toFixed(3) : "0.000");
+    $("count-cost").textContent = "$" + costs.totals.cost.toFixed(2);
+    const hit = (costs.totals.cache_hit_rate || 0) * 100;
+    $("cost-cache").textContent = "cache hit: " + hit.toFixed(1) + "%";
     const list = $("cost-list");
     list.innerHTML = "";
     for (const d of costs.daily.slice(0, 7)) {
@@ -207,9 +287,32 @@ async function refreshPanels() {
       n.textContent = d.day;
       const c = document.createElement("div");
       c.className = "skill-desc";
-      c.textContent = `$${d.cost.toFixed(3)} · ${d.requests} req · ${d.prompt_tokens + d.completion_tokens} tok`;
+      c.textContent = `$${d.cost.toFixed(3)} · ${d.requests} req · ${d.prompt_tokens + d.completion_tokens} tok` +
+        (d.cache_hit_rate ? ` · cache ${(d.cache_hit_rate * 100).toFixed(1)}%` : "");
       item.append(n, c);
       list.appendChild(item);
+    }
+  }
+
+  if (traces.traces) {
+    const list = $("trace-list");
+    list.innerHTML = "";
+    if (!traces.traces.length) {
+      list.innerHTML = '<div class="empty">no turns yet — say something in chat</div>';
+    } else {
+      for (const t of traces.traces.slice(0, 10)) {
+        const item = document.createElement("div");
+        item.className = "skill-item";
+        const n = document.createElement("div");
+        n.className = "skill-name";
+        n.textContent = `${t.ts} · ${t.latency_ms}ms` + (t.pending ? " · ⏸ approval" : "");
+        const d = document.createElement("div");
+        d.className = "skill-desc";
+        const tools = (t.tools || []).map((x) => x.name).join(", ");
+        d.textContent = `you: ${t.user || "—"}${tools ? ` · 🔧 ${tools}` : ""}`;
+        item.append(n, d);
+        list.appendChild(item);
+      }
     }
   }
 }
@@ -275,6 +378,7 @@ $("sleep-btn").addEventListener("click", async () => {
 
 /* ── Boot ─────────────────────────────────────────────────────── */
 
+initSidebar();
 refreshStatus();
 refreshPanels();
 setInterval(refreshStatus, 30000);

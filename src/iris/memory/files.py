@@ -17,6 +17,7 @@ import os
 from datetime import date
 from pathlib import Path
 
+from iris.config import settings
 from iris.memory.chunking import estimate_tokens
 
 
@@ -93,6 +94,38 @@ class WorkspaceFiles:
     def append_dreams(self, entry: str) -> None:
         with self.dreams.open("a", encoding="utf-8") as fh:
             fh.write(entry.rstrip() + "\n\n")
+
+    # ── recall feedback (episodic: the agent went back to a memory) ──────
+    def recall_feedback_path(self) -> Path:
+        return self.root / ".dreams" / "recall_feedback.jsonl"
+
+    def record_recall_feedback(self, path: str, content: str) -> None:
+        """Log one recalled chunk. Rotates at max bytes (one generation kept).
+
+        `content` is capped to a short snippet — enough for the Light phase
+        to match staged signals against, without duplicating the note itself.
+        """
+        from datetime import datetime
+
+        import json
+
+        file = self.recall_feedback_path()
+        max_bytes = settings.recall_feedback_max_bytes
+        if file.exists() and file.stat().st_size >= max_bytes:
+            old = file.with_suffix(".jsonl.1")
+            if old.exists():
+                old.unlink()
+            file.rename(old)
+        line = json.dumps(
+            {
+                "path": path[:200],
+                "content": content[:400],
+                "observed_at": datetime.now().isoformat(timespec="seconds"),
+            },
+            ensure_ascii=False,
+        )
+        with file.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
 
     def append_curated(self, path: Path, entry: str) -> None:
         """Append one entry to a curated file (e.g. explicit remember)."""

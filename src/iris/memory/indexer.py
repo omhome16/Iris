@@ -15,9 +15,10 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
-from iris.memory.chunking import chunk_text, estimate_tokens
+from iris.memory.chunking import chunk_text, contextualize_chunks, estimate_tokens
 from iris.memory.files import WorkspaceFiles
 from iris.memory.index import ChunkRecord, MemoryIndex
+from iris.memory.llm import LLMClient
 from iris.memory.provenance import Origin, Provenance
 
 _DATE_RE = re.compile(r"memory/(\d{4})-(\d{2})-(\d{2})\.md$")
@@ -37,9 +38,10 @@ def observed_date_for(rel: str) -> date | None:
 
 
 class Reindexer:
-    def __init__(self, files: WorkspaceFiles, index: MemoryIndex) -> None:
+    def __init__(self, files: WorkspaceFiles, index: MemoryIndex, llm: LLMClient | None = None) -> None:
         self.files = files
         self.index = index
+        self.llm = llm
 
     def tier_for(self, rel_path: str) -> tuple[Origin, bool]:
         if rel_path in ("MEMORY.md", "USER.md"):
@@ -74,7 +76,12 @@ class Reindexer:
     async def _index_file(self, rel: str, text: str, origin: Origin, evergreen: bool) -> int:
         if not text.strip():
             return 0
-        chunks = chunk_text(text)
+        chunks = await contextualize_chunks(
+            chunk_text(text),
+            llm=self.llm,
+            cache_dir=self.files.root / ".dreams" / "contexts",
+            text=text,
+        )
         observed = observed_date_for(rel)
         records = []
         for i, chunk in enumerate(chunks):

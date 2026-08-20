@@ -37,7 +37,8 @@ def test_ledger_append_and_totals(tmp_path: Path):
 
     daily = CostLedger(path).daily_totals()
     assert len(daily) == 1
-    assert daily[0]["day"] == datetime.now(timezone.utc).date().isoformat()
+    # ledger converts timestamps to the machine's local day
+    assert daily[0]["day"] == datetime.now().date().isoformat()
     assert daily[0]["cost"] == pytest.approx(3 * 0.55, abs=1e-4)
 
     weekly = CostLedger(path).weekly_totals()
@@ -50,6 +51,57 @@ def test_ledger_unknown_model_records_zero_cost(tmp_path: Path):
     totals = ledger.totals()
     assert totals["requests"] == 1
     assert totals["cost"] == 0.0
+
+
+def test_ledger_cache_tokens_and_hit_rate(tmp_path: Path):
+    path = tmp_path / "calls.jsonl"
+    ledger = CostLedger(path)
+    ledger.record(model="gemini/gemini-2.5-flash", tier="strong", prompt_tokens=400, completion_tokens=10, cached_tokens=600)
+    ledger.record(model="gemini/gemini-2.5-flash", tier="strong", prompt_tokens=400, completion_tokens=10, cached_tokens=600)
+    ledger.record(model="gemini/gemini-2.5-flash", tier="cheap", prompt_tokens=100, completion_tokens=5)
+
+    totals = ledger.totals()
+    assert totals["cached_tokens"] == 1200
+    assert totals["cache_hit_rate"] == pytest.approx(1200 / (900 + 1200), abs=1e-4)
+    daily = ledger.daily_totals()
+    assert daily[0]["cache_hit_rate"] == totals["cache_hit_rate"]
+
+
+async def test_llm_extracts_cached_tokens_both_provider_styles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import iris.memory.llm as llm_mod
+
+    class FakeUsage:
+        prompt_tokens = 500
+        completion_tokens = 20
+        cachedContentTokenCount = 300  # Gemini-style
+
+    async def fake_acompletion(**kwargs):
+        return type("R", (), {
+            "choices": [type("C", (), {"message": type("M", (), {"content": "ok", "tool_calls": None})()})()],
+            "usage": FakeUsage(),
+        })()
+
+    monkeypatch.setattr(llm_mod.litellm, "acompletion", fake_acompletion)
+    ledger = CostLedger(tmp_path / "calls.jsonl")
+    client = LLMClient(ledger=ledger)
+    await client.complete([{"role": "user", "content": "x"}], tier="cheap")
+    assert ledger.totals()["cached_tokens"] == 300
+    assert ledger.totals()["cache_hit_rate"] == 300 / 800
+
+    class OpenAiUsage:
+        prompt_tokens = 500
+        completion_tokens = 20
+        prompt_tokens_details = type("D", (), {"cached_tokens": 450})()
+
+    async def fake2(**kwargs):
+        return type("R", (), {
+            "choices": [type("C", (), {"message": type("M", (), {"content": "ok", "tool_calls": None})()})()],
+            "usage": OpenAiUsage(),
+        })()
+
+    monkeypatch.setattr(llm_mod.litellm, "acompletion", fake2)
+    await client.complete([{"role": "user", "content": "x"}], tier="cheap")
+    assert ledger.totals()["cached_tokens"] == 750
 
 
 def test_ledger_corrupt_line_skipped(tmp_path: Path):

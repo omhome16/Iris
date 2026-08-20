@@ -87,6 +87,15 @@ class ContextAssembler:
                     block = "\n".join(f"- ({h.observed_at}) {h.content}" for h in esc)
                     blocks.append(f"## Escalation lane (daily notes)\n{block}")
 
+            # Deep research: temporal/multi-hop questions get a bounded
+            # cheap-tier research pass before the agent speaks.
+            if needs_escalation(user_message) and self.runtime.research is not None:
+                report = await self.runtime.research.research(  # type: ignore[attr-defined]
+                    user_message, session_id=session_id
+                )
+                if report:
+                    blocks.append(f"## Deep research report\n{report}")
+
             parts.extend(blocks)
 
         # Skill trigger injection: only name + description + match, never the

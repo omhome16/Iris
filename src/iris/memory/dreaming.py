@@ -47,6 +47,7 @@ class StagedSignal:
     target: str
     provenance: Provenance
     occurrences: int = 1
+    recall_hits: int = 0
 
     @property
     def promotable(self) -> bool:
@@ -91,10 +92,22 @@ class LightPhase:
         imp = signal.importance / 10.0
         richness = min(1.0, len(signal.content) / 200.0)
         triggers = min(1.0, len(signal.triggers) / 4.0)
+        recall = min(1.0, signal.recall_hits / 3.0)
         w = settings.dream_light_weights
-        return w[0] * occ + w[1] * imp + w[2] * richness + w[3] * triggers
+        return w[0] * occ + w[1] * imp + w[2] * richness + w[3] * triggers + w[4] * recall
 
-    def run(self, staging_dir: Path) -> tuple[list[StagedSignal], int]:
+    @staticmethod
+    def _recall_counts(feedback_file: Path | None) -> list[str]:
+        """Normalized content snippets of recalled chunks (best-effort)."""
+        if feedback_file is None or not feedback_file.exists():
+            return []
+        try:
+            lines = feedback_file.read_text(encoding="utf-8").splitlines()
+        except OSError:  # noqa: BLE001 - feedback is best-effort
+            return []
+        return [str(json.loads(line).get("content", "")).casefold() for line in lines if line.strip()]
+
+    def run(self, staging_dir: Path, feedback_file: Path | None = None) -> tuple[list[StagedSignal], int]:
         """Read staging files, dedupe by normalized content, gate promotion.
 
         Returns (promoted, staged_count). Demoted signals stay in staging
@@ -126,6 +139,14 @@ class LightPhase:
                         existing.importance = sig.importance
                 else:
                     by_content[key] = sig
+
+        recalled = self._recall_counts(feedback_file)
+        for sig in by_content.values():
+            if recalled:
+                sig.recall_hits = min(
+                    3,
+                    sum(1 for rc in recalled if sig.content.casefold() in rc),
+                )
 
         promoted = [
             s for s in by_content.values()
@@ -283,7 +304,10 @@ class DreamEngine:
         self.files = files
 
     async def sleep(self) -> DreamRecord:
-        promoted, staged = self.light.run(self.files.staging_dir())
+        promoted, staged = self.light.run(
+            self.files.staging_dir(),
+            feedback_file=self.files.recall_feedback_path(),
+        )
         themes = await self.rem.run(promoted)
         record = await self.deep.run(themes, promoted)
         record.staged = staged

@@ -58,6 +58,14 @@ class TelegramMCPClient:
         result = await self._client.call_tool("send_message", {"chat_id": chat_id, "text": text})
         return _text(result)
 
+    async def send_photo(self, chat_id: int, photo_url: str, caption: str = "") -> str:
+        if not self.connected:
+            return "telegram channel unavailable"
+        result = await self._client.call_tool(
+            "send_photo", {"chat_id": chat_id, "photo_url": photo_url, "caption": caption}
+        )
+        return _text(result)
+
     async def get_chat_history(self, chat_id: int, limit: int = 10) -> str:
         if not self.connected:
             return "telegram channel unavailable"

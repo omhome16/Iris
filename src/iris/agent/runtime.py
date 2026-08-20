@@ -19,6 +19,7 @@ from iris.memory.llm import LLMClient
 from iris.memory.skills import SkillLibrary
 from iris.sandbox import Sandbox
 from iris.tasks import TaskScheduler
+from iris.trace import TraceLogger
 
 
 @dataclass(slots=True)
@@ -33,4 +34,6 @@ class Runtime:
     sandbox: Sandbox
     telegram: TelegramMCPClient | None = None
     tasks: TaskScheduler | None = None
+    research: object | None = None
+    traces: TraceLogger | None = None
     on_onboarded: Callable[[], None] | None = field(default=None, init=False)

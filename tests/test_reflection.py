@@ -28,8 +28,8 @@ class RetrieveThenReflectLLM(LLMClient):
     async def complete_with_tools(self, messages, tools=None, **kwargs):
         self.calls += 1
         if self.calls == 1:
-            return "", [{"name": "memory_search", "args": {"query": "lease"}}]
-        return "Your lease renews on September 1st 2026.", []
+            return "", [{"name": "memory_search", "args": {"query": "lease"}}], ""
+        return "Your lease renews on September 1st 2026.", [], ""
 
     async def complete(self, messages, **kwargs):
         user = messages[-1]["content"] if messages else ""

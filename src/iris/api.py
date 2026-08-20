@@ -10,6 +10,7 @@ Boot sequence (lifespan):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -22,10 +23,11 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from fastapi import Depends, FastAPI, File, Form, UploadFile
+from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
 
-from iris.agent.chat import ChatGraph
+from iris.agent.chat import ApprovalRequired, ChatGraph
 from iris.agent.runtime import Runtime
 from iris.channels.telegram_mcp import TelegramMCPClient
 from iris.config import settings
@@ -38,6 +40,7 @@ from iris.memory.llm import LLMClient
 from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
+from iris.trace import TraceLogger
 from iris.scheduler import build_scheduler
 from iris.security import require_token, warn_if_unset
 from iris.voice import transcribe
@@ -47,6 +50,18 @@ log = logging.getLogger("iris")
 
 def _checkpointer_dsn(dsn: str) -> str:
     return dsn.replace("postgresql+psycopg://", "postgresql://")
+
+
+def _text_of(content: object) -> str:
+    """Text from a message content that may be a plain string or a list of
+    content blocks (OpenAI image/text format)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            str(p.get("text", "")) for p in content if isinstance(p, dict)
+        )
+    return ""
 
 
 @asynccontextmanager
@@ -60,7 +75,7 @@ async def lifespan(app: FastAPI):
     index = MemoryIndex(settings.postgres_dsn, llm)
     await index.connect()
 
-    reindexer = Reindexer(files, index)
+    reindexer = Reindexer(files, index, llm)
     try:
         n = await reindexer.reindex_all()
         log.info("memory index ready: %d chunks reindexed", n)
@@ -82,7 +97,12 @@ async def lifespan(app: FastAPI):
             forgetting=ForgettingEngine(index),
             skills=SkillLibrary(files),
             sandbox=Sandbox(Path(settings.sandbox_dir)),
+            traces=TraceLogger(files.root / "config" / "traces.jsonl"),
         )
+
+        from iris.agent.subagents import ResearchSubagent
+
+        runtime.research = ResearchSubagent(runtime)
 
         telegram = TelegramMCPClient(settings.telegram_mcp_url)
         if await telegram.connect():
@@ -143,11 +163,19 @@ warn_if_unset()
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
+    image: str | None = None  # base64 data URI (data:image/...;base64,...)
+
+
+class ChatResumeRequest(BaseModel):
+    session_id: str
+    decision: str = "cancelled"
 
 
 class ChatResponse(BaseModel):
     reply: str
     onboarded: bool
+    pending: bool = False
+    approval: dict | None = None  # human-in-the-loop payload when pending
 
 
 @app.get("/health")
@@ -161,10 +189,21 @@ async def chat(
     req: ChatRequest, _token: None = Depends(require_token)
 ) -> ChatResponse:
     """One chat turn through the durable graph. Routes to the onboarding
-    wizard until identity is born; then the ReAct loop."""
+    wizard until identity is born; then the ReAct loop.
+
+    When a tool asks for approval (forget), the turn halts and the response
+    carries `pending=True` with the approval payload; resume via
+    POST /chat/resume."""
     graph: ChatGraph = app.state.graph
+    pending: dict | None = None
     try:
-        reply = await asyncio.wait_for(graph.respond(req.message, session_id=req.session_id), timeout=120.0)
+        reply = await asyncio.wait_for(
+            graph.respond(req.message, session_id=req.session_id, image=req.image),
+            timeout=120.0,
+        )
+    except ApprovalRequired as exc:
+        pending = exc.payload
+        reply = "I need your approval before doing that — resume with POST /chat/resume (decision: approved | cancelled)."
     except TimeoutError:
         log.warning("chat turn exceeded 120s budget; returning fallback")
         reply = "I'm still thinking — the language model is under load right now. Give me a minute and say that again."
@@ -173,7 +212,76 @@ async def chat(
         reply = f"I hit an unexpected error ({type(exc).__name__}) — say that again, or try later."
     # wizard state lives on disk; reload for a fresh read (graph may have run it)
     wizard = OnboardingWizard(app.state.runtime.files)
+    return ChatResponse(
+        reply=reply,
+        onboarded=wizard.onboarded,
+        pending=pending is not None,
+        approval=pending,
+    )
+
+
+@app.post("/chat/resume", response_model=ChatResponse)
+async def chat_resume(
+    req: ChatResumeRequest, _token: None = Depends(require_token)
+) -> ChatResponse:
+    """Resume an interrupted turn (human-in-the-loop approval) with the
+    owner's decision: "approved" performs the pending action, anything else
+    cancels it. The existing two-phase endpoints (/forget, /forget/confirm)
+    remain as the fallback path."""
+    graph: ChatGraph = app.state.graph
+    try:
+        reply = await asyncio.wait_for(
+            graph.resume(req.session_id, decision=req.decision),
+            timeout=120.0,
+        )
+    except ApprovalRequired as exc:
+        return ChatResponse(
+            reply="I need your approval before doing that — resume with POST /chat/resume (decision: approved | cancelled).",
+            onboarded=True,
+            pending=True,
+            approval=exc.payload,
+        )
+    except TimeoutError:
+        reply = "I'm still thinking — the language model is under load right now. Give me a minute and say that again."
+    except Exception as exc:  # noqa: BLE001
+        log.exception("chat resume failed")
+        reply = f"I hit an unexpected error ({type(exc).__name__}) — say that again, or try later."
+    wizard = OnboardingWizard(app.state.runtime.files)
     return ChatResponse(reply=reply, onboarded=wizard.onboarded)
+
+
+@app.post("/chat/stream")
+async def chat_stream(
+    req: ChatRequest, _token: None = Depends(require_token)
+) -> StreamingResponse:
+    """SSE streaming chat with a visible mind.
+
+    Events (named `message`):
+    - {"kind": "thinking", "delta": ...}   reasoning tokens
+    - {"kind": "text", "delta": ...}       reply tokens
+    - {"kind": "tool_call", "call": {...}} tool invocation
+    - {"kind": "reply", "text": ...}       final reply (last event)
+    """
+    graph: ChatGraph = app.state.graph
+
+    async def gen():
+        async for mode, data in graph.respond_stream(
+            req.message, session_id=req.session_id, image=req.image
+        ):
+            if mode == "custom":
+                yield {"data": json.dumps(data)}
+            elif mode == "error":
+                yield {"data": json.dumps({"kind": "reply", "text": data})}
+            elif mode == "updates":
+                for node, update in (data or {}).items():
+                    for m in (update or {}).get("messages", []):
+                        mtype = m.get("type") if isinstance(m, dict) else getattr(m, "type", "")
+                        mcalls = m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)
+                        mcontent = m.get("content") if isinstance(m, dict) else m.content
+                        if mtype == "ai" and not mcalls:
+                            yield {"data": json.dumps({"kind": "reply", "text": _text_of(mcontent)})}
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/voice")
@@ -206,6 +314,8 @@ async def voice_turn(
         reply = await asyncio.wait_for(
             graph.respond(transcript, session_id=user_id), timeout=120.0
         )
+    except ApprovalRequired as exc:
+        reply = f"I need your approval before doing that ({exc.payload.get('action', 'action')}). Say it again to try once more."
     except TimeoutError:
         reply = "I'm still thinking — the language model is under load. Say that again in a bit."
     except Exception as exc:  # noqa: BLE001
@@ -333,6 +443,13 @@ async def costs(_token: None = Depends(require_token)) -> dict:
         "daily": ledger.daily_totals(),
         "weekly": ledger.weekly_totals(),
     }
+
+
+@app.get("/traces")
+async def traces(limit: int = 20, _token: None = Depends(require_token)) -> dict:
+    """Recent turn traces (config/traces.jsonl, newest first)."""
+    logger = app.state.runtime.traces
+    return {"traces": logger.recent(max(1, min(limit, 100))) if logger else []}
 
 
 class ForgetRequest(BaseModel):

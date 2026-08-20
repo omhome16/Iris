@@ -13,7 +13,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from langgraph.types import interrupt
+
 from iris.agent.runtime import Runtime
+from iris.config import settings
 from iris.ingest import fetch_text, ingest_url, web_search
 from iris.memory.files import ConcurrencyError
 from iris.memory.provenance import Origin, Provenance
@@ -58,6 +61,13 @@ def build_tools(runtime: Runtime) -> list[Tool]:
             hits = await runtime.index.escalate(query, top_k=top_k, mrr_top_k=top_k)
         else:
             hits = await runtime.index.search(query, top_k=top_k, mrr_top_k=top_k)
+        if settings.recall_feedback_enabled:
+            seen: set[str] = set()
+            for h in hits[:top_k]:
+                if h.path in seen:
+                    continue
+                seen.add(h.path)
+                runtime.files.record_recall_feedback(h.path, h.content)
         return _ok(
             results=[
                 {
@@ -93,6 +103,35 @@ def build_tools(runtime: Runtime) -> list[Tool]:
                 "required": ["query"],
             },
             memory_search,
+        )
+    )
+
+    async def deep_dive(query: str) -> str:
+        """Run the bounded research subagent (cheap tier, max 3 tool rounds)
+        and return its report. Use for temporal or multi-hop questions that
+        need digging through daily notes and sandbox files."""
+        if runtime.research is None:
+            return _err("research subagent not available")
+        try:
+            report = await runtime.research.research(query)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 - tool errors surface as JSON
+            return _err(str(exc))
+        return _ok(report=report)
+
+    tools.append(
+        Tool(
+            "deep_dive",
+            "Run a bounded research pass (cheap tier) over long-term memory, "
+            "daily notes, and sandbox files. Use for temporal, multi-hop, or "
+            "'dig through everything' questions before answering.",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "what to research"},
+                },
+                "required": ["query"],
+            },
+            deep_dive,
         )
     )
 
@@ -310,11 +349,24 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     )
 
     async def forget(query: str) -> str:
-        """Mark a matching memory as superseded (never hard-delete)."""
+        """Retire a matching memory as superseded. Human-in-the-loop: the
+        graph halts on an approval interrupt; only an explicit "approved"
+        resume performs the write."""
         hits = await runtime.index.search(query, top_k=3, mrr_top_k=1)
         if not hits:
             return _err("no memory matched")
         hit = hits[0]
+        decision = interrupt(
+            {
+                "type": "approval",
+                "action": "forget",
+                "query": query,
+                "hit": hit.content[:120],
+                "path": hit.path,
+            }
+        )
+        if decision != "approved":
+            return _err("forget cancelled")
         current = runtime.files.read(runtime.files.memory)
         marker = f"(superseded {datetime.now().isoformat()[:10]})"
         new = current.replace(hit.content, f"{hit.content} {marker}")
@@ -528,6 +580,30 @@ def build_tools(runtime: Runtime) -> list[Tool]:
                     "required": ["chat_id"],
                 },
                 get_chat_history,
+            )
+        )
+
+        async def send_photo(chat_id: int, photo_url: str, caption: str = "") -> str:
+            if not runtime.telegram.connected:
+                return _err("telegram channel unavailable")
+            return await runtime.telegram.send_photo(chat_id, photo_url, caption)
+
+        tools.append(
+            Tool(
+                "send_photo",
+                "Send a photo to the owner over Telegram by URL (the bridge "
+                "downloads it and posts it with an optional caption). Use to "
+                "deliver a generated image or a relevant picture.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {"type": "integer", "description": "the Telegram chat id to reach"},
+                        "photo_url": {"type": "string", "description": "public URL of the image"},
+                        "caption": {"type": "string", "description": "optional caption"},
+                    },
+                    "required": ["chat_id", "photo_url"],
+                },
+                send_photo,
             )
         )
 

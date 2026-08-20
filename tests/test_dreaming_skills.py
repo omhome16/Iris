@@ -78,6 +78,80 @@ def test_light_gates_by_origin_and_importance(tmp_path: Path):
     assert "Owner explicitly wants to be called Captain" in contents
 
 
+def test_light_recall_feedback_boosts_score(tmp_path: Path):
+    files = WorkspaceFiles(tmp_path)
+    write_staging(
+        files,
+        [
+            '{"op":"ADD","content":"Owner is allergic to peanuts","importance":5.5,"triggers":["allergy","peanut"],"target":"","provenance":{"origin":"agent","source":"chat"}}',
+            '{"op":"ADD","content":"Owner owns a blue kayak","importance":5.5,"triggers":["kayak"],"target":"","provenance":{"origin":"agent","source":"chat"}}',
+        ],
+    )
+    feedback = files.recall_feedback_path()
+    feedback.write_text(
+        '{"path":"memory/2026-08-01.md","content":"Owner is allergic to peanuts, keeps an EpiPen","observed_at":"2026-08-20T10:00:00"}\n'
+        '{"path":"memory/2026-08-02.md","content":"note again: owner is allergic to peanuts","observed_at":"2026-08-21T10:00:00"}\n'
+        '{"path":"memory/2026-08-03.md","content":"owner is allergic to peanuts per the clinic letter","observed_at":"2026-08-22T10:00:00"}\n',
+        encoding="utf-8",
+    )
+    # borderline: imp=0.55, occ=0.33, richness=0.15, triggers=0.5 -> 0.31 < gate
+    assert LightPhase().run(files.staging_dir())[0] == []
+    # 3 recall hits: + 0.25*1.0 -> 0.56 >= gate, hit count recorded
+    promoted, _ = LightPhase().run(files.staging_dir(), feedback_file=feedback)
+    by_content = {p.content: p for p in promoted}
+    assert by_content["Owner is allergic to peanuts"].recall_hits == 3
+    assert "Owner owns a blue kayak" not in by_content
+
+
+def test_light_recall_feedback_pushes_borderline_signal_over_gate(tmp_path: Path):
+    files = WorkspaceFiles(tmp_path)
+    write_staging(
+        files,
+        [
+            '{"op":"ADD","content":"Owner prefers oat milk in coffee","importance":5.0,"triggers":["coffee","oat"],"target":"","provenance":{"origin":"agent","source":"chat"}}',
+        ],
+    )
+    feedback = files.recall_feedback_path()
+    feedback.write_text(
+        '{"path":"memory/2026-08-01.md","content":"Owner prefers oat milk in coffee","observed_at":"2026-08-20T10:00:00"}\n'
+        '{"path":"memory/2026-08-02.md","content":"we talked again about owner prefers oat milk in coffee","observed_at":"2026-08-21T10:00:00"}\n'
+        '{"path":"memory/2026-08-03.md","content":"once more: owner prefers oat milk in coffee","observed_at":"2026-08-22T10:00:00"}\n',
+        encoding="utf-8",
+    )
+    # without feedback: occ=0.33, imp=0.5, richness=0.16, triggers=0.5, recall=0
+    #   -> 0.25*0.33 + 0.30*0.5 + 0.10*0.16 + 0.10*0.5 = 0.30 < gate
+    assert LightPhase().run(files.staging_dir())[0] == []
+    # with 3 recall hits: + 0.25*1.0 -> 0.55 >= gate -> promoted
+    promoted, _ = LightPhase().run(files.staging_dir(), feedback_file=feedback)
+    assert [p.content for p in promoted] == ["Owner prefers oat milk in coffee"]
+    plain = StagedSignal(
+        op="ADD", content="Owner prefers oat milk in coffee", importance=5.0,
+        triggers=["coffee", "oat"], target="",
+        provenance=Provenance(origin=Origin.AGENT, source="tests"),
+    )
+    boosted = StagedSignal(
+        op="ADD", content="Owner prefers oat milk in coffee", importance=5.0,
+        triggers=["coffee", "oat"], target="",
+        provenance=Provenance(origin=Origin.AGENT, source="tests"),
+        recall_hits=3,
+    )
+    assert LightPhase().score(boosted) > LightPhase().score(plain)
+
+
+def test_recall_feedback_rotates_at_max_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from iris.config import settings
+
+    monkeypatch.setattr(settings, "recall_feedback_max_bytes", 200)
+    files = WorkspaceFiles(tmp_path)
+    for i in range(10):
+        files.record_recall_feedback(f"memory/2026-08-{i+1:02d}.md", "x" * 100)
+    path = files.recall_feedback_path()
+    assert path.exists()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) <= 2, "file must be rotated before exceeding the budget"
+    assert path.with_suffix(".jsonl.1").exists(), "old generation should be kept"
+
+
 # ── REM phase ───────────────────────────────────────────────────────────────
 
 class JunkLLM:

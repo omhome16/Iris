@@ -17,9 +17,11 @@ Requires env: TELEGRAM_BOT_TOKEN, IRIS_CORE_URL (default http://127.0.0.1:8000)
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -87,6 +89,21 @@ async def send_to_chat(chat_id: int, text: str) -> bool:
 async def send_message(chat_id: int, text: str) -> str:
     ok = await send_to_chat(chat_id, text)
     return json.dumps({"ok": ok, "chat_id": chat_id})
+
+
+@server.tool(name="send_photo", description="Send a photo (by URL) to a Telegram chat.")
+async def send_photo(chat_id: int, photo_url: str, caption: str = "") -> str:
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            dl = await client.get(photo_url)
+            dl.raise_for_status()
+        params: dict = {"chat_id": chat_id, "photo": dl.content}
+        if caption:
+            params["caption"] = caption
+        result = await _tg("sendPhoto", **params)
+        return json.dumps({"ok": result is not None, "chat_id": chat_id})
+    except Exception as exc:  # noqa: BLE001 - a failed send must not break the turn
+        return json.dumps({"ok": False, "error": str(exc)})
 
 
 @server.tool(name="get_chat_history", description="Recent messages in a chat (in-memory bridge log).")
@@ -295,6 +312,92 @@ async def _typing_loop(chat_id: int) -> None:
         return
 
 
+async def _stream_chat_turn(chat_id: int, text: str, image: str | None = None) -> tuple[str, bool]:
+    """Stream a chat turn from /chat/stream into a progressively edited
+    Telegram message: typing indicator while thinking, then a growing reply
+    (throttled edits), with tool activity shown inline. Returns
+    (final_reply_text, delivered) where delivered means at least one message
+    was sent to the chat (the caller must not send a second copy)."""
+    typing_task = asyncio.create_task(_typing_loop(chat_id))
+    sent_id: int | None = None
+    buf = ""
+    display = ""
+    last_edit = 0.0
+    throttle = 1.2
+    payload: dict = {"message": text, "session_id": str(chat_id)}
+    if image:
+        payload["image"] = image
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            async with client.stream(
+                "POST",
+                f"{IRIS_CORE_URL}/chat/stream",
+                json=payload,
+                headers=_core_headers(),
+            ) as r:
+                async for line in r.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        ev = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+                    kind = ev.get("kind")
+                    if kind == "text":
+                        buf += ev.get("delta", "")
+                        display = buf
+                    elif kind == "reply":
+                        buf = ev.get("text", buf)
+                        display = buf
+                    elif kind == "tool_call" and not display.endswith("…"):
+                        name = (ev.get("call") or {}).get("name", "tool")
+                        display = f"{buf or '…'}\n\n🔧 {name}…"
+                    elif kind == "approval":
+                        # Human-in-the-loop: telegram forgets stay on the
+                        # bridge's own two-phase flow, so cancel the graph
+                        # interrupt and point the owner at /forget.
+                        buf = "I'd like your OK before touching that memory — reply /forget <text> and confirm there."
+                        display = buf
+                        try:
+                            async with httpx.AsyncClient(timeout=30) as c:
+                                await c.post(
+                                    f"{IRIS_CORE_URL}/chat/resume",
+                                    json={"session_id": str(chat_id), "decision": "cancelled"},
+                                    headers=_core_headers(),
+                                )
+                        except Exception:  # noqa: BLE001 - best-effort cancel
+                            log.warning("approval cancel failed", exc_info=True)
+                    if not display or kind not in ("text", "reply", "tool_call", "approval"):
+                        continue
+                    now = time.monotonic()
+                    if sent_id is None:
+                        result = await _tg(
+                            "sendMessage", chat_id=chat_id, text=display, disable_web_page_preview=True
+                        )
+                        if result:
+                            sent_id = result.get("message_id")
+                            last_edit = now
+                    elif now - last_edit >= throttle:
+                        await _tg(
+                            "editMessageText", chat_id=chat_id, message_id=sent_id, text=display,
+                            disable_web_page_preview=True,
+                        )
+                        last_edit = now
+        if sent_id is not None and display != buf:
+            # final sync edit with the clean reply (no tool decoration)
+            await _tg(
+                "editMessageText", chat_id=chat_id, message_id=sent_id, text=buf,
+                disable_web_page_preview=True,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("streamed chat failed: %s", exc)
+        if not buf:
+            buf = "I can't reach my brain right now — try again in a bit."
+    finally:
+        typing_task.cancel()
+    return buf, sent_id is not None
+
+
 # ── Bridge loop ───────────────────────────────────────────────────────────
 
 async def _handle_voice(chat_id: int, voice: dict) -> None:
@@ -335,6 +438,39 @@ async def _handle_voice(chat_id: int, voice: dict) -> None:
     _log_chat(chat_id, "iris", reply)
 
 
+async def _handle_photo(chat_id: int, photo: list[dict], caption: str = "") -> None:
+    """Photo message → download the largest size → base64 data URI → /chat.
+
+    Iris sees the image through the vision-capable strong model; the caption
+    (the agent's own description) is logged to the daily note by the write
+    path. Reply is sent progressively like plain messages.
+    """
+    if not photo:
+        await send_to_chat(chat_id, "I got a photo but couldn't read it.")
+        return
+    largest = max(photo, key=lambda p: p.get("file_size", 0) or 0)
+    try:
+        file_info = await _tg("getFile", file_id=largest["file_id"])
+        file_path = file_info.get("file_path")
+        if not file_path:
+            raise RuntimeError("telegram returned no file path")
+        mime = file_path.rsplit(".", 1)[-1].lower()
+        mime_type = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "webp": "webp", "gif": "gif"}.get(mime, "jpeg")
+        async with httpx.AsyncClient(timeout=60) as client:
+            dl = await client.get(f"{FILE_API}/{file_path}")
+            dl.raise_for_status()
+        data_uri = f"data:image/{mime_type};base64," + base64.b64encode(dl.content).decode("ascii")
+        text = caption.strip() or "[photo attached]"
+        reply, delivered = await _stream_chat_turn(chat_id, text, image=data_uri)
+        if not delivered:
+            await send_to_chat(chat_id, reply)
+        _log_chat(chat_id, "user", f"[photo] {text[:200]}")
+        _log_chat(chat_id, "iris", reply)
+    except Exception as exc:  # noqa: BLE001 - photo handling must never kill the poller
+        log.warning("photo handling failed: %s", exc)
+        await send_to_chat(chat_id, "I couldn't read that photo — try sending it again.")
+
+
 async def _poll_loop() -> None:
     """Long-poll Telegram updates; forward messages into iris-core /chat."""
     offset = 0
@@ -351,11 +487,15 @@ async def _poll_loop() -> None:
                 user = (msg.get("from") or {}).get("first_name", "Owner")
 
                 voice = msg.get("voice")
+                photo = msg.get("photo")
+                if not text and not voice and photo:
+                    await _handle_photo(chat_id, photo, msg.get("caption") or "")
+                    continue
                 if not text and voice:
                     await _handle_voice(chat_id, voice)
                     continue
                 if not text:
-                    await send_to_chat(chat_id, "I can only read text or voice messages for now.")
+                    await send_to_chat(chat_id, "I can only read text, voice, or photos for now.")
                     continue
                 _log_chat(chat_id, "user", text)
                 if text.startswith("/start"):
@@ -368,22 +508,9 @@ async def _poll_loop() -> None:
                         _log_chat(chat_id, "iris", reply)
                     continue
                 # plain message → the graph (onboarding wizard included)
-                typing = asyncio.create_task(_typing_loop(chat_id))
-                try:
-                    async with httpx.AsyncClient(timeout=300) as client:
-                        r = await client.post(
-                            f"{IRIS_CORE_URL}/chat",
-                            json={"message": text, "session_id": str(chat_id)},
-                            headers=_core_headers(),
-                        )
-                        data = r.json()
-                        reply = data.get("reply", "I'm here.")
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("iris-core /chat failed: %s", exc)
-                    reply = "I can't reach my brain right now — try again in a bit."
-                finally:
-                    typing.cancel()
-                await send_to_chat(chat_id, reply)
+                reply, delivered = await _stream_chat_turn(chat_id, text)
+                if not delivered:
+                    await send_to_chat(chat_id, reply)
                 _log_chat(chat_id, "iris", reply)
         except asyncio.CancelledError:
             raise

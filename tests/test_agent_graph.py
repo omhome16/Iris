@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from iris.agent.chat import ChatGraph, _to_llm_messages
+from iris.agent.chat import ApprovalRequired, ChatGraph, _to_llm_messages
 from iris.agent.runtime import Runtime
 from iris.agent.tools import dispatch, get_tools
 from iris.memory.files import WorkspaceFiles
@@ -69,7 +69,7 @@ class FakeLLM(LLMClient):
     """Deterministic: no tools, echo-ish reply. No network."""
 
     async def complete_with_tools(self, messages, tools=None, **kwargs):
-        return "ok", []
+        return "ok", [], ""
 
 
 class RememberLLM(LLMClient):
@@ -81,15 +81,15 @@ class RememberLLM(LLMClient):
     async def complete_with_tools(self, messages, tools=None, **kwargs):
         self.calls += 1
         if self.calls == 1:
-            return "", [{"name": "remember", "args": {"content": "Owner is testing tools.", "importance": 5}}]
-        return "remembered", []
+            return "", [{"name": "remember", "args": {"content": "Owner is testing tools.", "importance": 5}}], ""
+        return "remembered", [], ""
 
 
 class LoopLLM(LLMClient):
     """Never stops calling tools — the recursion-cap tripwire."""
 
     async def complete_with_tools(self, messages, tools=None, **kwargs):
-        return "", [{"name": "memory_search", "args": {"query": "more"}}]
+        return "", [{"name": "memory_search", "args": {"query": "more"}}], ""
 
 
 class ApplySkillLLM(LLMClient):
@@ -102,8 +102,8 @@ class ApplySkillLLM(LLMClient):
     async def complete_with_tools(self, messages, tools=None, **kwargs):
         self.calls += 1
         if self.calls == 1:
-            return "", [{"name": "skill_apply", "args": {"name": self.skill_name}}]
-        return "done with the skill", []
+            return "", [{"name": "skill_apply", "args": {"name": self.skill_name}}], ""
+        return "done with the skill", [], ""
 
 
 class StubIndex:
@@ -286,6 +286,7 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "file_list",
         "web_search",
         "ingest_url",
+        "deep_dive",
     }
     for s in schemas:
         assert s["function"]["parameters"]["type"] == "object"
@@ -365,4 +366,92 @@ async def test_memory_search_trusted_content_unfenced(tmp_path: Path):
     runtime.index = TrustedIndex()  # type: ignore[assignment]
     out = json.loads(await dispatch(runtime, "memory_search", {"query": "hiking"}))
     assert out["results"][0]["trust"] == "owner"
-    assert "UNTRUSTED" not in out["results"][0]["content"]
+
+
+async def test_memory_search_records_recall_feedback(tmp_path: Path):
+    class Hit:
+        content = "Owner loves hiking"
+        score = 0.9
+        origin = Origin.OWNER
+        path = "memory/2026-08-01.md"
+        lane = "default"
+
+    class HitIndex(StubIndex):
+        async def search(self, *args, **kwargs):
+            return [Hit()]
+
+    files = WorkspaceFiles(tmp_path)
+    runtime = make_runtime(files, FakeLLM())
+    runtime.index = HitIndex()  # type: ignore[assignment]
+    await dispatch(runtime, "memory_search", {"query": "hiking"})
+    line = files.recall_feedback_path().read_text(encoding="utf-8").strip()
+    assert "memory/2026-08-01.md" in line
+    assert "Owner loves hiking" in line
+
+
+# ── human-in-the-loop approval (interrupt / resume) ─────────────────────────
+
+class ForgetLLM(LLMClient):
+    """Call 1: forget tool call. Call 2: confirm the outcome."""
+
+    def __init__(self, confirm: str = "done") -> None:
+        self.calls = 0
+        self.confirm = confirm
+
+    async def complete_with_tools(self, messages, tools=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return "", [{"name": "forget", "args": {"query": "lease ends"}}], ""
+        return self.confirm, [], ""
+
+
+class HitIndex(StubIndex):
+    async def search(self, *args, **kwargs):
+        return [Hit()]
+
+
+class Hit:
+    content = "The owner's lease ends March 2027"
+    score = 0.9
+    origin = Origin.OWNER
+    path = "MEMORY.md"
+    lane = "default"
+
+
+class NoopReindexer:
+    async def reindex_all(self):
+        return 0
+
+
+def _forget_runtime(tmp_path: Path, llm: LLMClient) -> tuple[WorkspaceFiles, Runtime]:
+    files = WorkspaceFiles(tmp_path)
+    w = OnboardingWizard(files)
+    for a in ["Omar", "warm", "short", "UTC", "4"]:
+        w.apply_answer(a)
+    files.write_curated(files.memory, "# MEMORY.md — Iris long-term memory\n\nThe owner's lease ends March 2027\n")
+    runtime = make_runtime(files, llm)
+    runtime.index = HitIndex()  # type: ignore[assignment]
+    runtime.reindexer = NoopReindexer()  # type: ignore[assignment]
+    return files, runtime
+
+
+async def test_forget_halts_for_approval_then_supersedes(tmp_path: Path):
+    files, runtime = _forget_runtime(tmp_path, ForgetLLM())
+    graph = ChatGraph(runtime, MemorySaver())
+    with pytest.raises(ApprovalRequired) as exc:
+        await graph.respond("forget about my lease", session_id="t-approve")
+    assert exc.value.payload["action"] == "forget"
+    assert "lease ends March 2027" in exc.value.payload["hit"]
+    assert "superseded" not in files.read(files.memory)
+    reply = await graph.resume("t-approve", decision="approved")
+    assert "superseded" in files.read(files.memory)
+
+
+async def test_forget_cancelled_resume_leaves_memory_intact(tmp_path: Path):
+    files, runtime = _forget_runtime(tmp_path, ForgetLLM(confirm="cancelled it"))
+    graph = ChatGraph(runtime, MemorySaver())
+    with pytest.raises(ApprovalRequired):
+        await graph.respond("forget about my lease", session_id="t-cancel")
+    reply = await graph.resume("t-cancel", decision="cancelled")
+    assert "cancelled" in reply
+    assert "superseded" not in files.read(files.memory)

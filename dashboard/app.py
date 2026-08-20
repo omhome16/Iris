@@ -19,7 +19,7 @@ import os
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -62,6 +62,24 @@ async def api_chat(request: Request) -> JSONResponse:
     return JSONResponse(await _proxy("/chat", "POST", body))
 
 
+@app.post("/api/chat/stream")
+async def api_chat_stream(request: Request) -> StreamingResponse:
+    """Proxy the iris-core SSE stream through the dashboard (one hop)."""
+    body = await request.json()
+    client = httpx.AsyncClient(timeout=300)
+    req = client.build_request("POST", f"{IRIS_CORE_URL}/chat/stream", json=body, headers=_core_headers())
+    r = await client.send(req, stream=True)
+
+    async def gen():
+        try:
+            async for line in r.aiter_lines():
+                yield line + "\n"
+        finally:
+            await client.aclose()
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/api/mind")
 async def api_mind() -> JSONResponse:
     return JSONResponse(await _proxy("/mind"))
@@ -90,6 +108,11 @@ async def api_tasks() -> JSONResponse:
 @app.get("/api/costs")
 async def api_costs() -> JSONResponse:
     return JSONResponse(await _proxy("/costs"))
+
+
+@app.get("/api/traces")
+async def api_traces() -> JSONResponse:
+    return JSONResponse(await _proxy("/traces"))
 
 
 @app.get("/api/health")

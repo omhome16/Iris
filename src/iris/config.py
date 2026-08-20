@@ -20,12 +20,25 @@ class Settings(BaseSettings):
     # ── Model tiers ──────────────────────────────────────────────────────
     # Strong model: conversation, reasoning, skill writing.
     # Cheap model: extraction, consolidation, scoring (the write path).
-    # Embedding model: index everything (Groq has no embeddings — stays Gemini).
+    # Embedding model: index everything (OpenRouter and Groq have no
+    # embeddings — Gemini does; fall back to Ollama nomic-embed-text if no
+    # GEMINI_API_KEY is set).
     #
-    # Defaults: Gemini free tier (one key from aistudio.google.com/apikey
-    # covers all three). If GROQ_API_KEY is set, the strong/cheap tiers swap
-    # to Groq's generous free tier automatically; override with
-    # GROQ_STRONG_MODEL / GROQ_CHEAP_MODEL.
+    # Provider pick: LLM_PROVIDER=auto|openrouter|groq|gemini|ollama.
+    # auto = whichever key is present: openrouter > groq > gemini.
+    #
+    # Keys you need, per provider:
+    #   openrouter — OPENROUTER_API_KEY (openrouter.ai/keys; free models:
+    #                openrouter_strong_model / _cheap_model below)
+    #   groq       — GROQ_API_KEY (console.groq.com/keys)
+    #   gemini     — GEMINI_API_KEY (aistudio.google.com/apikey)
+    #   ollama     — no key; run `ollama serve` and `ollama pull <model>`
+    #
+    # Model ids are LiteLLM-style "provider/model" strings; the *:free suffix
+    # selects OpenRouter free variants. Set *_MODEL env vars to override.
+    llm_provider: str = "auto"
+
+    gemini_api_key: str = ""
     strong_model: str = "gemini/gemini-3.5-flash"
     cheap_model: str = "gemini/gemini-3.1-flash-lite"
     embedding_model: str = "gemini/gemini-embedding-001"
@@ -35,6 +48,16 @@ class Settings(BaseSettings):
     groq_strong_model: str = "groq/llama-3.3-70b-versatile"
     groq_cheap_model: str = "groq/llama-3.1-8b-instant"
 
+    openrouter_api_key: str = ""
+    openrouter_strong_model: str = "openrouter/deepseek/deepseek-chat-v3.1:free"
+    openrouter_cheap_model: str = "openrouter/meta-llama/llama-3.1-8b-instruct:free"
+
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_strong_model: str = "ollama/llama3.1:8b"
+    ollama_cheap_model: str = "ollama/llama3.1:8b"
+    ollama_embedding_model: str = "ollama/nomic-embed-text"
+    ollama_embedding_dim: int = 768
+
     # Web search (Tavily free tier). Empty = web_search tool says "not configured".
     tavily_api_key: str = ""
 
@@ -42,9 +65,28 @@ class Settings(BaseSettings):
     voice_model: str = "groq/whisper-large-v3-turbo"
 
     def model_post_init(self, __context) -> None:
-        if self.groq_api_key and self.strong_model.startswith("gemini/"):
+        provider = self.llm_provider.strip().lower()
+        if provider == "auto":
+            if self.openrouter_api_key:
+                provider = "openrouter"
+            elif self.groq_api_key:
+                provider = "groq"
+            else:
+                provider = "gemini"
+        if provider == "openrouter":
+            self.strong_model = self.openrouter_strong_model
+            self.cheap_model = self.openrouter_cheap_model
+        elif provider == "groq":
             self.strong_model = self.groq_strong_model
             self.cheap_model = self.groq_cheap_model
+        elif provider == "ollama":
+            self.strong_model = self.ollama_strong_model
+            self.cheap_model = self.ollama_cheap_model
+        # Embeddings stay Gemini when a key exists; otherwise fall back to
+        # Ollama nomic-embed-text so OpenRouter/Groq-only setups still index.
+        if not self.gemini_api_key:
+            self.embedding_model = self.ollama_embedding_model
+            self.embedding_dim = self.ollama_embedding_dim
 
     # ── Infra ────────────────────────────────────────────────────────────
     postgres_dsn: str = "postgresql+psycopg://iris:iris_dev_password@localhost:5433/iris"
@@ -85,6 +127,20 @@ class Settings(BaseSettings):
     # Exceeding it is caught and turned into a graceful message, never a 500.
     graph_recursion_limit: int = 40
 
+    # ── Compaction (context engineering) ─────────────────────────────────
+    # When the serialized history exceeds the trigger, a compaction turn
+    # flushes durable facts to the daily note, summarizes, and trims history
+    # to the keep-budget (Pi/Claude Code pattern: bounded history forever).
+    compaction_trigger_tokens: int = 12000
+    compaction_keep_tokens: int = 2000
+    compaction_summary_tokens: int = 400  # word cap on the injected summary
+
+    # ── Prompt caching ───────────────────────────────────────────────────
+    # LiteLLM caching=True keeps the stable prefix (system + memory context)
+    # warm across calls, cutting repeated-prefix cost and latency. Cache-hit
+    # tokens are recorded in the cost ledger and surfaced in /costs.
+    llm_caching: bool = True
+
     # ── Recall cache (semantic memory cache) ─────────────────────────────
     # In-memory query→hits cache in front of search/escalate. Disable for
     # deterministic eval-lab runs (IRIS_RECALL_CACHE=0).
@@ -95,16 +151,36 @@ class Settings(BaseSettings):
     chunk_tokens: int = 400
     chunk_overlap_tokens: int = 80
 
+    # ── Contextual chunking ───────────────────────────────────────────────
+    # Cheap-model context headers (up to context_header_tokens) prepended to
+    # each chunk before embedding, so vectors carry document-level context
+    # (Anthropic-style contextual retrieval). Cached per file by content
+    # hash in .dreams/contexts/; plain chunks are the fallback.
+    contextual_chunking_enabled: bool = True
+    context_header_tokens: int = 60
+
     # ── Sleep / dreaming ─────────────────────────────────────────────────
     dream_staging_dir: str = "memory/.dreams"
     dream_candidate_max: int = 200
     nightly_sleep_hour: int = 4  # best-effort nightly sweep (24h clock, local tz)
     morning_brief_hour: int = 8  # Telegram digest to owner_chat_id (needs it set)
     # Deterministic promotion gate (Light phase, no model calls).
-    # Score = w·[occurrence, importance, richness, trigger-diversity].
-    dream_light_weights: tuple[float, float, float, float] = (0.35, 0.35, 0.15, 0.15)
+    # Score = w·[occurrence, importance, richness, trigger-diversity, recall].
+    dream_light_weights: tuple[float, float, float, float, float] = (0.25, 0.30, 0.10, 0.10, 0.25)
     dream_gate_score: float = 0.5
     dream_gate_importance: float = 6.0
+
+    # ── Recall feedback ───────────────────────────────────────────────────
+    # Every memory_search hit is logged to .dreams/recall_feedback.jsonl
+    # (rotated at max bytes). The Light phase uses recall counts as a 5th
+    # signal, so memories the agent actually goes back to are promoted faster.
+    recall_feedback_enabled: bool = True
+    recall_feedback_max_bytes: int = 200_000
+
+    # ── Turn traces ───────────────────────────────────────────────────────
+    # One JSON line per chat turn in config/traces.jsonl (rotated at max
+    # bytes), surfaced on the dashboard's /traces panel.
+    trace_max_bytes: int = 1_000_000
 
     # ── Forgetting ───────────────────────────────────────────────────────
     # Retention below this fraction marks a memory as rot (flagged in dreams,
