@@ -74,9 +74,10 @@ hiccup can never hang you; you get a graceful "still thinking" instead.
 
 - **Bootstrap budgets** — `USER.md` and `MEMORY.md` enter the prompt at fixed
   token budgets (default 4000), kept in stable prefix order.
-- **Prompt caching** — LiteLLM `caching=True` keeps the stable prefix warm
-  across calls; cache-hit tokens are recorded in the ledger and shown in the
-  dashboard (`/costs`, cache-hit % per day).
+- **Prompt caching** — a LiteLLM local cache is installed at boot
+  (`caching=True` on every call), keeping repeated stable prefixes warm;
+  cache-hit tokens are recorded in the ledger and shown in the dashboard
+  (`/costs`, cache-hit % per day).
 - **Compaction** — when serialized history exceeds the trigger (12k tokens), a
   compaction turn flushes durable facts into the daily note, summarizes, and
   trims history to a keep-budget (2k). The conversation stays bounded forever
@@ -182,9 +183,11 @@ wraps the Telegram Bot API with long-polling. It exposes `send_message`,
 `send_photo`, `get_chat_history`, `broadcast` as MCP tools to Iris and
 forwards your inbound messages to the agent API. It also parses slash commands
 (`/start /help /mind /skills /forget /rot /retention /dream_now /sleep /wake`)
-and learns your chat id from the first `/start`. HITL approval events are
-surfaced inline ("I'd like your OK before touching that memory") and the
-thread is kept unblocked automatically.
+and learns your chat id from the first `/start`. Once an owner is bound, the
+bot is **private**: any other chat is refused (set `OWNER_CHAT_ID` in `.env`
+to pin ownership in env instead of letting the first `/start` claim it).
+HITL approval events are surfaced inline ("I'd like your OK before touching
+that memory") and the thread is kept unblocked automatically.
 
 ### Providers
 
@@ -339,7 +342,7 @@ uv run python scripts/eval_lab.py         # ablation study → reports/eval_lab.
 ### Reset
 
 ```bash
-uv run python scripts/fresh_start.py      # wipes memory/dreams/skills/index
+uv run python scripts/fresh_start.py      # wipes memory/dreams/skills/imports/sandbox/tasks/traces/index
 ```
 
 `AGENTS.md` and `.env` survive — she's a newborn again, and the next chat

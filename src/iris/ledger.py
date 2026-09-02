@@ -19,11 +19,17 @@ from typing import Any
 log = logging.getLogger("iris.ledger")
 
 # USD per 1M tokens, keyed by model name; "" matches any unknown → $0.
+# Prices are estimates — update as provider pricing changes. Models not
+# listed here (groq/openrouter free variants, local ollama) price at $0.
 PRICE_PER_1M: dict[str, tuple[float, float]] = {
     "gemini/gemini-2.5-flash": (0.30, 2.50),
     "gemini/gemini-2.5-flash-preview-08-17": (0.30, 2.50),
     "gemini/gemini-2.0-flash": (0.10, 0.40),
     "gemini/text-embedding-004": (0.0, 0.0),
+    # current configured defaults (config.py) — estimates
+    "gemini/gemini-3.5-flash": (0.30, 2.50),
+    "gemini/gemini-3.1-flash-lite": (0.10, 0.40),
+    "gemini/gemini-embedding-001": (0.15, 0.0),
 }
 
 

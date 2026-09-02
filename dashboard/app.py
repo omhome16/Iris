@@ -14,6 +14,7 @@ Serves the single-page UI and proxies every read/write to iris-core:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -63,12 +64,20 @@ async def api_chat(request: Request) -> JSONResponse:
 
 
 @app.post("/api/chat/stream")
-async def api_chat_stream(request: Request) -> StreamingResponse:
+async def api_chat_stream(request: Request):
     """Proxy the iris-core SSE stream through the dashboard (one hop)."""
     body = await request.json()
     client = httpx.AsyncClient(timeout=300)
     req = client.build_request("POST", f"{IRIS_CORE_URL}/chat/stream", json=body, headers=_core_headers())
-    r = await client.send(req, stream=True)
+    try:
+        r = await client.send(req, stream=True)
+    except Exception as exc:  # noqa: BLE001 - a dead core must be a clean SSE error, not a 500
+        await client.aclose()
+        log.warning("core stream unreachable: %s", exc)
+        return StreamingResponse(
+            iter([f'data: {json.dumps({"kind": "reply", "text": "iris-core is unreachable right now."})}\n\n']),
+            media_type="text/event-stream",
+        )
 
     async def gen():
         try:

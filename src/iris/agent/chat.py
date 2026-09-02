@@ -279,9 +279,10 @@ class ChatGraph:
 
         token = current_session.set(state.get("session_id") or "")
         try:
+            origin = state.get("origin") or "owner"
             for tc in last.tool_calls:
                 try:
-                    out = await dispatch(self.runtime, tc["name"], tc["args"])
+                    out = await dispatch(self.runtime, tc["name"], tc["args"], origin=origin)
                 except GraphInterrupt:
                     raise  # human-in-the-loop: halt the graph, never swallow
                 except Exception as exc:  # noqa: BLE001 - tool errors must not kill the graph

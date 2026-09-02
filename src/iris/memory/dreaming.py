@@ -111,7 +111,17 @@ class LightPhase:
             lines = feedback_file.read_text(encoding="utf-8").splitlines()
         except OSError:  # noqa: BLE001 - feedback is best-effort
             return []
-        return [str(json.loads(line).get("content", "")).casefold() for line in lines if line.strip()]
+        out: list[str] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # corrupt line: skip, never kill the sleep cycle
+            if isinstance(raw, dict):
+                out.append(str(raw.get("content", "")).casefold())
+        return out
 
     def run(
         self,
@@ -129,8 +139,17 @@ class LightPhase:
         by_content: dict[str, StagedSignal] = {}
         for path in sorted(staging_dir.glob("staging-*.jsonl")):
             for line in path.read_text(encoding="utf-8").splitlines():
-                raw = json.loads(line)
-                prov = raw.get("provenance", {})
+                # One corrupt line (e.g. a crash mid-append) must not kill
+                # the whole sleep cycle — skip it and keep consolidating.
+                try:
+                    raw = json.loads(line)
+                    if not isinstance(raw, dict):
+                        continue
+                except json.JSONDecodeError:
+                    continue
+                prov = raw.get("provenance")
+                if not isinstance(prov, dict):
+                    prov = {}
                 sig = StagedSignal(
                     op=str(raw.get("op", "ADD")),
                     content=str(raw.get("content", "")).strip(),

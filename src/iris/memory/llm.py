@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import time
 from typing import Any, Sequence
@@ -22,6 +23,8 @@ from typing import Any, Sequence
 import litellm
 
 from iris.config import settings
+
+log = logging.getLogger("iris.llm")
 
 try:
     from iris.ledger import CostLedger
@@ -108,6 +111,20 @@ class LLMClient:
         self.embedding_model = settings.embedding_model
         self.embedding_dim = settings.embedding_dim
         self.ledger = ledger
+        self._ensure_cache()
+
+    @staticmethod
+    def _ensure_cache() -> None:
+        """The per-call `caching=True` flag is a silent no-op unless a
+        cache object is actually installed on litellm. Without this, the
+        dashboard's cache-hit panel always read 0% no matter what."""
+        if not settings.llm_caching or litellm.cache is not None:
+            return
+        try:
+            litellm.cache = litellm.Cache(type="local")
+            log.info("LiteLLM local prompt cache enabled")
+        except Exception as exc:  # noqa: BLE001 - caching must never break boot
+            log.warning("could not enable the LiteLLM cache: %s", exc)
 
     def _auth_kwargs(self, model: str) -> dict[str, Any]:
         """Provider credentials from settings (so .env works without shell
@@ -158,28 +175,43 @@ class LLMClient:
         timeout: float = 90.0,
         max_attempts: int = 4,
     ) -> str:
-        model = self.strong_model if tier == "strong" else self.cheap_model
+        candidates = settings.llm_candidates(tier)
+        last_exc: Exception | None = None
+        for idx, (provider, model, auth) in enumerate(candidates):
+            async def call(_model=model, _auth=auth):
+                if tier == "strong":
+                    await self._throttle_strong()
+                kwargs: dict[str, Any] = dict(
+                    model=_model,
+                    messages=list(messages),
+                    temperature=temperature,
+                    timeout=timeout,
+                    caching=settings.llm_caching,
+                    **_auth,
+                )
+                if max_tokens:
+                    kwargs["max_tokens"] = max_tokens
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+                resp = await litellm.acompletion(**kwargs)
+                self._record(_model, tier, getattr(resp, "usage", None))
+                return resp.choices[0].message.content
 
-        async def call():
-            if tier == "strong":
-                await self._throttle_strong()
-            kwargs: dict[str, Any] = dict(
-                model=model,
-                messages=list(messages),
-                temperature=temperature,
-                timeout=timeout,
-                caching=settings.llm_caching,
-                **self._auth_kwargs(model),
-            )
-            if max_tokens:
-                kwargs["max_tokens"] = max_tokens
-            if json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-            resp = await litellm.acompletion(**kwargs)
-            self._record(model, tier, getattr(resp, "usage", None))
-            return resp.choices[0].message.content
-
-        return await _with_retries(call, max_attempts=max_attempts)
+            try:
+                return await _with_retries(call, max_attempts=max_attempts)
+            except Exception as exc:  # noqa: BLE001 - heterogeneous provider failures
+                last_exc = exc
+                if idx + 1 < len(candidates):
+                    log.warning(
+                        "provider %s failed after %d attempts (%s); failing over to %s",
+                        provider,
+                        max_attempts,
+                        exc,
+                        candidates[idx + 1][0],
+                    )
+        raise LLMError(
+            f"all providers failed ({[c[0] for c in candidates]}): {last_exc}"
+        ) from last_exc
 
     async def complete_with_tools(
         self,
@@ -198,42 +230,57 @@ class LLMClient:
         {"name": str, "args": dict} and thinking is any model reasoning
         (`reasoning_content` / `reasoning` on the message, provider-agnostic).
         """
-        model = self.strong_model if tier == "strong" else self.cheap_model
+        candidates = settings.llm_candidates(tier)
+        last_exc: Exception | None = None
+        for idx, (provider, model, auth) in enumerate(candidates):
+            async def call(_model=model, _auth=auth):
+                if tier == "strong":
+                    await self._throttle_strong()
+                kwargs: dict[str, Any] = dict(
+                    model=_model,
+                    messages=list(messages),
+                    temperature=temperature,
+                    timeout=timeout,
+                    caching=settings.llm_caching,
+                    **_auth,
+                )
+                if max_tokens:
+                    kwargs["max_tokens"] = max_tokens
+                if tools:
+                    kwargs["tools"] = tools
+                resp = await litellm.acompletion(**kwargs)
+                self._record(_model, tier, getattr(resp, "usage", None))
+                message = resp.choices[0].message
+                calls: list[dict] = []
+                for tc in getattr(message, "tool_calls", None) or []:
+                    args = tc.function.arguments or "{}"
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {}
+                    calls.append({"name": tc.function.name, "args": args})
+                thinking = (
+                    getattr(message, "reasoning_content", None)
+                    or getattr(message, "reasoning", None)
+                    or ""
+                )
+                return message.content or "", calls, thinking
 
-        async def call():
-            if tier == "strong":
-                await self._throttle_strong()
-            kwargs: dict[str, Any] = dict(
-                model=model,
-                messages=list(messages),
-                temperature=temperature,
-                timeout=timeout,
-                caching=settings.llm_caching,
-                **self._auth_kwargs(model),
-            )
-            if max_tokens:
-                kwargs["max_tokens"] = max_tokens
-            if tools:
-                kwargs["tools"] = tools
-            resp = await litellm.acompletion(**kwargs)
-            self._record(model, tier, getattr(resp, "usage", None))
-            message = resp.choices[0].message
-            calls: list[dict] = []
-            for tc in getattr(message, "tool_calls", None) or []:
-                args = tc.function.arguments or "{}"
-                try:
-                    args = json.loads(args)
-                except json.JSONDecodeError:
-                    args = {}
-                calls.append({"name": tc.function.name, "args": args})
-            thinking = (
-                getattr(message, "reasoning_content", None)
-                or getattr(message, "reasoning", None)
-                or ""
-            )
-            return message.content or "", calls, thinking
-
-        return await _with_retries(call, max_attempts=max_attempts)
+            try:
+                return await _with_retries(call, max_attempts=max_attempts)
+            except Exception as exc:  # noqa: BLE001 - heterogeneous provider failures
+                last_exc = exc
+                if idx + 1 < len(candidates):
+                    log.warning(
+                        "provider %s failed after %d attempts (%s); failing over to %s",
+                        provider,
+                        max_attempts,
+                        exc,
+                        candidates[idx + 1][0],
+                    )
+        raise LLMError(
+            f"all providers failed ({[c[0] for c in candidates]}): {last_exc}"
+        ) from last_exc
 
     async def stream_complete_with_tools(
         self,
@@ -257,86 +304,98 @@ class LLMClient:
         Retries before the first chunk only; a mid-stream failure surfaces
         whatever was buffered so a partial reply is never lost.
         """
-        model = self.strong_model if tier == "strong" else self.cheap_model
+        candidates = settings.llm_candidates(tier)
         last: Exception | None = None
-        for attempt in range(max_attempts):
-            if tier == "strong":
-                await self._throttle_strong()
-            kwargs: dict[str, Any] = dict(
-                model=model,
-                messages=list(messages),
-                temperature=temperature,
-                timeout=timeout,
-                caching=settings.llm_caching,
-                **self._auth_kwargs(model),
-            )
-            if max_tokens:
-                kwargs["max_tokens"] = max_tokens
-            if tools:
-                kwargs["tools"] = tools
+        for idx, (provider, model, auth) in enumerate(candidates):
             started = False
-            try:
-                resp = await litellm.acompletion(
-                    stream=True,
-                    stream_options={"include_usage": True},
-                    **kwargs,
+            for attempt in range(max_attempts):
+                if tier == "strong":
+                    await self._throttle_strong()
+                kwargs: dict[str, Any] = dict(
+                    model=model,
+                    messages=list(messages),
+                    temperature=temperature,
+                    timeout=timeout,
+                    caching=settings.llm_caching,
+                    **auth,
                 )
-                fragments: dict[int, str] = {}
-                ids: dict[int, str] = {}
-                names: dict[int, str] = {}
-                thinking = ""
-                async for chunk in resp:
-                    started = True
-                    usage = getattr(chunk, "usage", None)
-                    if usage is not None:
-                        self._record(model, tier, usage)
-                        continue
-                    choices = getattr(chunk, "choices", None) or []
-                    if not choices:
-                        continue
-                    delta = getattr(choices[0], "delta", None)
-                    if delta is None:
-                        continue
-                    reasoning = getattr(delta, "reasoning_content", None)
-                    if reasoning:
-                        thinking += reasoning
-                        yield ("thinking", reasoning)
-                    content = getattr(delta, "content", None)
-                    if content:
-                        yield ("text", content)
-                    for tc in getattr(delta, "tool_calls", None) or []:
-                        idx = getattr(tc, "index", 0) or 0
-                        if getattr(tc, "id", None):
-                            ids[idx] = tc.id
-                        fn = getattr(tc, "function", None)
-                        if fn is not None:
-                            if getattr(fn, "name", None):
-                                names[idx] = fn.name
-                            args_frag = getattr(fn, "arguments", None)
-                            if args_frag:
-                                fragments[idx] = fragments.get(idx, "") + args_frag
-                if fragments:
-                    for idx in sorted(fragments):
-                        try:
-                            args = json.loads(fragments[idx] or "{}")
-                        except json.JSONDecodeError:
-                            args = {}
-                        yield (
-                            "tool_call",
-                            {"id": ids.get(idx, ""), "name": names.get(idx, ""), "args": args},
-                        )
-                yield ("done", thinking)
+                if max_tokens:
+                    kwargs["max_tokens"] = max_tokens
+                if tools:
+                    kwargs["tools"] = tools
+                try:
+                    resp = await litellm.acompletion(
+                        stream=True,
+                        stream_options={"include_usage": True},
+                        **kwargs,
+                    )
+                    fragments: dict[int, str] = {}
+                    ids: dict[int, str] = {}
+                    names: dict[int, str] = {}
+                    thinking = ""
+                    async for chunk in resp:
+                        started = True
+                        usage = getattr(chunk, "usage", None)
+                        if usage is not None:
+                            self._record(model, tier, usage)
+                            continue
+                        choices = getattr(chunk, "choices", None) or []
+                        if not choices:
+                            continue
+                        delta = getattr(choices[0], "delta", None)
+                        if delta is None:
+                            continue
+                        reasoning = getattr(delta, "reasoning_content", None)
+                        if reasoning:
+                            thinking += reasoning
+                            yield ("thinking", reasoning)
+                        content = getattr(delta, "content", None)
+                        if content:
+                            yield ("text", content)
+                        for tc in getattr(delta, "tool_calls", None) or []:
+                            idx2 = getattr(tc, "index", 0) or 0
+                            if getattr(tc, "id", None):
+                                ids[idx2] = tc.id
+                            fn = getattr(tc, "function", None)
+                            if fn is not None:
+                                if getattr(fn, "name", None):
+                                    names[idx2] = fn.name
+                                args_frag = getattr(fn, "arguments", None)
+                                if args_frag:
+                                    fragments[idx2] = fragments.get(idx2, "") + args_frag
+                    if fragments:
+                        for idx2 in sorted(fragments):
+                            try:
+                                args = json.loads(fragments[idx2] or "{}")
+                            except json.JSONDecodeError:
+                                args = {}
+                            yield (
+                                "tool_call",
+                                {"id": ids.get(idx2, ""), "name": names.get(idx2, ""), "args": args},
+                            )
+                    yield ("done", thinking)
+                    return
+                except Exception as exc:  # noqa: BLE001 - provider failures are heterogeneous
+                    last = exc
+                    if started or not _should_retry(exc) or attempt == max_attempts - 1:
+                        break
+                    delay = _retry_after(exc) or min(45.0, 1.0 * (2**attempt))
+                    await asyncio.sleep(random.uniform(delay * 0.8, delay * 1.2))
+            if started:
+                yield ("done", "")  # mid-stream failure: flush what we buffered
                 return
-            except Exception as exc:  # noqa: BLE001 - provider failures are heterogeneous
-                last = exc
-                if started or not _should_retry(exc) or attempt == max_attempts - 1:
-                    break
-                delay = _retry_after(exc) or min(45.0, 1.0 * (2**attempt))
-                await asyncio.sleep(random.uniform(delay * 0.8, delay * 1.2))
-        if started:
-            yield ("done", "")  # mid-stream failure: flush what we buffered
-        else:
-            raise LLMError(f"LLM call failed after {max_attempts} attempts: {last}") from last
+            if idx + 1 < len(candidates):
+                log.warning(
+                    "provider %s failed after %d attempts (%s); failing over to %s",
+                    provider,
+                    max_attempts,
+                    last,
+                    candidates[idx + 1][0],
+                )
+                continue
+            raise LLMError(
+                f"all providers failed ({[c[0] for c in candidates]}): {last}"
+            ) from last
 
     async def embed(self, texts: Sequence[str], *, timeout: float = 60.0) -> list[list[float]]:
         async def call():

@@ -38,6 +38,24 @@ BOT_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"  # downloads only
 
 
+def _parse_chat_ids(raw: str) -> set[int]:
+    out: set[int] = set()
+    for part in raw.replace(" ", "").split(","):
+        if not part:
+            continue
+        try:
+            out.add(int(part))
+        except ValueError:
+            continue
+    return out
+
+
+# Owner allowlist from the environment (same var iris-core reads). When set,
+# it is authoritative: only these chats may talk to the bot, and /start can
+# never rebind ownership to a stranger.
+ENV_OWNER_IDS = _parse_chat_ids(os.environ.get("OWNER_CHAT_ID", ""))
+
+
 def _core_headers() -> dict[str, str]:
     if IRIS_API_TOKEN:
         return {"Authorization": f"Bearer {IRIS_API_TOKEN}"}
@@ -61,6 +79,23 @@ def _owner_chat_id() -> int | None:
     return None
 
 
+def _resolved_owner() -> int | None:
+    """The authoritative owner of this bot instance.
+
+    OWNER_CHAT_ID env wins (it cannot be spoofed from Telegram); otherwise
+    the chat id the first /start bound in owner.json. Until an owner is
+    known, the instance is unbound and the first /start claims it — the
+    documented bootstrap. Set OWNER_CHAT_ID in .env to pin ownership."""
+    if ENV_OWNER_IDS:
+        return next(iter(ENV_OWNER_IDS))
+    return _owner_chat_id()
+
+
+# Chats that were refused because they are not the owner — each gets exactly
+# one notice instead of a reply to every message they send.
+_refused_chats: set[int] = set()
+
+
 def _save_owner(chat_id: int) -> None:
     OWNER_FILE.parent.mkdir(parents=True, exist_ok=True)
     OWNER_FILE.write_text(json.dumps({"chat_id": chat_id}), encoding="utf-8")
@@ -68,7 +103,7 @@ def _save_owner(chat_id: int) -> None:
 
 async def _tg(method: str, **params) -> dict | None:
     """Thin Telegram Bot API call; None on transport errors."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
         r = await client.post(f"{BOT_API}/{method}", json=params)
         if r.status_code != 200:
             log.warning("telegram %s failed: %s %s", method, r.status_code, r.text[:200])
@@ -144,7 +179,7 @@ async def get_chat_history(chat_id: int, limit: int = 10) -> str:
 
 @server.tool(name="broadcast", description="Send a message to the learned owner chat.")
 async def broadcast(text: str) -> str:
-    owner = _owner_chat_id()
+    owner = _resolved_owner()
     if owner is None:
         return json.dumps({"ok": False, "error": "no owner chat known yet"})
     ok = await send_to_chat(owner, text)
@@ -354,6 +389,7 @@ async def _stream_chat_turn(chat_id: int, text: str, image: str | None = None) -
     display = ""
     last_edit = 0.0
     throttle = 1.2
+    last_sent = ""
     payload: dict = {"message": text, "session_id": str(chat_id)}
     if image:
         payload["image"] = image
@@ -407,14 +443,17 @@ async def _stream_chat_turn(chat_id: int, text: str, image: str | None = None) -
                         if result:
                             sent_id = result.get("message_id")
                             last_edit = now
+                            last_sent = display
                     elif now - last_edit >= throttle:
                         await _tg(
                             "editMessageText", chat_id=chat_id, message_id=sent_id, text=display,
                             disable_web_page_preview=True,
                         )
                         last_edit = now
-        if sent_id is not None and display != buf:
-            # final sync edit with the clean reply (no tool decoration)
+                        last_sent = display
+        if sent_id is not None and buf and buf != last_sent:
+            # final sync: throttled edits leave the first chunk on screen
+            # (e.g. "H") while buf grew to the full reply. Always flush.
             await _tg(
                 "editMessageText", chat_id=chat_id, message_id=sent_id, text=buf,
                 disable_web_page_preview=True,
@@ -501,6 +540,12 @@ async def _handle_photo(chat_id: int, photo: list[dict], caption: str = "") -> N
         await send_to_chat(chat_id, "I couldn't read that photo — try sending it again.")
 
 
+# One dispatcher for the lifetime of the process: the two-phase /forget
+# flow stores its pending candidate in the instance, so a per-message
+# instance made /forget-confirm always answer "No pending forget".
+dispatcher = CommandDispatcher(IRIS_CORE_URL)
+
+
 async def _poll_loop() -> None:
     """Long-poll Telegram updates; forward messages into iris-core /chat."""
     offset = 0
@@ -515,6 +560,18 @@ async def _poll_loop() -> None:
                 chat_id = msg["chat"]["id"]
                 text = (msg.get("text") or "").strip()
                 user = (msg.get("from") or {}).get("first_name", "Owner")
+
+                # Owner gate: once the instance is bound (env or first
+                # /start), nobody else may chat with the graph, run
+                # commands, or claim ownership with /start.
+                owner = _resolved_owner()
+                if owner is not None and chat_id != owner:
+                    if chat_id not in _refused_chats:
+                        _refused_chats.add(chat_id)
+                        await send_to_chat(
+                            chat_id, "This Iris instance is private — its owner has not invited you."
+                        )
+                    continue
 
                 voice = msg.get("voice")
                 photo = msg.get("photo")
@@ -531,7 +588,6 @@ async def _poll_loop() -> None:
                 if text.startswith("/start"):
                     _save_owner(chat_id)
                 if text.startswith("/"):
-                    dispatcher = CommandDispatcher(IRIS_CORE_URL)
                     reply = await dispatcher.dispatch(chat_id, text)
                     if reply:
                         await send_to_chat(chat_id, reply)
@@ -561,7 +617,13 @@ async def main() -> None:
     if not BOT_TOKEN:
         log.error("TELEGRAM_BOT_TOKEN is not set; the bridge cannot run.")
         raise SystemExit(1)
-    log.info("telegram-mcp starting; owner=%s", _owner_chat_id())
+    if ENV_OWNER_IDS and _owner_chat_id() not in ENV_OWNER_IDS:
+        # An env-pinned owner overrides whatever owner.json last held —
+        # morning briefs and task delivery target the configured chat from
+        # the very first boot, before any /start.
+        _save_owner(next(iter(ENV_OWNER_IDS)))
+        log.info("owner chat pinned from OWNER_CHAT_ID env")
+    log.info("telegram-mcp starting; owner=%s", _resolved_owner())
     poller = asyncio.create_task(_poll_loop())
     try:
         await server.run_streamable_http_async(

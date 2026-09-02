@@ -16,6 +16,15 @@ build/
 workspace/.dreams/
 workspace/config/iris.json
 workspace/config/*.jsonl
+workspace/config/tasks.json
+
+# the owner's actual memory is personal data — keep it out of the repo
+# (AGENTS.md and workspace/README.md stay tracked as the generic templates)
+workspace/MEMORY.md
+workspace/USER.md
+workspace/DREAMS.md
+workspace/memory/
+workspace/sandbox/
 *.sqlite3
 *.log
 
@@ -25,3 +34,6 @@ mcp_servers/telegram/data/
 # ide
 .idea/
 .vscode/
+
+# learning vault (local study notes)
+learning doc/

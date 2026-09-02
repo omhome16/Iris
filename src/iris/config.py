@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     # GEMINI_API_KEY is set).
     #
     # Provider pick: LLM_PROVIDER=auto|openrouter|groq|gemini|ollama.
-    # auto = whichever key is present: openrouter > groq > gemini.
+    # auto = whichever key is present: gemini > groq > openrouter
+    # (then ollama if nothing is configured).
     #
     # Keys you need, per provider:
     #   openrouter — OPENROUTER_API_KEY (openrouter.ai/keys; free models:
@@ -65,14 +66,31 @@ class Settings(BaseSettings):
     voice_model: str = "groq/whisper-large-v3-turbo"
 
     def model_post_init(self, __context) -> None:
+        # Keep the per-provider model names before resolution overwrites
+        # `strong_model`/`cheap_model` — the failover chain needs them.
+        self._models_strong = {
+            "gemini": self.strong_model,
+            "groq": self.groq_strong_model,
+            "openrouter": self.openrouter_strong_model,
+            "ollama": self.ollama_strong_model,
+        }
+        self._models_cheap = {
+            "gemini": self.cheap_model,
+            "groq": self.groq_cheap_model,
+            "openrouter": self.openrouter_cheap_model,
+            "ollama": self.ollama_cheap_model,
+        }
         provider = self.llm_provider.strip().lower()
         if provider == "auto":
-            if self.openrouter_api_key:
-                provider = "openrouter"
+            if self.gemini_api_key:
+                provider = "gemini"
             elif self.groq_api_key:
                 provider = "groq"
+            elif self.openrouter_api_key:
+                provider = "openrouter"
             else:
-                provider = "gemini"
+                provider = "ollama"
+        self._resolved_provider = provider
         if provider == "openrouter":
             self.strong_model = self.openrouter_strong_model
             self.cheap_model = self.openrouter_cheap_model
@@ -87,6 +105,38 @@ class Settings(BaseSettings):
         if not self.gemini_api_key:
             self.embedding_model = self.ollama_embedding_model
             self.embedding_dim = self.ollama_embedding_dim
+
+    def llm_candidates(self, tier: str = "strong") -> list[tuple[str, str, dict]]:
+        """Provider failover chain for a model tier.
+
+        Returns (provider, model, auth) tuples ordered by priority: the
+        resolved provider leads, the rest follow (only those with
+        credentials), with local ollama as the always-available last resort.
+        """
+        models = self._models_strong if tier == "strong" else self._models_cheap
+        order = ["gemini", "groq", "openrouter", "ollama"]
+        lead = getattr(self, "_resolved_provider", None) or order[0]
+        ordered = [lead, *[p for p in order if p != lead]]
+        out: list[tuple[str, str, dict]] = []
+        for provider in ordered:
+            if provider == "ollama":
+                auth = {"api_base": self.ollama_base_url}
+            elif provider == "gemini":
+                if not self.gemini_api_key:
+                    continue
+                auth = {"api_key": self.gemini_api_key}
+            elif provider == "groq":
+                if not self.groq_api_key:
+                    continue
+                auth = {"api_key": self.groq_api_key}
+            elif provider == "openrouter":
+                if not self.openrouter_api_key:
+                    continue
+                auth = {"api_key": self.openrouter_api_key}
+            else:
+                continue
+            out.append((provider, models[provider], auth))
+        return out
 
     # ── Infra ────────────────────────────────────────────────────────────
     postgres_dsn: str = "postgresql+psycopg://iris:iris_dev_password@localhost:5433/iris"

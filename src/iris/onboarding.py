@@ -311,7 +311,7 @@ class OnboardingWizard:
             return self._prompt_for_missing(), False
         try:
             raw = await self.llm.complete(
-                self._messages(), tier="strong", json_mode=True, max_tokens=300
+                self._messages(), tier="strong", json_mode=True, max_tokens=1500
             )
             data = _parse_json_object(raw) or {}
         except Exception as exc:  # noqa: BLE001 - LLM hiccups degrade gracefully

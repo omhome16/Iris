@@ -1,12 +1,15 @@
 """Fresh start — reset Iris to a newborn state.
 
 Wipes ALL memory artifacts (MEMORY.md, USER.md, DREAMS.md, daily notes,
-skills, staging, dreams preimages, the index) and resets onboarding, so the
-next chat goes through the identity wizard.
+skills, staging, dreams preimages, ingested imports, sandbox files,
+traces, hallucination flags, scheduled tasks, the index) and resets
+onboarding, so the next chat goes through the identity wizard.
 
-WHAT SURVIVES: AGENTS.md (the operating contract), config defaults, .env,
-the database schema itself.
-WHAT DIES: every memory, every dream, every skill, every staged signal.
+WHAT SURVIVES: AGENTS.md (the operating contract), the cost ledger
+(config/llm_calls.jsonl — operator accounting, not her memory), config
+defaults, .env, the database schema itself.
+WHAT DIES: every memory, every dream, every skill, every staged signal,
+every ingested document, every pending task.
 """
 
 from __future__ import annotations
@@ -60,6 +63,19 @@ def fresh_start(workspace: Path) -> None:
         p.unlink()
     shutil.rmtree(files.root / ".dreams", ignore_errors=True)
     (files.root / ".dreams").mkdir(parents=True, exist_ok=True)
+    # ingested web documents are UNTRUSTED memory — a newborn has none
+    shutil.rmtree(files.root / "imports", ignore_errors=True)
+    # sandbox files are hers — a newborn has a clean box
+    shutil.rmtree(files.root / "sandbox", ignore_errors=True)
+    (files.root / "sandbox").mkdir(parents=True, exist_ok=True)
+    # scheduled tasks and turn telemetry don't survive a reset either
+    for stale in (
+        files.root / "config" / "tasks.json",
+        files.root / "config" / "traces.jsonl",
+        files.root / "config" / "traces.jsonl.1",
+        files.root / "config" / "hallucination_flags.jsonl",
+    ):
+        stale.unlink(missing_ok=True)
 
     files.config_file().parent.mkdir(parents=True, exist_ok=True)
     files.config_file().write_text(OnboardingState().to_json(), encoding="utf-8")

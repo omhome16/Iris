@@ -43,13 +43,18 @@ class TelegramMCPClient:
             self._client = client
             log.info("telegram MCP connected: %s", self.url)
             return True
-        except Exception as exc:  # noqa: BLE001 - channel down must not kill Iris
-            log.warning("telegram MCP unavailable (%s): %s", self.url, exc)
+        except (Exception, BaseExceptionGroup) as exc:  # noqa: BLE001 - channel down must not kill Iris
+            # anyio raises BaseExceptionGroup (not Exception) on transport
+            # failures; boot must survive a down bridge.
+            log.warning("telegram MCP unavailable (%s): %s", self.url, exc, exc_info=True)
             return False
 
     async def close(self) -> None:
         if self._client is not None:
-            await self._client.__aexit__(None, None, None)
+            try:
+                await self._client.__aexit__(None, None, None)
+            except (Exception, BaseExceptionGroup):  # noqa: BLE001 - shutdown must not raise
+                pass
             self._client = None
 
     async def send_message(self, chat_id: int, text: str) -> str:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -300,21 +301,29 @@ async def chat_stream(
     graph: ChatGraph = app.state.graph
 
     async def gen():
-        async for mode, data in graph.respond_stream(
-            req.message, session_id=req.session_id, image=req.image
-        ):
-            if mode == "custom":
-                yield f"data: {json.dumps(data)}\n\n"
-            elif mode == "error":
-                yield f"data: {json.dumps({'kind': 'reply', 'text': data})}\n\n"
-            elif mode == "updates":
-                for node, update in (data or {}).items():
-                    for m in (update or {}).get("messages", []):
-                        mtype = m.get("type") if isinstance(m, dict) else getattr(m, "type", "")
-                        mcalls = m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)
-                        mcontent = m.get("content") if isinstance(m, dict) else m.content
-                        if mtype == "ai" and not mcalls:
-                            yield f"data: {json.dumps({'kind': 'reply', 'text': _text_of(mcontent)})}\n\n"
+        # The SSE path carries the same 120 s turn budget as /chat and
+        # /voice — without it a hung provider pins the bridge's turn until
+        # its transport timeout. The deadline also covers slow consumers,
+        # which is the intended turn-budget semantics.
+        try:
+            async with asyncio.timeout(120.0):
+                async for mode, data in graph.respond_stream(
+                    req.message, session_id=req.session_id, image=req.image
+                ):
+                    if mode == "custom":
+                        yield f"data: {json.dumps(data)}\n\n"
+                    elif mode == "error":
+                        yield f"data: {json.dumps({'kind': 'reply', 'text': data})}\n\n"
+                    elif mode == "updates":
+                        for node, update in (data or {}).items():
+                            for m in (update or {}).get("messages", []):
+                                mtype = m.get("type") if isinstance(m, dict) else getattr(m, "type", "")
+                                mcalls = m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)
+                                mcontent = m.get("content") if isinstance(m, dict) else m.content
+                                if mtype == "ai" and not mcalls:
+                                    yield f"data: {json.dumps({'kind': 'reply', 'text': _text_of(mcontent)})}\n\n"
+        except TimeoutError:
+            yield f"data: {json.dumps({'kind': 'reply', 'text': 'I am still thinking — the turn ran past its 120 s budget. Ask me again in a bit.'})}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
@@ -547,9 +556,10 @@ async def forget_confirm(
     # fall back to a line-level match before giving up.
     new = content.replace(chunk["content"], f"{chunk['content']} {marker}")
     if new == content:
-        probe = str(chunk["content"]).strip().splitlines()[0][:120]
+        lines = str(chunk["content"]).strip().splitlines()
+        probe = lines[0][:120] if lines else ""
         target_line = next(
-            (line for line in content.splitlines() if probe in line), None
+            (line for line in content.splitlines() if probe and probe in line), None
         )
         if target_line is None:
             return {"ok": False, "error": "could not locate the entry text in MEMORY.md"}

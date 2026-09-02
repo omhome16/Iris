@@ -8,8 +8,11 @@ In Docker (Linux) the plain `uvicorn iris.api:app` command works unchanged.
 from __future__ import annotations
 
 import asyncio
+import logging
 import selectors
 import sys
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 from uvicorn import Config, Server
 

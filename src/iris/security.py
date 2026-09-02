@@ -8,6 +8,7 @@ boot-time warning (zero friction for local dev). When set, every route except
 from __future__ import annotations
 
 import logging
+import secrets
 
 from fastapi import HTTPException, Request
 
@@ -23,7 +24,7 @@ def require_token(request: Request) -> None:
     if not settings.iris_api_token:
         return
     auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {settings.iris_api_token}":
+    if not secrets.compare_digest(auth, f"Bearer {settings.iris_api_token}"):
         raise HTTPException(status_code=401, detail="missing or invalid bearer token")
 
 

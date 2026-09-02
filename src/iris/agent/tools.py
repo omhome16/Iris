@@ -428,20 +428,12 @@ def build_tools(runtime: Runtime) -> list[Tool]:
                 probe = probe.splitlines()[0][:120]
             probe = probe[:120]
             target_line = next(
-                (line for line in current.splitlines() if probe in line), None
+                (line for line in current.splitlines() if probe and probe in line), None
             )
             if target_line is None:
-                # Last resort: any line containing the owner's query words.
-                words = [w for w in query.split() if len(w) > 3][:2]
-                target_line = next(
-                    (
-                        line
-                        for line in current.splitlines()
-                        if any(w in line for w in words)
-                    ),
-                    None,
-                )
-            if target_line is None:
+                # No fuzzy fallback here on purpose: the owner approved the
+                # hit shown in the approval payload, and any looser match
+                # could supersede a different line than the one they saw.
                 return _err("could not locate the memory text in MEMORY.md; leaving intact")
             new = current.replace(target_line, f"{target_line} {marker}")
         if new == current:
@@ -713,17 +705,25 @@ def get_tools(runtime: Runtime) -> list[Tool]:
     return build_tools(runtime)
 
 
+# Durable-memory and dream tools are owner-session only. This is enforced
+# twice: tool_schemas hides them from non-owner prompts, and dispatch
+# refuses them even if a model hallucinates a call (a scheduled task that
+# emits `remember` must not write curated memory).
+NON_OWNER_BLOCKED = {"note", "remember", "dream_now", "skill_write"}
+
+
 def tool_schemas(runtime: Runtime, origin: str = "owner") -> list[dict]:
     """Tool schemas offered to the agent. Non-owner sessions (scheduled
     tasks, cron, heartbeats) never produce durable memory candidates —
     the schema strips note/remember/dream_now/skill_write entirely."""
     if origin == "owner":
         return [t.schema() for t in get_tools(runtime)]
-    blocked = {"note", "remember", "dream_now", "skill_write"}
-    return [t.schema() for t in get_tools(runtime) if t.name not in blocked]
+    return [t.schema() for t in get_tools(runtime) if t.name not in NON_OWNER_BLOCKED]
 
 
-async def dispatch(runtime: Runtime, name: str, args: dict) -> str:
+async def dispatch(runtime: Runtime, name: str, args: dict, origin: str = "owner") -> str:
+    if origin != "owner" and name in NON_OWNER_BLOCKED:
+        return _err(f"tool {name!r} is not available in {origin} sessions")
     for tool in get_tools(runtime):
         if tool.name == name:
             return await tool.handler(**args)
