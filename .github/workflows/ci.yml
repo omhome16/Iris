@@ -1,0 +1,87 @@
+name: CI
+
+# Iris previously had no CI at all — "lint passes" was unmeasurable and the
+# memory pipeline's integration tests (the ones that need real pgvector) had
+# never run anywhere but a laptop. This workflow is the gate: lint, the full
+# test suite against a real Postgres+pgvector service, and a production image
+# build so a broken Dockerfile is caught on the PR rather than at deploy time.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tests must never reach a paid provider or a real workspace. Ollama is not
+  # running in CI either, so model calls are exercised through fakes only and
+  # anything that would hit the network fails loudly instead of silently.
+  LLM_PROVIDER: ollama
+  OLLAMA_BASE_URL: http://127.0.0.1:1
+  IRIS_API_TOKEN: ci-token
+  DASHBOARD_USER: ci
+  DASHBOARD_PASSWORD: ci
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Ruff
+        run: uv run ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # pgvector image: the memory index uses `vector` columns and an HNSW
+        # index, so a plain postgres image cannot run these tests.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: iris
+          POSTGRES_PASSWORD: iris_dev_password
+          POSTGRES_DB: iris
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U iris"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      POSTGRES_DSN: postgresql+psycopg://iris:iris_dev_password@localhost:5433/iris
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Unit + integration tests
+        # The DB-backed suite is included here on purpose: it is skipped
+        # locally whenever Postgres is down, which is how it stayed dark.
+        run: uv run pytest tests -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: iris:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Container is non-root and answers /health
+        run: |
+          test "$(docker run --rm --entrypoint id iris:ci -u)" != "0"
