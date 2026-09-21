@@ -1,4 +1,9 @@
-"""Iris dashboard — a black & white, minimal, professional control room.
+"""Iris dashboard — a dawn-sky canvas where the whole mind is on screen at once.
+
+The visual language is a sky with drifting cloud strata; the content is every
+tier of the memory system at the same time, because the product claim is
+"memory you can see and trust" and a panel you have to open is a panel you
+cannot trust at a glance.
 
 Serves the single-page UI and proxies every read/write to iris-core:
   GET  /            the dashboard itself
@@ -7,7 +12,11 @@ Serves the single-page UI and proxies every read/write to iris-core:
   GET  /api/retention  per-chunk retention + decay curve
   GET  /api/rot     decayed memories
   GET  /api/skills  procedural memory
-  GET  /api/health  index stats
+  GET  /api/tasks   scheduled tasks
+  GET  /api/costs   LLM spend + cache hit rate
+  GET  /api/traces  turn traces, including the judgment layer's decisions
+  GET  /api/health  index stats + judgment-layer status
+  GET  /api/jev     judgment-layer detail (authenticated on core)
   POST /api/sleep   run the dream cycle
   POST /api/forget  two-phase HITL retire
 
@@ -177,6 +186,12 @@ async def api_traces() -> JSONResponse:
 @app.get("/api/health")
 async def api_health() -> JSONResponse:
     return JSONResponse(await _proxy("/health"))
+
+
+@app.get("/api/jev")
+async def api_jev() -> JSONResponse:
+    """Judgment-layer health: is JEV live, why not, and how it has behaved."""
+    return JSONResponse(await _proxy("/jev"))
 
 
 @app.post("/api/sleep")

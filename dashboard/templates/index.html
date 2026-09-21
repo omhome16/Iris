@@ -1,157 +1,186 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dawn">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>IRIS — Memory Console</title>
+<title>IRIS — a mind you can watch</title>
+<meta name="description" content="Iris: an AI assistant whose memory is plain text you can read, and whose every memory decision is visible.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..600&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div class="app">
 
-  <header class="topbar glass">
-    <button class="side-toggle" id="side-toggle" aria-label="toggle sidebar" title="toggle sidebar">
-      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
-    </button>
+<!-- The sky: three cloud strata drifting at different speeds. Purely
+     decorative, so it is hidden from assistive tech and frozen when the
+     visitor asks for reduced motion. -->
+<div class="sky" aria-hidden="true">
+  <div class="sky-sun"></div>
+  <div class="cloud-layer clouds-far"></div>
+  <div class="cloud-layer clouds-mid"></div>
+  <div class="cloud-layer clouds-near"></div>
+</div>
+
+<div class="canvas">
+
+  <header class="masthead">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">IRIS</span>
-      <span class="brand-sub">memory console</span>
+      <h1 class="brand-name">Iris</h1>
+      <p class="brand-sub">an assistant whose memory is a text file you can read</p>
     </div>
-    <div class="topbar-actions">
-      <span class="status" id="status"><span class="status-dot" aria-hidden="true"></span><span id="status-text">connecting</span></span>
-      <button class="theme-toggle" id="theme-toggle" aria-label="toggle dark mode" title="toggle dark mode">
-        <svg class="icon-sun" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5 5l1.7 1.7M17.3 17.3 19 19M19 5l-1.7 1.7M6.7 17.3 5 19"/></svg>
-        <svg class="icon-moon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+
+    <dl class="vitals" aria-label="system vitals">
+      <div class="vital">
+        <dt>core</dt>
+        <dd><span class="pip" id="core-pip" aria-hidden="true"></span><span id="core-state">connecting…</span></dd>
+      </div>
+      <div class="vital">
+        <dt>memory</dt>
+        <dd><span id="vital-chunks">—</span> chunks</dd>
+      </div>
+      <div class="vital">
+        <dt>judgment</dt>
+        <dd><span class="pip" id="jev-pip" aria-hidden="true"></span><span id="vital-jev">—</span></dd>
+      </div>
+      <div class="vital">
+        <dt>spend today</dt>
+        <dd><span id="vital-spend">—</span></dd>
+      </div>
+    </dl>
+
+    <div class="masthead-actions">
+      <button class="ghost" id="sleep-btn" title="Run the Light → REM → Deep dream cycle now">dream now</button>
+      <button class="ghost" id="theme-toggle" aria-label="switch between dawn and night sky" title="switch between dawn and night sky">
+        <span id="theme-label">night</span>
       </button>
     </div>
   </header>
 
-  <div class="layout">
+  <main class="board">
 
-    <aside class="sidebar glass" id="sidebar">
-
-      <section class="side-section open" data-panel="memory">
-        <button class="side-head" aria-expanded="true">
-          <span class="side-icon" aria-hidden="true">◆</span>
-          <span class="side-label">memory</span>
-          <span class="side-count mono" id="count-chunks">—</span>
-        </button>
-        <div class="side-body">
-          <div class="file-tabs" role="tablist">
-            <button class="file-tab active" data-file="memory" role="tab">MEMORY.md</button>
-            <button class="file-tab" data-file="user" role="tab">USER.md</button>
-          </div>
-          <pre class="file-body mono" id="file-body">loading…</pre>
-          <div class="side-meta mono" id="memory-meta">—</div>
+    <!-- ── conversation ─────────────────────────────────────────────── -->
+    <section class="panel panel-conversation" aria-labelledby="h-conversation">
+      <h2 class="panel-title" id="h-conversation">conversation</h2>
+      <div class="chat-log" id="chat-log" role="log" aria-live="polite" aria-relevant="additions text" tabindex="0">
+        <div class="turn turn-iris">
+          <span class="turn-role">iris</span>
+          <p class="turn-body">Say hello. On an empty memory I will ask a few questions and then write down what I learn.</p>
         </div>
-      </section>
+      </div>
+      <details class="activity" id="activity">
+        <summary>live activity — thinking &amp; tool calls</summary>
+        <div class="activity-body" id="activity-body" tabindex="0"></div>
+      </details>
+      <form class="composer" id="composer">
+        <label class="sr-only" for="input">Message Iris</label>
+        <input id="input" type="text" placeholder="Message Iris…" autocomplete="off" autofocus>
+        <button type="submit" class="send" id="send-btn">send</button>
+      </form>
+      <p class="hint" id="hint" aria-live="polite"></p>
+    </section>
 
-      <section class="side-section" data-panel="dreams">
-        <button class="side-head" aria-expanded="false">
-          <span class="side-icon" aria-hidden="true">☾</span>
-          <span class="side-label">dreams</span>
-          <span class="side-count mono" id="count-flags">—</span>
-        </button>
-        <div class="side-body">
-          <div class="side-toolbar">
-            <button class="action" id="sleep-btn">run dream cycle</button>
-            <span class="side-meta mono">flags <span id="flags-num">—</span></span>
-          </div>
-          <pre class="file-body mono" id="dreams-body">loading…</pre>
-        </div>
-      </section>
+    <!-- ── what this turn decided ───────────────────────────────────── -->
+    <section class="panel panel-judgment" aria-labelledby="h-judgment">
+      <h2 class="panel-title" id="h-judgment">
+        judgment
+        <span class="panel-note" id="judgment-note">the last turn, end to end</span>
+      </h2>
+      <!-- tabindex: these regions scroll, so they must be reachable by keyboard
+           (axe: scrollable-region-focusable). -->
+      <div id="judgment-body" class="judgment-body" tabindex="0">
+        <p class="empty">No turn yet. Send a message and this fills with what Iris decided — which memory won, what she refused to read, and where the seconds went.</p>
+      </div>
+    </section>
 
-      <section class="side-section" data-panel="decay">
-        <button class="side-head" aria-expanded="false">
-          <span class="side-icon" aria-hidden="true">∿</span>
-          <span class="side-label">decay</span>
-          <span class="side-count mono" id="count-rot">—</span>
-        </button>
-        <div class="side-body">
-          <svg id="curve" class="curve" viewBox="0 0 600 180" preserveAspectRatio="none" aria-label="retention decay curve"></svg>
-          <div class="rot-list" id="rot-list"></div>
-        </div>
-      </section>
+    <!-- ── memory tiers ─────────────────────────────────────────────── -->
+    <section class="panel panel-memory" aria-labelledby="h-memory">
+      <h2 class="panel-title" id="h-memory">
+        memory
+        <span class="panel-note" id="memory-note">plain text, on disk</span>
+      </h2>
+      <div class="tabs" role="tablist" aria-label="memory tier">
+        <button class="tab is-active" role="tab" aria-selected="true" data-tier="memory">MEMORY.md</button>
+        <button class="tab" role="tab" aria-selected="false" data-tier="user">USER.md</button>
+        <button class="tab" role="tab" aria-selected="false" data-tier="agents">AGENTS.md</button>
+        <button class="tab" role="tab" aria-selected="false" data-tier="dreams">DREAMS.md</button>
+      </div>
+      <pre class="tier-text" id="tier-text" tabindex="0">loading…</pre>
+      <div class="provenance" id="provenance"></div>
+    </section>
 
-      <section class="side-section" data-panel="skills">
-        <button class="side-head" aria-expanded="false">
-          <span class="side-icon" aria-hidden="true">⚙</span>
-          <span class="side-label">skills</span>
-          <span class="side-count mono" id="count-skills">—</span>
-        </button>
-        <div class="side-body">
-          <div class="skill-list" id="skill-list">loading…</div>
-        </div>
-      </section>
+    <!-- ── the dream diary ──────────────────────────────────────────── -->
+    <section class="panel panel-dreams" aria-labelledby="h-dreams">
+      <h2 class="panel-title" id="h-dreams">
+        dream diary
+        <span class="panel-note" id="dream-note">Light → REM → Deep</span>
+      </h2>
+      <pre class="tier-text" id="dreams-text" tabindex="0">loading…</pre>
+      <div class="staged" id="staged-list"></div>
+    </section>
 
-      <section class="side-section" data-panel="tasks">
-        <button class="side-head" aria-expanded="false">
-          <span class="side-icon" aria-hidden="true">◷</span>
-          <span class="side-label">tasks</span>
-          <span class="side-count mono" id="count-tasks">—</span>
-        </button>
-        <div class="side-body">
-          <div class="skill-list" id="task-list">loading…</div>
-        </div>
-      </section>
+    <!-- ── the forgetting curve ─────────────────────────────────────── -->
+    <section class="panel panel-decay" aria-labelledby="h-decay">
+      <h2 class="panel-title" id="h-decay">
+        forgetting
+        <span class="panel-note" id="decay-note">retention by age</span>
+      </h2>
+      <svg id="curve" class="curve" viewBox="0 0 640 220" role="img"
+           aria-labelledby="curve-title" aria-describedby="curve-desc" preserveAspectRatio="none">
+        <title id="curve-title">Retention curve</title>
+        <desc id="curve-desc">Each mote is one stored chunk: age on the horizontal axis, remaining retention on the vertical axis.</desc>
+      </svg>
+      <div class="rot-list" id="rot-list" tabindex="0"></div>
+    </section>
 
-      <section class="side-section" data-panel="spend">
-        <button class="side-head" aria-expanded="false">
-          <span class="side-icon" aria-hidden="true">$</span>
-          <span class="side-label">llm spend</span>
-          <span class="side-count mono" id="count-cost">—</span>
-        </button>
-        <div class="side-body">
-          <div class="skill-list" id="cost-list">loading…</div>
-          <div class="side-meta mono" id="cost-cache"></div>
-        </div>
-      </section>
+    <!-- ── skills & procedures ──────────────────────────────────────── -->
+    <section class="panel panel-skills" aria-labelledby="h-skills">
+      <h2 class="panel-title" id="h-skills">
+        skills
+        <span class="panel-note" id="skills-note">procedural memory</span>
+      </h2>
+      <div class="list" id="skill-list" tabindex="0">loading…</div>
+    </section>
 
-      <section class="side-section" data-panel="traces">
-        <button class="side-head" aria-expanded="false">
-          <span class="side-icon" aria-hidden="true">⤳</span>
-          <span class="side-label">traces</span>
-          <span class="side-count mono"></span>
-        </button>
-        <div class="side-body">
-          <div class="skill-list" id="trace-list">loading…</div>
-        </div>
-      </section>
+    <!-- ── schedule ─────────────────────────────────────────────────── -->
+    <section class="panel panel-tasks" aria-labelledby="h-tasks">
+      <h2 class="panel-title" id="h-tasks">
+        schedule
+        <span class="panel-note" id="tasks-note">her own reminders</span>
+      </h2>
+      <div class="list" id="task-list" tabindex="0">loading…</div>
+    </section>
 
-    </aside>
+    <!-- ── spend ────────────────────────────────────────────────────── -->
+    <section class="panel panel-spend" aria-labelledby="h-spend">
+      <h2 class="panel-title" id="h-spend">
+        spend
+        <span class="panel-note" id="spend-note">every model call, priced</span>
+      </h2>
+      <!-- a <dl>, not a <div>: the stats inside are dt/dd pairs, and dt/dd
+           outside a description list is an axe violation. -->
+      <dl class="spend-totals" id="spend-totals"><span class="empty">loading…</span></dl>
+      <div class="list" id="cost-list" tabindex="0"></div>
+    </section>
 
-    <main class="main">
-      <section class="card chat-card" id="conversation">
-        <div class="chat-log" id="chat-log" role="log" aria-live="polite">
-          <div class="msg msg-iris">
-            <div class="msg-role">IRIS</div>
-            <div class="msg-body">Say hello. On a fresh memory I'll ask a few questions to build your profile.</div>
-          </div>
-        </div>
-        <form class="composer" id="composer">
-          <input id="input" type="text" placeholder="Message Iris…" autocomplete="off" autofocus>
-          <button type="submit" class="send" id="send-btn">send ↵</button>
-        </form>
-        <details class="activity" id="activity">
-          <summary class="activity-toggle mono">agent activity — thinking & tool calls</summary>
-          <div class="activity-body mono" id="activity-body"></div>
-        </details>
-        <div class="hint mono" id="hint"></div>
-      </section>
-    </main>
+    <!-- ── recent turns ─────────────────────────────────────────────── -->
+    <section class="panel panel-traces" aria-labelledby="h-traces">
+      <h2 class="panel-title" id="h-traces">
+        turn history
+        <span class="panel-note" id="traces-note">with latency per stage</span>
+      </h2>
+      <div class="list" id="trace-list" tabindex="0">loading…</div>
+    </section>
 
-  </div>
+  </main>
 
-  <footer class="colophon mono">
-    <span>iris — memory engineering · agent graphs · context engineering</span>
-    <span id="index-stats">index: —</span>
+  <footer class="colophon">
+    <span>memory engineering · context engineering · harness design</span>
+    <span class="mono" id="foot-stats">index —</span>
   </footer>
 
 </div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>
