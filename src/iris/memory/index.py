@@ -25,6 +25,7 @@ import asyncpg
 import numpy as np
 from pgvector.asyncpg import register_vector
 
+from iris import turnlog
 from iris.config import settings
 from iris.memory.llm import LLMClient
 from iris.memory.provenance import Origin, Provenance
@@ -350,13 +351,35 @@ class MemoryIndex:
         if self.reranker is None or not getattr(self.reranker, "enabled", False):
             return
         try:
-            nouls = await self.reranker.relevance(  # type: ignore[attr-defined]
-                query, [hit.content for hit, _ in pairs]
-            )
+            with turnlog.stage("rerank"):
+                nouls = await self.reranker.relevance(  # type: ignore[attr-defined]
+                    query, [hit.content for hit, _ in pairs]
+                )
         except Exception as exc:  # noqa: BLE001 - rerank must never break recall
             log.warning("jev rerank failed, keeping deterministic order: %s", exc)
             return
         self._apply_rerank(nouls, pairs)
+        if nouls:
+            # Why these memories won: the probability JEV gave each of the
+            # candidates it actually scored, plus the deterministic policy
+            # multipliers that decide what may be forgotten.
+            turnlog.record(
+                "rerank",
+                query=query,
+                scored=len(nouls),
+                shortlist=len(pairs),
+                blend=float(getattr(self.reranker, "blend", 0.15)),
+                top=[
+                    {
+                        "path": hit.path,
+                        "p": round(float(prob), 3),
+                        "relevance": round(hit.relevance, 3),
+                        "decay": round(hit.decay, 3),
+                        "score": round(hit.score, 3),
+                    }
+                    for (hit, _emb), prob in list(zip(pairs, nouls, strict=False))[:3]
+                ],
+            )
 
     def _apply_rerank(
         self, nouls: list[float] | None, pairs: list[tuple[MemoryHit, np.ndarray]]

@@ -259,6 +259,21 @@ class Settings(BaseSettings):
     capture_context_chars: int = 4000  # assembled prefix shown to the judgment
     capture_max_per_day: int = 50  # runaway guard on the daily note
 
+    # ── Post-reply passes ────────────────────────────────────────────────
+    # The reflection pass (hallucination triage) only appends to a telemetry
+    # file: it cannot change the reply, the memory or the trace, so it has no
+    # business blocking the turn. Backgrounding it removes one cheap-tier
+    # completion (~2-6 s) from the tail of every retrieval-backed turn. Set
+    # false to run it inline (deterministic tests, or when a run must be
+    # self-contained by the time it returns).
+    reflection_background: bool = True
+    # How long `background.drain()` waits on shutdown before letting go.
+    background_drain_timeout: float = 10.0
+
+    # Per-turn observation buffer: JEV judgments + stage timings, written to
+    # the trace so the judgment layer is inspectable. See iris/turnlog.py.
+    turnlog_enabled: bool = True
+
     # ── Recall cache (semantic memory cache) ─────────────────────────────
     # In-memory query→hits cache in front of search/escalate. Disable for
     # deterministic eval-lab runs (IRIS_RECALL_CACHE=0).

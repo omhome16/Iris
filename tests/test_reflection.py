@@ -7,6 +7,7 @@ from pathlib import Path
 
 from langgraph.checkpoint.memory import MemorySaver
 
+from iris import background
 from iris.agent.chat import ChatGraph
 from iris.memory.llm import LLMClient
 from iris.memory.reflection import ReflectionPass, retrieved_excerpts
@@ -110,6 +111,10 @@ async def test_graph_turn_with_retrieval_writes_flag(tmp_path: Path):
     reply = await graph.respond("when does my lease end?", session_id="t-flag")
     assert "September 1st" in reply
 
+    # The reflection pass runs off the reply path by default, so waiting for it
+    # is explicit. Asserting before the drain would be a race: it usually
+    # finished, because the graph awaits more work after spawning it.
+    assert await background.drain() == 0
     flags = files.root / "config" / "hallucination_flags.jsonl"
     assert flags.exists()
     assert "lease ends Sept 1" in flags.read_text(encoding="utf-8")

@@ -16,12 +16,14 @@ output tokens are free (https://docs.typesafe.ai/models).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from iris import turnlog
 from iris.config import settings
 
 log = logging.getLogger("iris.jev")
@@ -98,6 +100,17 @@ class JevClient:
         self._api_key = (api_key if api_key is not None else settings.typesafe_api_key).strip()
         self._model = (model or settings.jev_model).strip() or "jev-latest"
         self._client: Any | None = None
+        # One client, many concurrent callers: a single turn can issue a rerank
+        # (inside a recall tool), a guard screen (inside web_search) and a
+        # capture judgment, and the reflection pass now runs in the background.
+        # Without this lock two of them can each build a client and leak one.
+        self._lock: asyncio.Lock | None = None
+        # Telemetry for the dashboard: a judgment layer nobody can inspect is
+        # indistinguishable from one that is failing silently.
+        self.requests = 0
+        self.failures = 0
+        self.last_latency_ms = 0
+        self.last_error = ""
 
     # ── availability ─────────────────────────────────────────────────────
     @property
@@ -121,22 +134,41 @@ class JevClient:
     async def _ensure(self) -> Any:
         if self._client is not None:
             return self._client
-        assert AsyncTypeSafeClient is not None  # guarded by `enabled`
-        client = AsyncTypeSafeClient(
-            api_key=self._api_key,
-            model=self._model,
-            timeout=settings.jev_timeout_seconds,
-            retry=RetryPolicy(  # type: ignore[misc]
-                max_retries=1,
-                backoff_initial=0.3,
-                backoff_max=1.5,
-                timeout=settings.jev_timeout_seconds + 5.0,
-            ),
-        )
-        await client.__aenter__()  # mirrors the Telegram MCP client's lifecycle
-        self._client = client
-        log.info("jev client ready (model=%s)", self._model)
-        return client
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            # Re-check inside the lock: whoever lost the race gets this client
+            # instead of building a second one.
+            if self._client is not None:
+                return self._client
+            assert AsyncTypeSafeClient is not None  # guarded by `enabled`
+            client = AsyncTypeSafeClient(
+                api_key=self._api_key,
+                model=self._model,
+                timeout=settings.jev_timeout_seconds,
+                retry=RetryPolicy(  # type: ignore[misc]
+                    max_retries=1,
+                    backoff_initial=0.3,
+                    backoff_max=1.5,
+                    timeout=settings.jev_timeout_seconds + 5.0,
+                ),
+            )
+            await client.__aenter__()  # mirrors the Telegram MCP client's lifecycle
+            self._client = client
+            log.info("jev client ready (model=%s)", self._model)
+            return client
+
+    def status(self) -> dict[str, Any]:
+        """Health of the judgment layer, for `/health` and the dashboard."""
+        return {
+            "enabled": self.enabled,
+            "model": self._model,
+            "reason": "" if self.enabled else self.unavailable_reason(),
+            "requests": self.requests,
+            "failures": self.failures,
+            "last_latency_ms": self.last_latency_ms,
+            "last_error": self.last_error,
+        }
 
     async def close(self) -> None:
         if self._client is not None:
@@ -160,10 +192,13 @@ class JevClient:
         import time
 
         started = time.monotonic()
+        self.requests += 1
         try:
             client = await self._ensure()
             response = await client.system_one(state=state, questions=dict(questions))
         except Exception as exc:  # noqa: BLE001 - heterogeneous transport/API failures
+            self.failures += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"[:240]
             log.warning("jev request failed (%s): %s", type(exc).__name__, exc)
             await self._reset()
             return None
@@ -181,6 +216,8 @@ class JevClient:
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         model = str(getattr(response, "model", "") or self._model)
         latency_ms = int((time.monotonic() - started) * 1000)
+        self.last_latency_ms = latency_ms
+        turnlog.mark("jev", latency_ms)
 
         if self.ledger is not None:
             try:

@@ -29,6 +29,7 @@ from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
 
+from iris import background
 from iris.agent.chat import ApprovalRequired, ChatGraph
 from iris.agent.runtime import Runtime
 from iris.channels.telegram_mcp import TelegramMCPClient
@@ -198,6 +199,10 @@ async def lifespan(app: FastAPI):
                 retry.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await retry
+            # Let post-reply passes finish before the loop goes away. They are
+            # deliberately off the reply path, so without this a shutdown could
+            # drop a reflection write that was already in flight.
+            await background.drain()
             scheduler.shutdown(wait=False)
             await telegram.close()
             await index.close()
@@ -242,7 +247,33 @@ async def health() -> dict:
         "memory": await index.stats(),
         "jev": bool(jev is not None and jev.enabled),
         "telegram": bool(telegram is not None and telegram.connected),
+        # Full judgment-layer health: whether it is live, why not if it is not,
+        # and how it has been behaving (requests, failures, last latency). A
+        # layer that is silently falling back looks identical to a healthy one
+        # without this.
+        "judgment": judgment_status_block(),
+        "background": {"pending": background.pending()},
     }
+
+
+def judgment_status_block() -> dict:
+    """Judgment-layer status for `/health`, safe to call when JEV is absent."""
+    jev = getattr(app.state.runtime, "jev", None) if hasattr(app.state, "runtime") else None
+    if not hasattr(jev, "status"):
+        return {"enabled": False, "reason": "judgment layer not wired", "requests": 0, "failures": 0}
+    return jev.status()
+
+
+@app.get("/jev")
+async def judgment_status(_token: None = Depends(require_token)) -> dict:
+    """The judgment layer's own view of itself.
+
+    Authenticated (unlike `/health`) because it names failure modes and counts,
+    which is operational detail rather than a capability flag.
+    """
+    status = judgment_status_block()
+    status["pending_background"] = background.pending()
+    return status
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -477,9 +508,16 @@ async def mind(_token: None = Depends(require_token)) -> dict:
     from iris.memory.reflection import ReflectionPass
 
     flags = ReflectionPass(runtime.llm, files.root / "config" / "hallucination_flags.jsonl").count()
+    today = files.today()
+    daily = files.daily_note(today)
     return {
         "memory": files.read(files.memory),
         "user": files.read(files.user),
+        "agents": files.read(files.instructions),
+        # The episodic tier was missing from the snapshot, so the dashboard
+        # could show what Iris believes but never what she was told today.
+        "daily": files.read(daily) if daily.exists() else "",
+        "today": today.isoformat(),
         "dreams_tail": dreams,
         "skills": skills,
         "stats": stats,

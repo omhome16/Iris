@@ -108,10 +108,16 @@ class WorkspaceFiles:
     # ── appending (episodic: never rewrite, only append) ──────────────────
     def append_daily(self, text: str, *, day: date | None = None, stamp: bool = True) -> None:
         path = self.daily_note(day)
+        # Built as one string and written in a single call: the journal digest
+        # and the capture note line land in the same file, and a stamp emitted
+        # separately could interleave with the other writer's line.
+        block = ""
+        if stamp:
+            block += f"\n## {datetime.now(ZoneInfo(settings.iris_timezone)).isoformat(timespec='seconds')}\n"
+        block += text.rstrip() + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            if stamp:
-                fh.write(f"\n## {datetime.now(ZoneInfo(settings.iris_timezone)).isoformat(timespec='seconds')}\n")
-            fh.write(text.rstrip() + "\n")
+            fh.write(block)
 
     def append_dreams(self, entry: str) -> None:
         with self.dreams.open("a", encoding="utf-8") as fh:

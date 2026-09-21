@@ -23,6 +23,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from iris import turnlog
 from iris.config import settings
 from iris.jev.client import JevClient, choice, noul
 
@@ -50,6 +51,7 @@ async def suggest_skill(
     """At most one skill for this turn, or none. `screened=False` means JEV
     did not run and the caller should use the deterministic matcher."""
     if jev is None or not jev.enabled or not (message or "").strip() or not skills:
+        turnlog.record("skill", screened=False, reason="suggestion disabled or unavailable")
         return SkillSuggestion(reason="suggestion disabled or unavailable")
     cap = max_candidates if max_candidates is not None else settings.jev_skill_candidates
     roster = list(skills)[: max(1, cap)]
@@ -79,11 +81,20 @@ async def suggest_skill(
     }
     answers = await jev.ask(state, questions)
     if answers is None:
+        turnlog.record("skill", screened=False, reason="jev request failed")
         return SkillSuggestion(reason="jev request failed")
 
     picked = answers.choice("fits")
     confidence = answers.confidence("fits")
     needs = answers.noul("needs_skill")
+    turnlog.record(
+        "skill",
+        screened=True,
+        picked=picked,
+        needs_skill=needs,
+        confidence=confidence,
+        roster=len(roster),
+    )
     if not picked or picked == _NONE:
         log.debug("skill suggestion: no skill fits (needs=%.2f)", needs)
         return SkillSuggestion(needs_skill=needs, confidence=confidence, screened=True, reason="no skill fits")

@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
+from iris import turnlog
 from iris.config import settings
 from iris.jev.client import JevClient, noul, score
 
@@ -98,6 +99,10 @@ async def screen_untrusted_many(
     if not items:
         return []
     if not settings.jev_guard_enabled or jev is None or not jev.enabled:
+        # Recorded even when unscreened: "nothing was checked" and "everything
+        # was checked and passed" look identical in a trace otherwise, and only
+        # one of them is a trust statement.
+        turnlog.record("guard", screened=False, items=len(items), reason="screen disabled or unavailable")
         return [GuardVerdict(reason="screen disabled or unavailable") for _ in items]
 
     head = [
@@ -136,8 +141,10 @@ async def screen_untrusted_many(
             ],
         )
 
-    answers = await jev.ask(state, questions)
+    with turnlog.stage("guard"):
+        answers = await jev.ask(state, questions)
     if answers is None:
+        turnlog.record("guard", screened=False, items=len(head), reason="jev request failed")
         return [GuardVerdict(reason="jev request failed") for _ in items]
 
     verdicts: list[GuardVerdict] = []
@@ -155,6 +162,18 @@ async def screen_untrusted_many(
                 exfiltration,
                 severity,
             )
+        # Every screened item is recorded, not only the hostile ones: the
+        # dashboard should be able to show what passed the door as well as what
+        # was refused at it.
+        turnlog.record(
+            "guard",
+            action=action.value,
+            source=source or "untrusted text",
+            injection=injection,
+            exfiltration=exfiltration,
+            severity=severity,
+            screened=True,
+        )
         verdicts.append(
             GuardVerdict(
                 action=action,

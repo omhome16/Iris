@@ -32,6 +32,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.message import RemoveMessage
 from langgraph.types import Command
 
+from iris import background, turnlog
 from iris.agent.compaction import compact_turn, messages_tokens, trim_messages
 from iris.agent.context import ContextAssembler
 from iris.agent.runtime import Runtime
@@ -205,7 +206,8 @@ class ChatGraph:
 
     async def _assemble(self, state: IrisState) -> dict:
         user_msg = text_of(state["messages"][-1].content)
-        ctx = await self.assembler.assemble(user_msg, session_id=state["session_id"])
+        with turnlog.stage("assemble"):
+            ctx = await self.assembler.assemble(user_msg, session_id=state["session_id"])
         return {"memory_context": ctx}
 
     async def _agent(self, state: IrisState) -> dict:
@@ -223,9 +225,10 @@ class ChatGraph:
         if state.get("stream"):
             return await self._agent_streamed(messages, origin)
         try:
-            text, calls, _thinking = await self.runtime.llm.complete_with_tools(
-                messages, tool_schemas(self.runtime, origin), max_attempts=2
-            )
+            with turnlog.stage("agent"):
+                text, calls, _thinking = await self.runtime.llm.complete_with_tools(
+                    messages, tool_schemas(self.runtime, origin), max_attempts=2
+                )
         except Exception as exc:  # noqa: BLE001 - a provider outage must not 500 the turn
             log.warning("agent LLM call failed: %s", exc)
             return {
@@ -258,8 +261,11 @@ class ChatGraph:
         text_parts: list[str] = []
         calls: list[dict] = []
         try:
-            async for kind, payload in self.runtime.llm.stream_complete_with_tools(
-                messages, tool_schemas(self.runtime, origin), max_attempts=2
+            async for kind, payload in turnlog.stream_stage(
+                "agent",
+                self.runtime.llm.stream_complete_with_tools(
+                    messages, tool_schemas(self.runtime, origin), max_attempts=2
+                ),
             ):
                 if kind == "thinking" and payload:
                     writer({"kind": "thinking", "delta": payload})
@@ -299,7 +305,12 @@ class ChatGraph:
             origin = state.get("origin") or "owner"
             for tc in last.tool_calls:
                 try:
-                    out = await dispatch(self.runtime, tc["name"], tc["args"], origin=origin)
+                    # Timed per call, and accumulated by `turnlog`: a ReAct loop
+                    # can run this node several times per turn, and the tool
+                    # total (which includes any JEV screen or rerank inside the
+                    # tool) is what the owner waits on.
+                    with turnlog.stage("tools"):
+                        out = await dispatch(self.runtime, tc["name"], tc["args"], origin=origin)
                 except GraphInterrupt:
                     raise  # human-in-the-loop: halt the graph, never swallow
                 except Exception as exc:  # noqa: BLE001 - tool errors must not kill the graph
@@ -346,9 +357,40 @@ class ChatGraph:
                     self.runtime.llm,
                     self.runtime.files.root / "config" / "hallucination_flags.jsonl",
                 )
-                await reflection.check(
-                    user_message=user_msg, ai_reply=ai_msg, retrieved=excerpts
+                def run_reflection():
+                    return reflection.check(
+                        user_message=user_msg, ai_reply=ai_msg, retrieved=excerpts
+                    )
+
+                # Hallucination triage only appends to a telemetry file — it
+                # cannot change the reply, the memory or this trace — so it must
+                # not hold the turn open. Awaiting it here cost every
+                # retrieval-backed turn an extra cheap-tier completion.
+                # The coroutine is built inside each branch on purpose: a
+                # `spawn` that cannot schedule closes what it was given, so
+                # creating it eagerly would leave the inline path with a
+                # dead coroutine.
+                spawned = (
+                    background.spawn(run_reflection(), name="iris-reflection")
+                    if settings.reflection_background
+                    else None
                 )
+                if spawned is not None:
+                    turnlog.record("reflection", mode="background", excerpts=len(excerpts))
+                else:
+                    if not settings.reflection_background:
+                        with turnlog.stage("reflection"):
+                            await run_reflection()
+                        turnlog.record("reflection", mode="inline", excerpts=len(excerpts))
+                    else:
+                        # Backgrounding was requested but the loop refused it;
+                        # say so rather than reporting a background pass that
+                        # never ran.
+                        turnlog.record(
+                            "reflection", mode="unavailable", reason="no running event loop"
+                        )
+            else:
+                turnlog.record("reflection", mode="skipped", reason="no retrieval this turn")
         except Exception as exc:  # noqa: BLE001 - reflection must never crash the graph
             log.warning("reflection skipped: %s", exc)
         return {}
@@ -364,21 +406,36 @@ class ChatGraph:
         in dreaming before they can reach MEMORY.md.
         """
         if state.get("origin", "owner") != "owner" or not settings.capture_enabled:
+            turnlog.record("capture", captured=False, reason="not an owner turn")
             return {}
         user_msg, ai_msg = _turn_texts(state["messages"])
         if not worth_capturing(user_msg, ai_msg):
+            # The prefilter is the reason trivial turns cost nothing; saying so
+            # keeps "capture ran and declined" from looking like "capture broke".
+            turnlog.record("capture", captured=False, reason="prefilter declined")
             return {}
         try:
             day = self.runtime.files.today()
             if self.runtime.files.read_daily(day).count("(note)") >= settings.capture_max_per_day:
                 log.info("capture skipped: daily note already at the %d-capture cap", settings.capture_max_per_day)
+                turnlog.record("capture", captured=False, reason=f"daily cap {settings.capture_max_per_day} reached")
                 return {}
-            result = await judge_capture(
-                self.runtime.llm,
-                self.runtime.jev,
-                user_message=user_msg,
-                ai_reply=ai_msg,
-                known_context=state.get("memory_context", ""),
+            with turnlog.stage("capture"):
+                result = await judge_capture(
+                    self.runtime.llm,
+                    self.runtime.jev,
+                    user_message=user_msg,
+                    ai_reply=ai_msg,
+                    known_context=state.get("memory_context", ""),
+                )
+            # Best-effort by contract, so its rejection reason is recorded too:
+            # "declined" and "never ran" are different facts about the mind.
+            turnlog.record(
+                "capture",
+                captured=result.captured,
+                importance=result.importance,
+                reason=result.reason,
+                fact=result.fact if result.captured else "",
             )
             if not result.captured:
                 log.debug("capture declined: %s", result.reason)
@@ -414,9 +471,10 @@ class ChatGraph:
         are removed explicitly with RemoveMessage; the summary is stored in
         state and injected by the agent node."""
         before = len(state["messages"])
-        summary = await compact_turn(
-            self.runtime.llm, self.runtime.files, state["messages"]
-        )
+        with turnlog.stage("compact"):
+            summary = await compact_turn(
+                self.runtime.llm, self.runtime.files, state["messages"]
+            )
         trimmed = trim_messages(state["messages"], settings.compaction_keep_tokens)
         kept_ids = {getattr(m, "id", None) for m in trimmed}
         removals = [
@@ -444,6 +502,7 @@ class ChatGraph:
         *,
         pending: dict | None = None,
         capture: str = "",
+        judgment: dict | None = None,
     ) -> None:
         if self.runtime.traces is None:
             return
@@ -470,6 +529,10 @@ class ChatGraph:
                 # write path is observable rather than something you take on
                 # faith. Empty when the prefilter or the judgment declined.
                 "capture": capture,
+                # Why it turned out this way: the judgment layer's decisions
+                # (rerank, guard, skill, capture, reflection) and per-stage
+                # timings. Omitted when empty so deterministic turns stay small.
+                **(judgment or {}),
             }
         )
 
@@ -505,27 +568,38 @@ class ChatGraph:
             "recursion_limit": settings.graph_recursion_limit,
         }
         started = time.monotonic()
-        try:
-            result = await self.graph.ainvoke(
-                {
-                    "messages": [{"role": "user", "content": _human_content(message, image)}],
-                    "session_id": session_id,
-                    "origin": origin,
-                    "last_capture": "",
-                },
-                config,
+        # Named `turn`, not `log`: the module logger is `log`, and shadowing it
+        # here broke error handling with an AttributeError.
+        with turnlog.collect() as turn:
+            try:
+                result = await self.graph.ainvoke(
+                    {
+                        "messages": [{"role": "user", "content": _human_content(message, image)}],
+                        "session_id": session_id,
+                        "origin": origin,
+                        "last_capture": "",
+                    },
+                    config,
+                )
+            except GraphRecursionError:
+                log.warning("turn exceeded recursion limit %s; returning graceful message", settings.graph_recursion_limit)
+                return "That conversation got deep — let's take it one step at a time. Ask me again."
+            judgment = turn.to_trace() if settings.turnlog_enabled else None
+            if result.get("__interrupt__"):
+                payload = result["__interrupt__"][0].value
+                self._trace_turn(
+                    session_id, message, started, result["messages"], pending=payload, judgment=judgment
+                )
+                raise ApprovalRequired(payload)
+            self._trace_turn(
+                session_id,
+                message,
+                started,
+                result["messages"],
+                capture=result.get("last_capture", ""),
+                judgment=judgment,
             )
-        except GraphRecursionError:
-            log.warning("turn exceeded recursion limit %s; returning graceful message", settings.graph_recursion_limit)
-            return "That conversation got deep — let's take it one step at a time. Ask me again."
-        if result.get("__interrupt__"):
-            payload = result["__interrupt__"][0].value
-            self._trace_turn(session_id, message, started, result["messages"], pending=payload)
-            raise ApprovalRequired(payload)
-        self._trace_turn(
-            session_id, message, started, result["messages"], capture=result.get("last_capture", "")
-        )
-        return result["messages"][-1].content
+            return result["messages"][-1].content
 
     async def resume(self, session_id: str, *, decision: str) -> str:
         """Resume an interrupted thread with the owner's decision.
@@ -537,17 +611,24 @@ class ChatGraph:
             "recursion_limit": settings.graph_recursion_limit,
         }
         started = time.monotonic()
-        try:
-            result = await self.graph.ainvoke(Command(resume=decision), config)
-        except GraphRecursionError:
-            log.warning("resume exceeded recursion limit %s", settings.graph_recursion_limit)
-            return "That conversation got deep — let's take it one step at a time. Ask me again."
-        if result.get("__interrupt__"):
-            payload = result["__interrupt__"][0].value
-            self._trace_turn(session_id, f"<resume: {decision}>", started, result["messages"], pending=payload)
-            raise ApprovalRequired(payload)
-        self._trace_turn(session_id, f"<resume: {decision}>", started, result["messages"])
-        return result["messages"][-1].content
+        with turnlog.collect() as turn:
+            try:
+                result = await self.graph.ainvoke(Command(resume=decision), config)
+            except GraphRecursionError:
+                log.warning("resume exceeded recursion limit %s", settings.graph_recursion_limit)
+                return "That conversation got deep — let's take it one step at a time. Ask me again."
+            judgment = turn.to_trace() if settings.turnlog_enabled else None
+            if result.get("__interrupt__"):
+                payload = result["__interrupt__"][0].value
+                self._trace_turn(
+                    session_id, f"<resume: {decision}>", started, result["messages"],
+                    pending=payload, judgment=judgment,
+                )
+                raise ApprovalRequired(payload)
+            self._trace_turn(
+                session_id, f"<resume: {decision}>", started, result["messages"], judgment=judgment
+            )
+            return result["messages"][-1].content
 
     async def respond_stream(
         self, message: str, *, session_id: str, image: str | None = None, origin: str = "owner"
@@ -563,36 +644,39 @@ class ChatGraph:
             "recursion_limit": settings.graph_recursion_limit,
         }
         started = time.monotonic()
-        try:
-            async for mode, data in self.graph.astream(
-                {
-                    "messages": [{"role": "user", "content": _human_content(message, image)}],
-                    "session_id": session_id,
-                    "origin": origin,
-                    "stream": True,
-                    "last_capture": "",
-                },
-                config,
-                stream_mode=["custom", "updates"],
-            ):
-                yield mode, data
-            snapshot = await self.graph.aget_state(config)
-            interrupts = snapshot.values.get("__interrupt__") if snapshot else None
-            if snapshot and snapshot.next and interrupts:
-                self._trace_turn(
-                    session_id, message, started, snapshot.values.get("messages", []),
-                    pending=interrupts[0].value,
-                )
-                yield "custom", {"kind": "approval", "payload": interrupts[0].value}
-            else:
-                messages = snapshot.values.get("messages", []) if snapshot else []
-                self._trace_turn(
-                    session_id,
-                    message,
-                    started,
-                    messages,
-                    capture=(snapshot.values.get("last_capture", "") if snapshot else ""),
-                )
-        except GraphRecursionError:
-            log.warning("streamed turn exceeded recursion limit %s", settings.graph_recursion_limit)
-            yield "error", "That conversation got deep — let's take it one step at a time. Ask me again."
+        with turnlog.collect() as turn:
+            try:
+                async for mode, data in self.graph.astream(
+                    {
+                        "messages": [{"role": "user", "content": _human_content(message, image)}],
+                        "session_id": session_id,
+                        "origin": origin,
+                        "stream": True,
+                        "last_capture": "",
+                    },
+                    config,
+                    stream_mode=["custom", "updates"],
+                ):
+                    yield mode, data
+                snapshot = await self.graph.aget_state(config)
+                interrupts = snapshot.values.get("__interrupt__") if snapshot else None
+                judgment = turn.to_trace() if settings.turnlog_enabled else None
+                if snapshot and snapshot.next and interrupts:
+                    self._trace_turn(
+                        session_id, message, started, snapshot.values.get("messages", []),
+                        pending=interrupts[0].value, judgment=judgment,
+                    )
+                    yield "custom", {"kind": "approval", "payload": interrupts[0].value}
+                else:
+                    messages = snapshot.values.get("messages", []) if snapshot else []
+                    self._trace_turn(
+                        session_id,
+                        message,
+                        started,
+                        messages,
+                        capture=(snapshot.values.get("last_capture", "") if snapshot else ""),
+                        judgment=judgment,
+                    )
+            except GraphRecursionError:
+                log.warning("streamed turn exceeded recursion limit %s", settings.graph_recursion_limit)
+                yield "error", "That conversation got deep — let's take it one step at a time. Ask me again."
