@@ -17,6 +17,8 @@ workspace/.dreams/
 workspace/config/iris.json
 workspace/config/*.jsonl
 workspace/config/tasks.json
+# backups of the owner's live config, e.g. iris.json.bak-20260820-230028
+workspace/config/*.bak*
 
 # the owner's actual memory is personal data — keep it out of the repo
 # (AGENTS.md and workspace/README.md stay tracked as the generic templates)
@@ -25,6 +27,10 @@ workspace/USER.md
 workspace/DREAMS.md
 workspace/memory/
 workspace/sandbox/
+# skills are learned from the owner's own life, so they are personal too —
+# this directory holds real skills that must never be published by a blanket
+# `git add`. The directory is recreated at boot when it is missing.
+workspace/skills/
 *.sqlite3
 *.log
 

@@ -1,0 +1,17 @@
+flowchart TB
+    DN["memory/YYYY-MM-DD.md<br/>agent (note) lines from the day"]
+    ST[".dreams/staging-*.jsonl<br/>(older staged signals)"]
+    RF[".dreams/recall_feedback.jsonl<br/>which memories got recalled"]
+    L["LIGHT phase - score + gate<br/>no model calls, no untrusted content"]
+    R["REM phase - cheap model<br/>groups signals into themes"]
+    D["DEEP phase - rewrite MEMORY.md<br/>archive pre-image, supersede old facts"]
+    M["MEMORY.md updated<br/>durable facts with anchors"]
+    DI["DREAMS.md diary<br/>read-only for Iris"]
+    DN --> L
+    ST --> L
+    RF --> L
+    L --> R
+    R --> D
+    D --> M
+    D --> DI
+    D -. "consume: erase promoted (note) lines" .-> DN

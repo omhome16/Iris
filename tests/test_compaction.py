@@ -21,7 +21,6 @@ from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
 
-
 # ── trim_messages: pair integrity ─────────────────────────────────────────
 
 def _history() -> list:
@@ -105,7 +104,6 @@ def make_runtime(files: WorkspaceFiles, llm: LLMClient) -> Runtime:
 
 async def _onboard(files: WorkspaceFiles) -> None:
     from fakes import WizardLLM
-    from iris.onboarding import OnboardingWizard
 
     w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:

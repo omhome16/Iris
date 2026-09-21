@@ -9,7 +9,8 @@ Layout (per the memory orchestration v2 design):
                              retrieval happens agent-side via memory_search)
     agent → tools → agent   (repeat until no tool calls)
     agent → journal         (digest line + reflection, post-reply, no LLM on hot path)
-    journal → END
+    journal → capture       (write-path safety net; one judgment, prefiltered)
+    capture → END
 
 Durability: AsyncPostgresSaver checkpointer, one thread per session_id.
 Context discipline: the assembled memory prefix is added once per turn and
@@ -23,7 +24,7 @@ import logging
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.errors import GraphInterrupt, GraphRecursionError
@@ -36,8 +37,10 @@ from iris.agent.context import ContextAssembler
 from iris.agent.runtime import Runtime
 from iris.agent.tools import dispatch, tool_schemas
 from iris.config import settings
+from iris.memory.capture import condense, judge_capture, note_line, worth_capturing
 from iris.memory.chunking import estimate_tokens
 from iris.onboarding import OnboardingWizard
+from iris.text import text_of
 
 log = logging.getLogger("iris.graph")
 
@@ -69,10 +72,12 @@ learn skills. Be warm, curious, concise.
   old or multi-step, use lane='escalate' (daily notes, no decay). If it
   needs digging across notes and files, call deep_dive. Never answer from
   nothing; if you don't remember, say so and search.
-- Note policy: after a turn that revealed new durable facts, call note
-  (importance 1-10, 2-5 trigger phrases). Never note what is already in
-  your context or what you just retrieved — only genuinely new information
-  the owner gave you. Only an explicit owner request uses remember.
+- Note policy: a capture pass already writes durable facts from your
+  conversations to the daily note, so you do NOT need to call note for
+  routine remembering — it happens for you. Use note only when something is
+  important enough to record deliberately (importance 8+), and remember when
+  your owner explicitly asks you to. Never note what is already in your
+  context or what you just retrieved — only genuinely new information.
 - Skills: when a stored skill matches, apply it and report the true outcome
   (success or failed) so its score stays honest.
 - Human-in-the-loop: destructive actions (forget) halt for your owner's
@@ -87,16 +92,10 @@ class IrisState(MessagesState):
     stream: bool = False
     session_id: str
     origin: str = "owner"
-
-
-def _text_of(content: object) -> str:
-    """Text from a message content that may be a plain string or a list of
-    content blocks (OpenAI image/text format)."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
-    return ""
+    # What the capture node wrote this turn ("" when it wrote nothing). Cleared
+    # at the start of every turn so a trace can never report a previous turn's
+    # capture as if it were this one's.
+    last_capture: str = ""
 
 
 def _human_content(message: str, image: str | None) -> object:
@@ -106,6 +105,24 @@ def _human_content(message: str, image: str | None) -> object:
             {"type": "image_url", "image_url": {"url": image}},
         ]
     return message
+
+
+def _turn_texts(messages: list) -> tuple[str, str]:
+    """The owner's message and Iris's final reply for this turn.
+
+    Shared by the journal and capture nodes so both always read the same pair
+    — "the last human message and the last non-tool-call AI message".
+    """
+    user_msg = next(
+        (text_of(m.content) for m in reversed(messages) if getattr(m, "type", "") == "human"),
+        "",
+    )
+    ai_msg = next(
+        (text_of(m.content) for m in reversed(messages)
+         if getattr(m, "type", "") == "ai" and not getattr(m, "tool_calls", None)),
+        "",
+    )
+    return user_msg, ai_msg
 
 
 def _to_llm_messages(messages: list) -> list[dict]:
@@ -138,7 +155,7 @@ def _to_llm_messages(messages: list) -> list[dict]:
         elif getattr(m, "type", "") == "human":
             content = m.content
             if isinstance(content, list) and i != last_human:
-                content = _text_of(content) or "[photo attached]"
+                content = text_of(content) or "[photo attached]"
             out.append({"role": "user", "content": content})
         else:
             out.append({"role": "assistant", "content": m.content})
@@ -175,7 +192,7 @@ class ChatGraph:
             # sleep hour…) is scaffolding, not conversation — wipe it from the
             # thread so future turns never replay it into the model's context.
             removals = [
-                RemoveMessage(id=getattr(m, "id"))
+                RemoveMessage(id=m.id)
                 for m in state["messages"]
                 if getattr(m, "id", None)
             ]
@@ -187,7 +204,7 @@ class ChatGraph:
         return {"messages": [{"role": "assistant", "content": reply, "type": "ai"}, *removals]}
 
     async def _assemble(self, state: IrisState) -> dict:
-        user_msg = _text_of(state["messages"][-1].content)
+        user_msg = text_of(state["messages"][-1].content)
         ctx = await self.assembler.assemble(user_msg, session_id=state["session_id"])
         return {"memory_context": ctx}
 
@@ -300,21 +317,11 @@ class ChatGraph:
     async def _journal(self, state: IrisState) -> dict:
         """Post-turn evidence, owner sessions only. Appends a digest line to
         today's daily note and runs the reflection pass (retrieval-backed
-        turns only). No model calls on the reply path — extraction is gone;
-        durable facts are written by the agent itself via the note tool."""
+        turns only). No model calls on the reply path — durable facts are
+        written by the capture node (below) and by the agent's own note tool."""
         if state.get("origin", "owner") != "owner":
             return {}
-        if len(state["messages"]) < 2:
-            return {}
-        user_msg = next(
-            (_text_of(m.content) for m in reversed(state["messages"]) if getattr(m, "type", "") == "human"),
-            "",
-        )
-        ai_msg = next(
-            (_text_of(m.content) for m in reversed(state["messages"])
-             if getattr(m, "type", "") == "ai" and not getattr(m, "tool_calls", None)),
-            "",
-        )
+        user_msg, ai_msg = _turn_texts(state["messages"])
         if not user_msg or not ai_msg:
             return {}
 
@@ -346,6 +353,46 @@ class ChatGraph:
             log.warning("reflection skipped: %s", exc)
         return {}
 
+    async def _capture(self, state: IrisState) -> dict:
+        """Write-path safety net — see `iris/memory/capture.py`.
+
+        The v2 design left curation to the agent's `note` tool, which the
+        traces show it never calls. This node restores the write volume while
+        keeping v2's actual win: a deterministic prefilter decides whether to
+        spend a judgment, so trivial turns stay free. Captures are ADD-only,
+        agent provenance, and must still clear the Light-phase promotion gate
+        in dreaming before they can reach MEMORY.md.
+        """
+        if state.get("origin", "owner") != "owner" or not settings.capture_enabled:
+            return {}
+        user_msg, ai_msg = _turn_texts(state["messages"])
+        if not worth_capturing(user_msg, ai_msg):
+            return {}
+        try:
+            day = self.runtime.files.today()
+            if self.runtime.files.read_daily(day).count("(note)") >= settings.capture_max_per_day:
+                log.info("capture skipped: daily note already at the %d-capture cap", settings.capture_max_per_day)
+                return {}
+            result = await judge_capture(
+                self.runtime.llm,
+                self.runtime.jev,
+                user_message=user_msg,
+                ai_reply=ai_msg,
+                known_context=state.get("memory_context", ""),
+            )
+            if not result.captured:
+                log.debug("capture declined: %s", result.reason)
+                return {}
+            self.runtime.files.append_daily(note_line(result), day=day, stamp=False)
+            await self.runtime.reindexer.index_daily_note(f"memory/{day.isoformat()}.md")
+            log.info("captured memory (importance %.0f): %s", result.importance, result.fact[:120])
+            return {
+                "last_capture": f"[{result.importance:.0f}] {condense(result.fact, max_chars=140)}"
+            }
+        except Exception as exc:  # noqa: BLE001 - the safety net must never fail a turn
+            log.warning("capture skipped: %s", exc)
+        return {}
+
     def _after_agent(self, state: IrisState) -> Literal["tools", "journal"]:
         last = state["messages"][-1]
         return "tools" if getattr(last, "tool_calls", None) else "journal"
@@ -373,9 +420,9 @@ class ChatGraph:
         trimmed = trim_messages(state["messages"], settings.compaction_keep_tokens)
         kept_ids = {getattr(m, "id", None) for m in trimmed}
         removals = [
-            RemoveMessage(id=getattr(m, "id"))
+            RemoveMessage(id=m.id)
             for m in state["messages"]
-            if getattr(m, "id", None) is not None and getattr(m, "id") not in kept_ids
+            if getattr(m, "id", None) is not None and m.id not in kept_ids
         ]
         log.info(
             "compacted %d -> %d messages (removed %d, summary %d words)",
@@ -396,6 +443,7 @@ class ChatGraph:
         messages: list,
         *,
         pending: dict | None = None,
+        capture: str = "",
     ) -> None:
         if self.runtime.traces is None:
             return
@@ -408,16 +456,20 @@ class ChatGraph:
                         "args": json.dumps(tc.get("args", {}), ensure_ascii=False)[:200],
                     }
                 )
-        replies = [_text_of(m.content) for m in messages if getattr(m, "type", "") == "ai" and not getattr(m, "tool_calls", None)]
+        replies = [text_of(m.content) for m in messages if getattr(m, "type", "") == "ai" and not getattr(m, "tool_calls", None)]
         self.runtime.traces.record(
             {
                 "ts": datetime.now().isoformat(timespec="seconds"),
                 "session_id": session_id,
-                "user": _text_of(user_msg)[:200],
+                "user": text_of(user_msg)[:200],
                 "reply": (replies[-1] if replies else "")[:500],
                 "tools": tools,
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "pending": pending,
+                # What this turn taught her, surfaced in the dashboard so the
+                # write path is observable rather than something you take on
+                # faith. Empty when the prefilter or the judgment declined.
+                "capture": capture,
             }
         )
 
@@ -431,6 +483,7 @@ class ChatGraph:
         g.add_node("agent", self._agent)
         g.add_node("tools", self._tools)
         g.add_node("journal", self._journal)
+        g.add_node("capture", self._capture)
 
         g.add_conditional_edges(START, self._route, {"onboarding": "onboarding", "assemble_context": "assemble_context"})
         g.add_edge("onboarding", END)
@@ -438,7 +491,8 @@ class ChatGraph:
         g.add_edge("compact", "agent")
         g.add_conditional_edges("agent", self._after_agent, {"tools": "tools", "journal": "journal"})
         g.add_conditional_edges("tools", self._after_tools, {"compact": "compact", "agent": "agent"})
-        g.add_edge("journal", END)
+        g.add_edge("journal", "capture")
+        g.add_edge("capture", END)
         return g.compile(checkpointer=self.checkpointer)
 
     # ── entry ────────────────────────────────────────────────────────────
@@ -457,6 +511,7 @@ class ChatGraph:
                     "messages": [{"role": "user", "content": _human_content(message, image)}],
                     "session_id": session_id,
                     "origin": origin,
+                    "last_capture": "",
                 },
                 config,
             )
@@ -467,7 +522,9 @@ class ChatGraph:
             payload = result["__interrupt__"][0].value
             self._trace_turn(session_id, message, started, result["messages"], pending=payload)
             raise ApprovalRequired(payload)
-        self._trace_turn(session_id, message, started, result["messages"])
+        self._trace_turn(
+            session_id, message, started, result["messages"], capture=result.get("last_capture", "")
+        )
         return result["messages"][-1].content
 
     async def resume(self, session_id: str, *, decision: str) -> str:
@@ -513,6 +570,7 @@ class ChatGraph:
                     "session_id": session_id,
                     "origin": origin,
                     "stream": True,
+                    "last_capture": "",
                 },
                 config,
                 stream_mode=["custom", "updates"],
@@ -528,7 +586,13 @@ class ChatGraph:
                 yield "custom", {"kind": "approval", "payload": interrupts[0].value}
             else:
                 messages = snapshot.values.get("messages", []) if snapshot else []
-                self._trace_turn(session_id, message, started, messages)
+                self._trace_turn(
+                    session_id,
+                    message,
+                    started,
+                    messages,
+                    capture=(snapshot.values.get("last_capture", "") if snapshot else ""),
+                )
         except GraphRecursionError:
             log.warning("streamed turn exceeded recursion limit %s", settings.graph_recursion_limit)
             yield "error", "That conversation got deep — let's take it one step at a time. Ask me again."

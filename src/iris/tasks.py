@@ -85,14 +85,14 @@ def parse_when(when: str) -> datetime:
             candidate += timedelta(days=1)
         return candidate
 
-    # Bare "tomorrow" / "today" — documented shorthand that was never
-    # parsed; DEFAULT_REMINDER_HOUR existed but was dead code.
+    # Bare "tomorrow" / "today" → the documented reminder hour (09:00).
+    # This previously used `nightly_sleep_hour` for "tomorrow", which silently
+    # scheduled a bare "tomorrow" reminder at the owner's 04:00 dream hour.
     m = _DAY_ONLY_RE.match(text)
     if m:
         day_part = m.group(1).casefold()
         base = now.date() + (timedelta(days=1) if day_part == "tomorrow" else timedelta(0))
-        hour = settings.nightly_sleep_hour if day_part == "tomorrow" else DEFAULT_REMINDER_HOUR
-        candidate = datetime(base.year, base.month, base.day, hour, 0, tzinfo=tz)
+        candidate = datetime(base.year, base.month, base.day, DEFAULT_REMINDER_HOUR, 0, tzinfo=tz)
         if candidate <= now:
             candidate += timedelta(days=1)
         return candidate

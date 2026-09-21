@@ -20,7 +20,6 @@ import math
 import time
 from dataclasses import dataclass, field
 from datetime import date
-from pathlib import Path
 
 import asyncpg
 import numpy as np
@@ -69,6 +68,12 @@ class MemoryHit:
     observed_at: date
     evergreen: bool
     lane: str = "default"  # "default" | "escalate"
+    # Scoring components, kept so the relevance term can be replaced (JEV
+    # rerank) without recomputing or losing the deterministic policy
+    # multipliers. `score` is always `reranked_relevance * decay * imp_mult`.
+    relevance: float = 0.0  # hybrid vector+FTS blend (or cosine in vector_only)
+    decay: float = 1.0
+    imp_mult: float = 1.0
 
 
 @dataclass(slots=True)
@@ -89,9 +94,12 @@ def recency_weight(observed: date, *, today: date | None = None, half_life_days:
 
 
 class MemoryIndex:
-    def __init__(self, dsn: str, llm: LLMClient) -> None:
+    def __init__(self, dsn: str, llm: LLMClient, reranker: object | None = None) -> None:
         self.dsn = dsn
         self.llm = llm
+        # Optional `JevReranker`. Typed loosely so the memory layer never
+        # depends on the JEV package (delete it and the index still works).
+        self.reranker = reranker
         self._pool: asyncpg.Pool | None = None
         self._cache: dict[tuple, tuple[float, list[MemoryHit]]] = {}
 
@@ -167,11 +175,10 @@ class MemoryIndex:
             dim,
             settings.embedding_dim,
         )
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("DROP TABLE IF EXISTS memory_chunks")
-                await conn.execute(_SCHEMA)
-                await register_vector(conn)
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("DROP TABLE IF EXISTS memory_chunks")
+            await conn.execute(_SCHEMA)
+            await register_vector(conn)
         self.clear_cache()
 
     async def close(self) -> None:
@@ -187,7 +194,10 @@ class MemoryIndex:
         self.clear_cache()
         async with self._pool.acquire() as conn:
             await register_vector(conn)
-            for record, emb in zip(records, embeddings):
+            # strict=False: an embedder returning short is a provider quirk —
+            # index what we have and let the next reindex fill the gap, rather
+            # than aborting the boot pass.
+            for record, emb in zip(records, embeddings, strict=False):
                 await conn.execute(
                     """
                     INSERT INTO memory_chunks
@@ -231,7 +241,7 @@ class MemoryIndex:
             await register_vector(conn)
             async with conn.transaction():
                 await conn.execute("DELETE FROM memory_chunks WHERE path = $1", path)
-                for record, emb in zip(records, embeddings):
+                for record, emb in zip(records, embeddings, strict=False):
                     await conn.execute(
                         """
                         INSERT INTO memory_chunks
@@ -281,9 +291,9 @@ class MemoryIndex:
         ablation: set[str] | None = None,
     ) -> list[MemoryHit]:
         """Ablation knobs (eval-lab only, default = full pipeline):
-        {"vector_only", "no_decay", "no_importance", "no_mmr"}."""
+        {"vector_only", "no_decay", "no_importance", "no_mmr", "no_rerank"}."""
         ablation = ablation or set()
-        origins = [o.value for o in (require_origin or {o for o in Origin})]
+        origins = [o.value for o in (require_origin or set(Origin))]
         key = self._cache_key(
             query=query, top_k=top_k, mrr_top_k=mrr_top_k, origins=origins, ablation=ablation
         )
@@ -296,38 +306,76 @@ class MemoryIndex:
 
         hits: list[MemoryHit] = []
         pairs: list[tuple[MemoryHit, np.ndarray]] = []
+        vector_only = "vector_only" in ablation
         for row in rows:
             vscore = float(row["vscore"])
             fscore = float(row["fscore"]) / 10.0  # normalize FTS rank
-            if "vector_only" in ablation:
-                score = vscore
-            else:
-                hybrid = 0.6 * vscore + 0.4 * min(fscore, 1.0)
-                decay = 1.0 if row["evergreen"] else recency_weight(row["observed_at"])
-                if "no_decay" in ablation:
-                    decay = 1.0
-                importance = 1.0 + (float(row["importance"]) / 10.0)  # 1..2 multiplier
-                if "no_importance" in ablation:
-                    importance = 1.0
-                score = hybrid * decay * importance
+            hybrid = vscore if vector_only else 0.6 * vscore + 0.4 * min(fscore, 1.0)
+            decay = 1.0 if row["evergreen"] else recency_weight(row["observed_at"])
+            if "no_decay" in ablation:
+                decay = 1.0
+            imp_mult = 1.0 + (float(row["importance"]) / 10.0)  # 1..2 multiplier
+            if "no_importance" in ablation:
+                imp_mult = 1.0
             hit = MemoryHit(
                 content=row["content"],
                 path=row["path"],
-                score=score,
+                score=hybrid * decay * imp_mult,
                 importance=float(row["importance"]),
                 origin=Origin(row["origin"]),
                 observed_at=row["observed_at"],
                 evergreen=row["evergreen"],
+                relevance=hybrid,
+                decay=decay,
+                imp_mult=imp_mult,
             )
             pairs.append((hit, np.asarray(row["embedding"].to_list(), dtype=float)))
 
         pairs.sort(key=lambda p: p[0].score, reverse=True)
+        if not vector_only and "no_rerank" not in ablation:
+            await self._rerank(query, pairs)
+
         if "no_mmr" in ablation:
             hits = [hit for hit, _ in pairs[: mrr_top_k or top_k]]
         else:
             hits = self._mmr(pairs, top_k=mrr_top_k or top_k)
         self._store(key, hits)
         return hits
+
+    async def _rerank(self, query: str, pairs: list[tuple[MemoryHit, np.ndarray]]) -> None:
+        """Replace the relevance term with a JEV judgment, in place.
+
+        Best-effort: any failure leaves the deterministic ordering untouched.
+        """
+        if self.reranker is None or not getattr(self.reranker, "enabled", False):
+            return
+        try:
+            nouls = await self.reranker.relevance(  # type: ignore[attr-defined]
+                query, [hit.content for hit, _ in pairs]
+            )
+        except Exception as exc:  # noqa: BLE001 - rerank must never break recall
+            log.warning("jev rerank failed, keeping deterministic order: %s", exc)
+            return
+        self._apply_rerank(nouls, pairs)
+
+    def _apply_rerank(
+        self, nouls: list[float] | None, pairs: list[tuple[MemoryHit, np.ndarray]]
+    ) -> None:
+        """Blend the JEV relevance back in and re-sort, in place.
+
+        The deterministic policy multipliers are preserved exactly: JEV answers
+        *how relevant is this*, never *what should Iris be allowed to forget*.
+        Split from `_rerank` so the arithmetic is testable without a model.
+        """
+        if not nouls:
+            return
+        blend = float(getattr(self.reranker, "blend", 0.15))
+        # zip over the returned prefix only: candidates past the rerank cap keep
+        # their deterministic score.
+        for (hit, _emb), noul_score in zip(pairs, nouls, strict=False):
+            hit.relevance = (1.0 - blend) * float(noul_score) + blend * hit.relevance
+            hit.score = hit.relevance * hit.decay * hit.imp_mult
+        pairs.sort(key=lambda p: p[0].score, reverse=True)
 
     async def _escalate_rows(self, q_emb, query: str, top_k: int) -> list[asyncpg.Record]:
         async with self._pool.acquire() as conn:
@@ -371,20 +419,24 @@ class MemoryIndex:
             vscore = float(row["vscore"])
             fscore = float(row["fscore"]) / 10.0  # normalize FTS rank
             hybrid = 0.6 * vscore + 0.4 * min(fscore, 1.0)
-            importance = 1.0 + (float(row["importance"]) / 10.0)  # 1..2 multiplier
+            imp_mult = 1.0 + (float(row["importance"]) / 10.0)  # 1..2 multiplier
             hit = MemoryHit(
                 content=row["content"],
                 path=row["path"],
-                score=hybrid * importance,
+                score=hybrid * imp_mult,
                 importance=float(row["importance"]),
                 origin=Origin(row["origin"]),
                 observed_at=row["observed_at"],
                 evergreen=row["evergreen"],
                 lane="escalate",
+                relevance=hybrid,
+                decay=1.0,  # the escalation lane deliberately has no decay
+                imp_mult=imp_mult,
             )
             pairs.append((hit, np.asarray(row["embedding"].to_list(), dtype=float)))
 
         pairs.sort(key=lambda p: p[0].score, reverse=True)
+        await self._rerank(query, pairs)
         hits = self._mmr(pairs, top_k=mrr_top_k or top_k)
         self._store(key, hits)
         return hits

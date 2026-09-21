@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from iris.memory.dreaming import DreamEngine, LightPhase, RemPhase, StagedSignal
-from iris.memory.forgetting import age_distribution, retention_fraction, supersession_stats
 from iris.memory.files import WorkspaceFiles
+from iris.memory.forgetting import age_distribution, retention_fraction, supersession_stats
 from iris.memory.provenance import Origin, Provenance
 from iris.memory.skills import Skill, SkillLibrary
 

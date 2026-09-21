@@ -13,8 +13,8 @@ import pytest
 BRIDGE_DIR = Path(__file__).resolve().parents[1] / "mcp_servers" / "telegram"
 sys.path.insert(0, str(BRIDGE_DIR))
 
-import server  # noqa: E402
-from server import CommandDispatcher  # noqa: E402
+import server
+from server import CommandDispatcher
 
 
 class FakeCoreTransport(httpx.AsyncBaseTransport):

@@ -1,0 +1,27 @@
+# Without this file the build context includes .env, the whole .venv and the
+# owner's real memory workspace. None of it belongs in an image layer, and
+# shipping .env into a context is one miswritten COPY away from a leaked secret.
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+
+# the owner's memory (source of truth, mounted as a volume at runtime)
+workspace/
+mcp_servers/telegram/data/
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# runtime noise
+*.log
+learning doc/
+.postgres-data/

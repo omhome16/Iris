@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -26,7 +26,7 @@ def test_ledger_append_and_totals(tmp_path: Path):
     ledger.record(model="gemini/gemini-2.5-flash", tier="cheap", prompt_tokens=1_000_000, completion_tokens=100_000)
 
     assert path.exists()
-    lines = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()]
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert len(lines) == 3
     assert lines[0]["cost"] == 0.30 + 0.25
 
@@ -42,7 +42,7 @@ def test_ledger_append_and_totals(tmp_path: Path):
     assert daily[0]["cost"] == pytest.approx(3 * 0.55, abs=1e-4)
 
     weekly = CostLedger(path).weekly_totals()
-    assert weekly[0]["week"].startswith(str(datetime.now(timezone.utc).isocalendar().year))
+    assert weekly[0]["week"].startswith(str(datetime.now(UTC).isocalendar().year))
 
 
 def test_ledger_unknown_model_records_zero_cost(tmp_path: Path):

@@ -18,7 +18,8 @@ import json
 import logging
 import random
 import time
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import litellm
 

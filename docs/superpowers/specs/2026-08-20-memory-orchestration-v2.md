@@ -1,7 +1,18 @@
 # Iris — Memory Orchestration v2 (LLM-in-the-loop, one curator)
 
+> **Mostly implemented — with one measured caveat.** The code now matches §4
+> (one curator, thin ADD-only writes, agent-invoked retrieval, session-kind
+> gating, the `note` tool, `skill_apply(outcome)`), and §7's expected win was
+> real for retrieval. But the **§7 estimate for the write path did not hold in
+> practice**: across 36 traced turns the agent called `note` **zero** times, so
+> leaving the "is this worth keeping?" decision entirely to the strong model's
+> goodwill means `MEMORY.md` grows only through compaction flush and explicit
+> `remember`. Treat §4.6's note policy as necessary but *not sufficient*; a
+> cheap pre-filter that decides *when to ask the agent to note* is the open
+> item. For current behaviour see `README.md` and `docs/jev.md`.
+
 **Date:** 2026-08-20
-**Status:** Proposed — supersedes §4.3/§4.5/§5 of `2026-08-15-iris-design.md` (write path, recall lanes, chat graph)
+**Status:** Implemented (see the caveat above) — supersedes §4.3/§4.5/§5 of `2026-08-15-iris-design.md` (write path, recall lanes, chat graph)
 **Goal:** Remove redundant pipelines, cut per-turn cost, and shift memory decisions into the agent's own reasoning + tool calls — while keeping the deterministic gates that make memory trustworthy.
 
 ---

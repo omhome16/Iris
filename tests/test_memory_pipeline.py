@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from asyncpg.exceptions import InvalidCatalogNameError
 
 from iris.memory.files import WorkspaceFiles
 from iris.memory.index import ChunkRecord, MemoryIndex
@@ -36,7 +37,7 @@ class FakeLLM(LLMClient):
         out = []
         for t in texts:
             vec = np.zeros(self.embedding_dim, dtype=float)
-            for i, tok in enumerate(t.split()):
+            for tok in t.split():
                 h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
                 vec[h % self.embedding_dim] += 1.0
             norm = np.linalg.norm(vec) or 1.0
@@ -57,7 +58,23 @@ async def env(tmp_path: Path):
     )
     llm = FakeLLM()
     index = MemoryIndex(DSN, llm)
-    await index.connect()
+    try:
+        await index.connect()
+    except InvalidCatalogNameError as exc:
+        # A missing database used to surface as five cryptic asyncpg errors.
+        # These tests deliberately use their own database, so say how to make
+        # one instead of leaving the reader to decode the traceback.
+        pytest.fail(
+            f"the memory-pipeline test database does not exist ({exc}). Create it with:\n"
+            "  docker compose exec postgres psql -U iris -d iris -c 'CREATE DATABASE iris_test;'",
+            pytrace=False,
+        )
+    except OSError as exc:
+        pytest.fail(
+            f"no Postgres is listening at the test DSN ({exc}). Start one with:\n"
+            "  docker compose up -d postgres",
+            pytrace=False,
+        )
     yield files, index
     await index.close()
 
@@ -87,7 +104,7 @@ async def test_recency_decay_ranks_fresh_higher(env):
 
 
 async def test_upsert_and_forget(env):
-    files, index = env
+    _files, index = env
     await index.upsert_chunks(
         [
             ChunkRecord(

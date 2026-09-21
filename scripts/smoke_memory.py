@@ -1,11 +1,10 @@
 """Live smoke test: real models, memory pipeline v2 (note → daily note → dreaming → recall)."""
 
 import asyncio
-from datetime import date
 from pathlib import Path
 
 from iris.config import settings
-from iris.memory.dreaming import DreamEngine, LightPhase
+from iris.memory.dreaming import LightPhase
 from iris.memory.files import WorkspaceFiles
 from iris.memory.index import MemoryIndex
 from iris.memory.llm import LLMClient
@@ -23,7 +22,7 @@ async def main() -> None:
     print(f"  appended: {entry}")
 
     print("--- 2. light phase picks up (note) lines from daily notes ---")
-    promoted, staged = LightPhase().run(
+    promoted, _staged = LightPhase().run(
         files.staging_dir(),
         daily_dir=files.root / "memory",
         scan_days=settings.dream_note_scan_days,

@@ -84,7 +84,7 @@ def fresh_start(workspace: Path) -> None:
 async def truncate_index() -> None:
     index = MemoryIndex(settings.postgres_dsn, LLMClient())
     await index.connect()
-    async with index._pool.acquire() as conn:  # noqa: SLF001 - setup script
+    async with index._pool.acquire() as conn:
         await conn.execute("TRUNCATE memory_chunks")
     await index.close()
 

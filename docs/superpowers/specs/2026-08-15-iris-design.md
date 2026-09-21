@@ -1,7 +1,20 @@
 # Iris — Design Document
 
+> **HISTORICAL — do not treat as current.** This is the original design record
+> (2026-08-15) and it is kept for its decision rationale, not as a description
+> of the code. It has since been superseded on: the write path (§4.3 — the
+> per-turn extraction judge was removed; durable facts are now written by the
+> agent's own `note`/`remember` tools), the recall lanes (§4.5 — retrieval is
+> agent-invoked, not per-turn auto-injected), and the tool list (§5). Two
+> claims here were never implemented: **standing intents / SQLite prospective
+> memory** and the **ablation study of no-memory vs files-only vs full engine**
+> (the shipped eval lab ablates *recall components*, not whole memory layers).
+> For current behaviour see `README.md`, `docs/jev.md` and the code under
+> `src/iris/`; for the second-generation write path see
+> `2026-08-20-memory-orchestration-v2.md`.
+
 **Date:** 2026-08-15
-**Status:** Approved (Approach A: LangGraph core + our own memory engine)
+**Status:** Historical (superseded) — original approach A: LangGraph core + our own memory engine
 **Goal:** A production-grade personal AI assistant with a *visible mind* — a memory system we engineered ourselves, measured with evals, accessed via Telegram over MCP.
 
 ---

@@ -11,7 +11,6 @@ import pytest
 import iris.memory.index as index_mod
 from iris.config import settings
 from iris.memory.index import MemoryIndex
-from iris.memory.provenance import Origin
 
 
 class CountingLLM:

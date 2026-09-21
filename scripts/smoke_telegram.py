@@ -47,7 +47,7 @@ async def main() -> None:
             print("MCP handshake OK")
             await client.__aexit__(None, None, None)
             break
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if attempt == 19:
                 raise
             log.warning("retry (%d): %s", attempt, exc)

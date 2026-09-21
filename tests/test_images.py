@@ -12,7 +12,6 @@ from iris.agent.chat import ChatGraph, _to_llm_messages
 from iris.memory.files import WorkspaceFiles
 from iris.memory.llm import LLMClient
 from iris.onboarding import OnboardingWizard
-
 from test_agent_graph import make_runtime
 
 DATA_URI = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
@@ -36,7 +35,6 @@ class CaptureLLM(LLMClient):
 
 async def _onboard(files: WorkspaceFiles) -> None:
     from fakes import WizardLLM
-    from iris.onboarding import OnboardingWizard
 
     w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:

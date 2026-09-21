@@ -12,8 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from iris.memory.llm import LLMClient
@@ -76,7 +75,7 @@ class ReflectionPass:
             with self.path.open("a", encoding="utf-8") as fh:
                 for f in flags:
                     line = {
-                        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
                         "claim": str(f.get("claim"))[:500],
                         "why": str(f.get("why"))[:300],
                         "reply_excerpt": ai_reply[:200],

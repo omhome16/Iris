@@ -5,13 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from iris.agent.chat import ChatGraph
 from iris.memory.llm import LLMClient
 from iris.memory.reflection import ReflectionPass, retrieved_excerpts
-
 from test_agent_graph import make_runtime
 
 
@@ -119,10 +117,9 @@ async def test_graph_turn_with_retrieval_writes_flag(tmp_path: Path):
 
 async def test_graph_turn_without_retrieval_no_flag(tmp_path: Path):
     from fakes import WizardLLM
-    from test_agent_graph import FakeLLM
-
     from iris.memory.files import WorkspaceFiles
     from iris.onboarding import OnboardingWizard
+    from test_agent_graph import FakeLLM
 
     files = WorkspaceFiles(tmp_path)
     w = OnboardingWizard(files, WizardLLM())

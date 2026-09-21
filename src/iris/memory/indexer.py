@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
-from pathlib import Path
 
-from iris.memory.chunking import chunk_text, contextualize_chunks, estimate_tokens
+from iris.memory.chunking import chunk_text, contextualize_chunks
 from iris.memory.files import WorkspaceFiles
 from iris.memory.index import ChunkRecord, MemoryIndex
 from iris.memory.llm import LLMClient

@@ -21,7 +21,7 @@ from iris.security import require_token
 BRIDGE_DIR = Path(__file__).resolve().parents[1] / "mcp_servers" / "telegram"
 sys.path.insert(0, str(BRIDGE_DIR))
 
-import server  # noqa: E402
+import server
 
 PROTECTED = {"/chat", "/voice", "/onboarding", "/sleep", "/rot", "/retention",
              "/mind", "/skills", "/forget", "/forget/confirm", "/tasks", "/costs"}

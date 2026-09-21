@@ -22,7 +22,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -295,7 +295,7 @@ class CommandDispatcher:
         data = r.json()
         if not data.get("ok"):
             return f"Forget failed: {data.get('error', 'unknown')}"
-        return f"Retired. The entry is superseded, not deleted — provenance kept."
+        return "Retired. The entry is superseded, not deleted — provenance kept."
 
 
 def _format_mind(data: dict) -> str:
@@ -394,63 +394,62 @@ async def _stream_chat_turn(chat_id: int, text: str, image: str | None = None) -
     if image:
         payload["image"] = image
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
-            async with client.stream(
-                "POST",
-                f"{IRIS_CORE_URL}/chat/stream",
-                json=payload,
-                headers=_core_headers(),
-            ) as r:
-                async for line in r.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
+        async with httpx.AsyncClient(timeout=300) as client, client.stream(
+            "POST",
+            f"{IRIS_CORE_URL}/chat/stream",
+            json=payload,
+            headers=_core_headers(),
+        ) as r:
+            async for line in r.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    ev = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+                kind = ev.get("kind")
+                if kind == "text":
+                    buf += ev.get("delta", "")
+                    display = buf
+                elif kind == "reply":
+                    buf = ev.get("text", buf)
+                    display = buf
+                elif kind == "tool_call" and not display.endswith("…"):
+                    name = (ev.get("call") or {}).get("name", "tool")
+                    display = f"{buf or '…'}\n\n🔧 {name}…"
+                elif kind == "approval":
+                    # Human-in-the-loop: telegram forgets stay on the
+                    # bridge's own two-phase flow, so cancel the graph
+                    # interrupt and point the owner at /forget.
+                    buf = "I'd like your OK before touching that memory — reply /forget <text> and confirm there."
+                    display = buf
                     try:
-                        ev = json.loads(line[6:])
-                    except json.JSONDecodeError:
-                        continue
-                    kind = ev.get("kind")
-                    if kind == "text":
-                        buf += ev.get("delta", "")
-                        display = buf
-                    elif kind == "reply":
-                        buf = ev.get("text", buf)
-                        display = buf
-                    elif kind == "tool_call" and not display.endswith("…"):
-                        name = (ev.get("call") or {}).get("name", "tool")
-                        display = f"{buf or '…'}\n\n🔧 {name}…"
-                    elif kind == "approval":
-                        # Human-in-the-loop: telegram forgets stay on the
-                        # bridge's own two-phase flow, so cancel the graph
-                        # interrupt and point the owner at /forget.
-                        buf = "I'd like your OK before touching that memory — reply /forget <text> and confirm there."
-                        display = buf
-                        try:
-                            async with httpx.AsyncClient(timeout=30) as c:
-                                await c.post(
-                                    f"{IRIS_CORE_URL}/chat/resume",
-                                    json={"session_id": str(chat_id), "decision": "cancelled"},
-                                    headers=_core_headers(),
-                                )
-                        except Exception:  # noqa: BLE001 - best-effort cancel
-                            log.warning("approval cancel failed", exc_info=True)
-                    if not display or kind not in ("text", "reply", "tool_call", "approval"):
-                        continue
-                    now = time.monotonic()
-                    if sent_id is None:
-                        result = await _tg(
-                            "sendMessage", chat_id=chat_id, text=display, disable_web_page_preview=True
-                        )
-                        if result:
-                            sent_id = result.get("message_id")
-                            last_edit = now
-                            last_sent = display
-                    elif now - last_edit >= throttle:
-                        await _tg(
-                            "editMessageText", chat_id=chat_id, message_id=sent_id, text=display,
-                            disable_web_page_preview=True,
-                        )
+                        async with httpx.AsyncClient(timeout=30) as c:
+                            await c.post(
+                                f"{IRIS_CORE_URL}/chat/resume",
+                                json={"session_id": str(chat_id), "decision": "cancelled"},
+                                headers=_core_headers(),
+                            )
+                    except Exception:
+                        log.warning("approval cancel failed", exc_info=True)
+                if not display or kind not in ("text", "reply", "tool_call", "approval"):
+                    continue
+                now = time.monotonic()
+                if sent_id is None:
+                    result = await _tg(
+                        "sendMessage", chat_id=chat_id, text=display, disable_web_page_preview=True
+                    )
+                    if result:
+                        sent_id = result.get("message_id")
                         last_edit = now
                         last_sent = display
+                elif now - last_edit >= throttle:
+                    await _tg(
+                        "editMessageText", chat_id=chat_id, message_id=sent_id, text=display,
+                        disable_web_page_preview=True,
+                    )
+                    last_edit = now
+                    last_sent = display
         if sent_id is not None and buf and buf != last_sent:
             # final sync: throttled edits leave the first chunk on screen
             # (e.g. "H") while buf grew to the full reply. Always flush.
@@ -559,7 +558,6 @@ async def _poll_loop() -> None:
                     continue
                 chat_id = msg["chat"]["id"]
                 text = (msg.get("text") or "").strip()
-                user = (msg.get("from") or {}).get("first_name", "Owner")
 
                 # Owner gate: once the instance is bound (env or first
                 # /start), nobody else may chat with the graph, run
