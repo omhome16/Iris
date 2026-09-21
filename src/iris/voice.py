@@ -37,7 +37,7 @@ async def transcribe(audio_path: Path) -> str:
                 file=f,
                 api_key=settings.groq_api_key,
             )
-        except Exception as exc:  # noqa: BLE001 - surface a readable error
+        except Exception as exc:
             log.warning("transcription failed: %s", exc)
             raise RuntimeError(f"transcription failed: {type(exc).__name__}") from exc
     text = (resp.text or "").strip()

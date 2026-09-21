@@ -10,17 +10,21 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("iris.ledger")
 
-# USD per 1M tokens, keyed by model name; "" matches any unknown → $0.
-# Prices are estimates — update as provider pricing changes. Models not
-# listed here (groq/openrouter free variants, local ollama) price at $0.
+# USD per 1M tokens (input, output), keyed by model name.
+#
+# Two kinds of entry, and the difference is reported rather than hidden:
+# - a priced model has an explicit tuple above zero
+# - a zero entry is either a genuinely free model (openrouter `:free`, local
+#   ollama, Groq free tier) or an unknown one. `unpriced_models()` in the
+#   totals makes that distinction visible, so `/costs` can never present a
+#   $0.00 total as if it were a measured cost.
 PRICE_PER_1M: dict[str, tuple[float, float]] = {
     "gemini/gemini-2.5-flash": (0.30, 2.50),
     "gemini/gemini-2.5-flash-preview-08-17": (0.30, 2.50),
@@ -30,7 +34,30 @@ PRICE_PER_1M: dict[str, tuple[float, float]] = {
     "gemini/gemini-3.5-flash": (0.30, 2.50),
     "gemini/gemini-3.1-flash-lite": (0.10, 0.40),
     "gemini/gemini-embedding-001": (0.15, 0.0),
+    # JEV / TypeSafe System One — input-only billing, $42 per billion tokens
+    # (https://docs.typesafe.ai/models).
+    "jev-latest": (0.042, 0.0),
+    "jev-1.13.0": (0.042, 0.0),
+    # free tiers + local: priced at zero on purpose, not merely unknown.
+    # Groq ids verified against console.groq.com/docs/models on 2026-09-21;
+    # gpt-oss is on Groq's free tier, so zero here is a real free-tier price,
+    # not a missing entry (the old qwen/compound ids were both dead ones).
+    "groq/openai/gpt-oss-120b": (0.0, 0.0),
+    "groq/openai/gpt-oss-20b": (0.0, 0.0),
+    "groq/whisper-large-v3-turbo": (0.0, 0.0),
+    "openrouter/nvidia/nemotron-3-super-120b-a12b:free": (0.0, 0.0),
+    "openrouter/nvidia/nemotron-nano-9b-v2:free": (0.0, 0.0),
+    "ollama/qwen2.5-coder:3b": (0.0, 0.0),
+    "ollama/nomic-embed-text": (0.0, 0.0),
 }
+
+
+def unpriced_models(rows: list[dict]) -> list[str]:
+    """Models that appeared in the ledger without an entry in the price table.
+
+    Surfaced so a zero-cost rollup is never mistaken for a measured one.
+    """
+    return sorted({str(r.get("model", "")) for r in rows if str(r.get("model", "")) not in PRICE_PER_1M})
 
 
 def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -61,7 +88,7 @@ class CostLedger:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = {
-                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "ts": datetime.now(UTC).isoformat(timespec="seconds"),
                 "model": model,
                 "tier": tier,
                 "prompt_tokens": int(prompt_tokens),
@@ -140,4 +167,8 @@ class CostLedger:
             "completion_tokens": sum(int(r.get("completion_tokens", 0)) for r in rows),
             "cached_tokens": cached,
             "cache_hit_rate": _cache_hit_rate(prompt, cached),
+            # Honesty fields: a $0.00 total is only meaningful if every model
+            # in it was either explicitly priced or explicitly free.
+            "unpriced_models": unpriced_models(rows),
+            "cost_is_measured": bool(rows) and not unpriced_models(rows),
         }

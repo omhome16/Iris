@@ -10,6 +10,12 @@ component at a time:
   no_decay       hybrid + importance, recency removed
   no_importance  hybrid + decay, importance removed
   no_mmr         full scoring but no diversity re-ranking (top-k by score)
+  no_rerank      full scoring but the JEV relevance term is not consulted
+
+The rerank row matters because JEV replaces the hybrid relevance term. The lab
+forces the JEV client off (`jev_disabled_reason`), so `full` here is the
+*deterministic* pipeline and this study stays reproducible and model-free. To
+compare a live rerank, add modes that enable JEV and run the lab twice.
 
 Metric per mode: Recall@5, MRR@5, and mean rank of the gold hit — averaged
 over a query set where gold facts are deliberately old, low-importance,
@@ -34,9 +40,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from iris.memory.index import ChunkRecord, MemoryIndex  # noqa: E402
-from iris.memory.llm import LLMClient  # noqa: E402
-from iris.memory.provenance import Origin, Provenance  # noqa: E402
+from iris.config import settings
+from iris.memory.index import ChunkRecord, MemoryIndex
+from iris.memory.llm import LLMClient
+from iris.memory.provenance import Origin, Provenance
 
 DSN = os.getenv(
     "IRIS_EVAL_POSTGRES_DSN",
@@ -51,6 +58,7 @@ MODES = {
     "no_decay": {"no_decay"},
     "no_importance": {"no_importance"},
     "no_mmr": {"no_mmr"},
+    "no_rerank": {"no_rerank"},
 }
 
 
@@ -137,12 +145,15 @@ QUERIES = [
 
 
 async def main() -> int:
+    # Deterministic study: never consult JEV, regardless of whether a key is
+    # configured. A model in the loop would make these numbers unreproducible.
+    settings.jev_disabled_reason = "eval lab: deterministic ablation only"
     llm = FakeLLM()
     index = MemoryIndex(DSN, llm)
     await index.connect()
 
     # deterministic corpus: wipe the test table, insert facts
-    async with index._pool.acquire() as conn:  # noqa: SLF001 - eval lab
+    async with index._pool.acquire() as conn:
         await conn.execute("DELETE FROM memory_chunks")
     for f in corpus():
         await index.upsert_chunks(
@@ -184,7 +195,7 @@ async def main() -> int:
 
     # ── escalation lane: does it close the gap the default lane leaves? ──
     await index.connect()
-    async with index._pool.acquire() as conn:  # noqa: SLF001 - eval lab
+    async with index._pool.acquire() as conn:
         await conn.execute("DELETE FROM memory_chunks")
     for f in corpus():
         await index.upsert_chunks(
@@ -234,6 +245,11 @@ async def main() -> int:
         lines.append(
             f"| {mode} | {r['recall@5']:.2f} | {r['mrr@5']:.2f} | {r['mean_rank']:.2f} | {delta} |"
         )
+    lines.append("")
+    lines.append(
+        "`no_rerank` isolates the hybrid relevance term that JEV replaces when a "
+        "TypeSafe key is configured; see `docs/jev.md`."
+    )
     lines += [
         "",
         "**Reading:** recall@5 = fraction of queries whose gold fact made the top-5. "
@@ -261,8 +277,8 @@ async def main() -> int:
         "",
         "## Escalation lane — does it close the gap?",
         "",
-        f"| metric | value |",
-        f"|---|---|",
+        "| metric | value |",
+        "|---|---|",
         f"| escalation recall@5 | {sum(esc_recall)/len(esc_recall):.2f} |",
         f"| escalation mrr@5 | {sum(esc_mrr)/len(esc_mrr):.2f} |",
         "",

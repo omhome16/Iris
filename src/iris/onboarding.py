@@ -24,11 +24,11 @@ import logging
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from iris.config import settings
 from iris.memory.files import WorkspaceFiles
+from iris.text import text_of
 
 log = logging.getLogger("iris.onboarding")
 
@@ -117,21 +117,6 @@ class OnboardingState:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2) + "\n"
-
-
-def _text_of(content) -> str:
-    """Extract plain text from a message content that may be a string or an
-    OpenAI-style block list (image attachments, etc.)."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [
-            b.get("text", "")
-            for b in content
-            if isinstance(b, dict) and isinstance(b.get("text"), str)
-        ]
-        return "\n".join(parts)
-    return str(content)
 
 
 class OnboardingWizard:
@@ -329,7 +314,7 @@ class OnboardingWizard:
         what the model said next (or the completion greeting)."""
         if self.state.onboarded:
             return self.current_prompt()
-        answer = _text_of(answer)
+        answer = text_of(answer)
         self.state.history.append({"role": "user", "content": answer.strip()})
         self.state.step += 1
         message, done = await self._ask_model()

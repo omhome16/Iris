@@ -6,11 +6,12 @@ agent code free of global state.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Callable
 
 from iris.channels.telegram_mcp import TelegramMCPClient
+from iris.jev.client import JevClient
 from iris.memory.dreaming import DreamEngine
 from iris.memory.files import WorkspaceFiles
 from iris.memory.forgetting import ForgettingEngine
@@ -38,6 +39,9 @@ class Runtime:
     forgetting: ForgettingEngine
     skills: SkillLibrary
     sandbox: Sandbox
+    # Typed-judgment layer (TypeSafe JEV). Optional: every consumer degrades
+    # to its deterministic path when this is None or disabled.
+    jev: JevClient | None = None
     telegram: TelegramMCPClient | None = None
     tasks: TaskScheduler | None = None
     research: object | None = None

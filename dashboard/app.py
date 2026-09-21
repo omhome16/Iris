@@ -10,17 +10,25 @@ Serves the single-page UI and proxies every read/write to iris-core:
   GET  /api/health  index stats
   POST /api/sleep   run the dream cycle
   POST /api/forget  two-phase HITL retire
+
+Auth: the dashboard is a browser app, so it uses HTTP Basic instead of a bearer
+header (the browser then sends the credentials on every fetch automatically).
+Set DASHBOARD_USER + DASHBOARD_PASSWORD to enable it — without them the app is
+open and logs a warning. This matters because the dashboard proxies *write*
+routes: an unauthenticated dashboard is an unauthenticated `/forget/confirm`.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
+import secrets
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -28,11 +36,47 @@ log = logging.getLogger("iris.dashboard")
 
 IRIS_CORE_URL = os.environ.get("IRIS_API_URL", "http://127.0.0.1:8000").rstrip("/")
 IRIS_API_TOKEN = os.environ.get("IRIS_API_TOKEN", "")
+DASHBOARD_USER = os.environ.get("DASHBOARD_USER", "")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 app = FastAPI(title="Iris Dashboard")
 app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(HERE, "templates"))
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    """HTTP Basic gate. Enabled only when both env vars are set.
+
+    `/healthz` is exempt so a container healthcheck needs no credentials —
+    it returns liveness only, never memory content.
+    """
+    if not (DASHBOARD_USER and DASHBOARD_PASSWORD) or request.url.path == "/healthz":
+        return await call_next(request)
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("basic "):
+        try:
+            decoded = base64.b64decode(header[6:]).decode("utf-8")
+            user, _, password = decoded.partition(":")
+        except Exception:  # noqa: BLE001 - malformed header is just a 401
+            user = password = ""
+        if secrets.compare_digest(user, DASHBOARD_USER) and secrets.compare_digest(
+            password, DASHBOARD_PASSWORD
+        ):
+            return await call_next(request)
+    return PlainTextResponse(
+        "authentication required",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Iris dashboard"'},
+    )
+
+
+if not (DASHBOARD_USER and DASHBOARD_PASSWORD):
+    log.warning(
+        "DASHBOARD_USER/DASHBOARD_PASSWORD are not set — the dashboard is "
+        "unauthenticated and its write routes (chat, /sleep, /forget) are open."
+    )
 
 
 def _core_headers() -> dict[str, str]:
@@ -50,6 +94,12 @@ async def _proxy(path: str, method: str = "GET", json: dict | None = None) -> di
             return r.json()
         except Exception:  # noqa: BLE001
             return r.text
+
+
+@app.get("/healthz")
+async def healthz() -> PlainTextResponse:
+    """Liveness only — reachable without credentials for container checks."""
+    return PlainTextResponse("ok")
 
 
 @app.get("/")

@@ -10,6 +10,7 @@ Boot sequence (lifespan):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -23,7 +24,7 @@ from pathlib import Path
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import Depends, FastAPI, File, Form, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
@@ -32,19 +33,22 @@ from iris.agent.chat import ApprovalRequired, ChatGraph
 from iris.agent.runtime import Runtime
 from iris.channels.telegram_mcp import TelegramMCPClient
 from iris.config import settings
+from iris.jev.client import JevClient
+from iris.jev.recall import JevReranker
 from iris.memory.dreaming import DreamEngine
 from iris.memory.files import ConcurrencyError, WorkspaceFiles
-from iris.memory.forgetting import ForgettingEngine, decay_curve
+from iris.memory.forgetting import ForgettingEngine, decay_curve, supersede_in_text
 from iris.memory.index import MemoryIndex
-from iris.memory.provenance import Origin
 from iris.memory.indexer import Reindexer
 from iris.memory.llm import LLMClient
+from iris.memory.provenance import Origin
 from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
-from iris.trace import TraceLogger
 from iris.scheduler import build_scheduler
 from iris.security import require_token, warn_if_unset
+from iris.text import text_of
+from iris.trace import TraceLogger
 from iris.voice import transcribe
 
 log = logging.getLogger("iris")
@@ -82,18 +86,6 @@ def _sync_owner_chat_id() -> bool:
     return False
 
 
-def _text_of(content: object) -> str:
-    """Text from a message content that may be a plain string or a list of
-    content blocks (OpenAI image/text format)."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(
-            str(p.get("text", "")) for p in content if isinstance(p, dict)
-        )
-    return ""
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     files = WorkspaceFiles(Path(settings.workspace_dir))
@@ -103,7 +95,17 @@ async def lifespan(app: FastAPI):
 
     ledger = CostLedger(files.root / "config" / "llm_calls.jsonl")
     llm = LLMClient(ledger=ledger)
-    index = MemoryIndex(settings.postgres_dsn, llm)
+
+    # JEV (TypeSafe System One): typed judgments for recall reranking, skill
+    # selection and untrusted-content screening. Optional by design — when the
+    # key is absent every integration falls back to the deterministic path.
+    jev = JevClient(ledger=ledger)
+    if jev.enabled:
+        log.info("jev enabled (model=%s)", settings.jev_model)
+    else:
+        log.info("jev disabled (%s): using deterministic paths", jev.unavailable_reason())
+
+    index = MemoryIndex(settings.postgres_dsn, llm, reranker=JevReranker(jev))
     await index.connect()
 
     reindexer = Reindexer(files, index, llm)
@@ -128,6 +130,7 @@ async def lifespan(app: FastAPI):
             forgetting=ForgettingEngine(index),
             skills=SkillLibrary(files),
             sandbox=Sandbox(Path(settings.sandbox_dir)),
+            jev=jev,
             traces=TraceLogger(files.root / "config" / "traces.jsonl"),
         )
 
@@ -156,7 +159,11 @@ async def lifespan(app: FastAPI):
                         return
                     delay = min(delay * 1.5, 120.0)
 
-            asyncio.create_task(_retry_telegram())
+            # Keep a reference: an unreferenced task can be garbage-collected
+            # mid-flight, which for a retry loop means the Telegram channel
+            # silently never reconnects after a bridge restart.
+            retry_task = asyncio.create_task(_retry_telegram())
+            app.state.telegram_retry_task = retry_task
 
         graph = ChatGraph(runtime, saver)
 
@@ -187,9 +194,14 @@ async def lifespan(app: FastAPI):
         try:
             yield
         finally:
+            if (retry := getattr(app.state, "telegram_retry_task", None)) is not None and not retry.done():
+                retry.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await retry
             scheduler.shutdown(wait=False)
             await telegram.close()
             await index.close()
+            await jev.close()
 
 
 app = FastAPI(title="Iris", version="0.1.0", lifespan=lifespan)
@@ -216,8 +228,21 @@ class ChatResponse(BaseModel):
 
 @app.get("/health")
 async def health() -> dict:
+    """Liveness + readiness: index reachability *and* optional-layer state.
+
+    `/health` is deliberately the one unauthenticated route, so it reports
+    capability flags rather than data.
+    """
     index: MemoryIndex = app.state.runtime.index
-    return {"status": "ok", "service": "iris", "memory": await index.stats()}
+    jev = getattr(app.state.runtime, "jev", None)
+    telegram = getattr(app.state.runtime, "telegram", None)
+    return {
+        "status": "ok",
+        "service": "iris",
+        "memory": await index.stats(),
+        "jev": bool(jev is not None and jev.enabled),
+        "telegram": bool(telegram is not None and telegram.connected),
+    }
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -243,7 +268,7 @@ async def chat(
     except TimeoutError:
         log.warning("chat turn exceeded 120s budget; returning fallback")
         reply = "I'm still thinking — the language model is under load right now. Give me a minute and say that again."
-    except Exception as exc:  # noqa: BLE001 - a turn must never 500; surface it instead
+    except Exception as exc:
         log.exception("chat turn failed")
         reply = f"I hit an unexpected error ({type(exc).__name__}) — say that again, or try later."
     # wizard state lives on disk; reload for a fresh read (graph may have run it)
@@ -279,7 +304,7 @@ async def chat_resume(
         )
     except TimeoutError:
         reply = "I'm still thinking — the language model is under load right now. Give me a minute and say that again."
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.exception("chat resume failed")
         reply = f"I hit an unexpected error ({type(exc).__name__}) — say that again, or try later."
     wizard = OnboardingWizard(app.state.runtime.files)
@@ -315,13 +340,13 @@ async def chat_stream(
                     elif mode == "error":
                         yield f"data: {json.dumps({'kind': 'reply', 'text': data})}\n\n"
                     elif mode == "updates":
-                        for node, update in (data or {}).items():
+                        for _node, update in (data or {}).items():
                             for m in (update or {}).get("messages", []):
                                 mtype = m.get("type") if isinstance(m, dict) else getattr(m, "type", "")
                                 mcalls = m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)
                                 mcontent = m.get("content") if isinstance(m, dict) else m.content
                                 if mtype == "ai" and not mcalls:
-                                    yield f"data: {json.dumps({'kind': 'reply', 'text': _text_of(mcontent)})}\n\n"
+                                    yield f"data: {json.dumps({'kind': 'reply', 'text': text_of(mcontent)})}\n\n"
         except TimeoutError:
             yield f"data: {json.dumps({'kind': 'reply', 'text': 'I am still thinking — the turn ran past its 120 s budget. Ask me again in a bit.'})}\n\n"
 
@@ -341,12 +366,23 @@ async def voice_turn(
     """
     import tempfile
 
+    # The bridge supplies the Telegram chat id as `user_id`, and it also chooses
+    # the graph thread — so this field is both identity and session key. Without
+    # a gate, any caller (with auth off, which is the dev default) could run
+    # turns under another chat's session. `require_token` above is the primary
+    # control; this is the second, and it holds even when auth is disabled.
+    if settings.owner_chat_id is not None and str(user_id) != str(settings.owner_chat_id):
+        raise HTTPException(status_code=403, detail="voice turns are owner-only")
+
     graph: ChatGraph = app.state.graph
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ogg")
-    tmp_path = Path(tmp.name)
+    # mkstemp + fdopen rather than NamedTemporaryFile: the descriptor is closed
+    # deterministically even if the upload read fails mid-stream, and the path
+    # is removed in `finally` either way.
+    fd, name = tempfile.mkstemp(suffix=".ogg")
+    tmp_path = Path(name)
     try:
-        tmp.write(await audio.read())
-        tmp.close()
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(await audio.read())
         transcript = await transcribe(tmp_path)
     except Exception as exc:  # noqa: BLE001 - a voice turn must never 500
         log.warning("voice turn failed: %s", exc)
@@ -362,7 +398,7 @@ async def voice_turn(
         reply = f"I need your approval before doing that ({exc.payload.get('action', 'action')}). Say it again to try once more."
     except TimeoutError:
         reply = "I'm still thinking — the language model is under load. Say that again in a bit."
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.exception("voice graph turn failed")
         reply = f"I hit an unexpected error ({type(exc).__name__}) — try again later."
     return {"reply": reply, "transcript": transcript}
@@ -551,20 +587,8 @@ async def forget_confirm(
     if chunk is None:
         return {"ok": False, "error": "chunk not found in index"}
     marker = f"(superseded {datetime.now().isoformat()[:10]})"
-    # Indexed chunks may carry contextual-retrieval headers, so an exact
-    # replace can miss even when the fact is present in the raw file —
-    # fall back to a line-level match before giving up.
-    new = content.replace(chunk["content"], f"{chunk['content']} {marker}")
-    if new == content:
-        lines = str(chunk["content"]).strip().splitlines()
-        probe = lines[0][:120] if lines else ""
-        target_line = next(
-            (line for line in content.splitlines() if probe and probe in line), None
-        )
-        if target_line is None:
-            return {"ok": False, "error": "could not locate the entry text in MEMORY.md"}
-        new = content.replace(target_line, f"{target_line} {marker}")
-    if new == content:
+    new = supersede_in_text(content, chunk["content"], marker)
+    if new is None:
         return {"ok": False, "error": "could not locate the entry text in MEMORY.md"}
     try:
         files.write_curated(files.memory, new)

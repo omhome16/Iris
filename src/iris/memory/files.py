@@ -76,13 +76,25 @@ class WorkspaceFiles:
         if not path.exists():
             return ""
         text = path.read_text(encoding="utf-8")
-        if max_tokens and estimate_tokens(text) > max_tokens:
-            # Keep the TAIL: curated files are append-mostly, so the newest
-            # facts live at the end. Truncating the head preserved stale
-            # entries and silently dropped what changed most recently.
-            tokens = text.split()
-            text = " ".join(tokens[-max_tokens:]) + "\n\n[truncated: budget exceeded]"
-        return text
+        if not max_tokens or estimate_tokens(text) <= max_tokens:
+            return text
+        # Keep the TAIL: curated files are append-mostly, so the newest facts
+        # live at the end. Truncating the head preserved stale entries and
+        # silently dropped what changed most recently.
+        #
+        # Truncate by whole lines, not whitespace: the previous version joined
+        # tokens with single spaces, which flattened every bullet and heading
+        # in MEMORY.md into one unreadable wall whenever a budget was hit.
+        kept: list[str] = []
+        used = 0
+        for line in reversed(text.splitlines()):
+            cost = estimate_tokens(line) + 1
+            if used + cost > max_tokens:
+                break
+            kept.append(line)
+            used += cost
+        kept.reverse()
+        return "\n".join(kept) + "\n\n[truncated: tail kept, token budget reached]"
 
     def bootstrap_memory(self) -> str:
         return self.read(self.memory, max_tokens=settings.bootstrap_budget_tokens)
@@ -115,9 +127,8 @@ class WorkspaceFiles:
         `content` is capped to a short snippet — enough for the Light phase
         to match staged signals against, without duplicating the note itself.
         """
-        from datetime import datetime
-
         import json
+        from datetime import datetime
 
         file = self.recall_feedback_path()
         max_bytes = settings.recall_feedback_max_bytes

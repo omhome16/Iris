@@ -14,7 +14,6 @@ from iris.agent.tools import get_tools
 from iris.memory.files import WorkspaceFiles
 from iris.memory.llm import LLMClient
 from iris.onboarding import OnboardingWizard
-
 from test_agent_graph import make_runtime
 
 
@@ -83,7 +82,6 @@ async def test_deep_dive_runs_only_when_agent_invokes_it(tmp_path: Path, monkeyp
     from iris.config import settings
 
     monkeypatch.setattr(settings, "mrr_top_k", 3)
-    monkeypatch.setattr(settings, "trigger_inject_max", 3)
     files = WorkspaceFiles(tmp_path)
     await _onboard(files)
 
@@ -124,7 +122,6 @@ async def test_no_auto_research_without_agent_invocation(tmp_path: Path, monkeyp
     from iris.config import settings
 
     monkeypatch.setattr(settings, "mrr_top_k", 3)
-    monkeypatch.setattr(settings, "trigger_inject_max", 3)
     files = WorkspaceFiles(tmp_path)
     await _onboard(files)
 
@@ -144,7 +141,6 @@ async def test_no_auto_research_without_agent_invocation(tmp_path: Path, monkeyp
 
 async def _onboard(files: WorkspaceFiles) -> None:
     from fakes import WizardLLM
-    from iris.onboarding import OnboardingWizard
 
     w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:

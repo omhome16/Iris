@@ -36,7 +36,7 @@ class FakeLLM(LLMClient):
         out = []
         for t in texts:
             vec = np.zeros(self.embedding_dim, dtype=float)
-            for i, tok in enumerate(t.split()):
+            for tok in t.split():
                 h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
                 vec[h % self.embedding_dim] += 1.0
             norm = np.linalg.norm(vec) or 1.0
@@ -87,7 +87,7 @@ async def test_recency_decay_ranks_fresh_higher(env):
 
 
 async def test_upsert_and_forget(env):
-    files, index = env
+    _files, index = env
     await index.upsert_chunks(
         [
             ChunkRecord(

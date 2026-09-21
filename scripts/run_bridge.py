@@ -34,6 +34,6 @@ if __name__ == "__main__":
     _load_env()
     import asyncio
 
-    import server  # noqa: E402 - env must be loaded before server reads it
+    import server
 
     asyncio.run(server.main())

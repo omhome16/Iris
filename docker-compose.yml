@@ -21,15 +21,28 @@ services:
     env_file: .env
     environment:
       POSTGRES_DSN: postgresql+psycopg://iris:${POSTGRES_PASSWORD:-iris_dev_password}@postgres:5432/iris
-      WORKSPACE_DIR: /app/workspace
+      # The image runs as uid 10001 and expects its data under /data, so the
+      # host workspace mounts there rather than at /app/workspace. On Linux the
+      # host directory must be writable by that uid:
+      #   sudo chown -R 10001:10001 ./workspace
+      WORKSPACE_DIR: /data/workspace
       TELEGRAM_MCP_URL: http://telegram-mcp:8100/mcp
+      # The bridge persists the owner chat id it learns from /start. Share that
+      # file with the core, otherwise `_sync_owner_chat_id` can never find it
+      # inside the container and morning briefs / scheduled-task delivery stay
+      # silent unless OWNER_CHAT_ID is pinned in the environment.
+      OWNER_FILE: /app/telegram-data/owner.json
     volumes:
-      - ./workspace:/app/workspace
+      - ./workspace:/data/workspace
+      - ./mcp_servers/telegram/data:/app/telegram-data
     depends_on:
       postgres:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      # Internal service: the dashboard proxies to it, the bridge calls it.
+      # Bound to loopback so `docker compose up` never exposes an
+      # auth-disabled API to the network.
+      - "127.0.0.1:8000:8000"
     command: uvicorn iris.api:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
@@ -52,7 +65,8 @@ services:
       iris-core:
         condition: service_healthy
     ports:
-      - "8100:8100"
+      # Internal service (MCP server for iris-core) — loopback only.
+      - "127.0.0.1:8100:8100"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket;socket.create_connection(('127.0.0.1',8100),3).close()\""]
       interval: 10s
@@ -64,18 +78,19 @@ services:
     build: ./dashboard
     env_file: .env
     environment:
-      WORKSPACE_DIR: /app/workspace
-      POSTGRES_DSN: postgresql+psycopg://iris:${POSTGRES_PASSWORD:-iris_dev_password}@postgres:5432/iris
       IRIS_API_URL: http://iris-core:8000
-    volumes:
-      - ./workspace:/app/workspace
+      # HTTP Basic auth for the dashboard itself (DASHBOARD_USER/_PASSWORD from
+      # .env). Unset = open, with a boot warning.
+      DASHBOARD_USER: ${DASHBOARD_USER:-}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
     depends_on:
       iris-core:
         condition: service_healthy
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5)\""]
+      # /healthz is the credential-free liveness route.
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)\""]
       interval: 10s
       timeout: 5s
       retries: 12

@@ -10,7 +10,6 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from iris.agent.chat import ChatGraph
 from iris.memory.llm import LLMClient
-
 from test_agent_graph import make_runtime
 
 
@@ -85,7 +84,7 @@ async def test_respond_stream_final_reply_in_updates(tmp_path: Path):
     final = ""
     async for kind, data in graph.respond_stream("hello again", session_id="s2"):
         if kind == "updates":
-            for node, update in (data or {}).items():
+            for _node, update in (data or {}).items():
                 for m in (update or {}).get("messages", []):
                     mtype = m.get("type") if isinstance(m, dict) else getattr(m, "type", "")
                     mcalls = m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)

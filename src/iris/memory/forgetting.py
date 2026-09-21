@@ -95,15 +95,36 @@ class ForgettingEngine:
                 )
         return sorted(out, key=lambda e: e.retention)
 
-    async def rot_markdown(self, *, today: date | None = None) -> str:
-        entries = await self.rot_report(today=today)
-        if not entries:
-            return f"- No rot this cycle (as of {(today or date.today()).isoformat()})."
-        lines = [
-            f"- {e.age_days}d old, retention {e.retention:.2f} — {e.content} ({e.path}) [{e.reason}]"
-            for e in entries[:20]
-        ]
-        return "\n".join(lines)
+def supersede_in_text(content: str, target: str, marker: str) -> str | None:
+    """Retire one entry in a curated file by appending a supersession marker.
+
+    One implementation, shared by the `forget` tool and the HITL
+    `/forget/confirm` endpoint, which had drifted apart. Indexed chunks may
+    carry a contextual-retrieval header prepended at index time, so an exact
+    replace of `target` against the raw file can miss even when the fact is
+    present — fall back to locating the line that contains the hit's probe
+    text. Returns None when the entry cannot be located, so the caller can
+    refuse rather than retire the wrong line.
+
+    Deliberately no looser fuzzy matching: the owner approves a specific hit,
+    and a looser match could supersede a different line than the one shown.
+    """
+    new = content.replace(target, f"{target} {marker}")
+    if new != content:
+        return new
+    # Walk the target's own lines, longest first: the longest line is the most
+    # specific, so it identifies the intended entry with the least chance of
+    # matching a neighbour.
+    probes = [line.strip() for line in str(target).splitlines() if line.strip()]
+    for probe_line in sorted(probes, key=len, reverse=True):
+        probe = probe_line[:120]
+        target_line = next((line for line in content.splitlines() if probe in line), None)
+        if target_line is None:
+            continue
+        new = content.replace(target_line, f"{target_line} {marker}")
+        if new != content:
+            return new
+    return None
 
 
 def supersession_stats(memory_md: str) -> dict:

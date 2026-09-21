@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -109,7 +109,7 @@ class LightPhase:
             return []
         try:
             lines = feedback_file.read_text(encoding="utf-8").splitlines()
-        except OSError:  # noqa: BLE001 - feedback is best-effort
+        except OSError:
             return []
         out: list[str] = []
         for line in lines:
@@ -214,7 +214,7 @@ class LightPhase:
                 continue
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
-            except OSError:  # noqa: BLE001 - best-effort scan
+            except OSError:
                 continue
             for line in lines:
                 m = _NOTE_LINE_RE.match(line.strip())
@@ -343,10 +343,9 @@ class DeepPhase:
         retired: list[int] = []
         for i, line in enumerate(lines):
             low = line.casefold()
-            if any(t and t in low for t in targets):
-                if "(superseded" not in low:
-                    lines[i] = f"{line} (superseded {record.timestamp[:10]})"
-                    retired.append(i)
+            if any(t and t in low for t in targets) and "(superseded" not in low:
+                lines[i] = f"{line} (superseded {record.timestamp[:10]})"
+                retired.append(i)
 
         # new consolidated statements, deduped against what MEMORY.md already
         # says (cosine via the index; deterministic, no model call)
@@ -383,10 +382,7 @@ class DeepPhase:
             near = await self.index.nearest(statement, top_k=3)
         except Exception:  # noqa: BLE001 - dedupe is best-effort
             return False
-        for hit in near:
-            if hit["path"] == "MEMORY.md" and hit["cos"] >= 0.85:
-                return True
-        return False
+        return any(hit["path"] == "MEMORY.md" and hit["cos"] >= 0.85 for hit in near)
 
 
 class DreamEngine:
@@ -421,12 +417,20 @@ class DreamEngine:
         signals stay."""
         dropped = {s.content.casefold().strip() for s in promoted}
         for path in self.files.staging_dir().glob("staging-*.jsonl"):
-            remaining = [
-                line
-                for line in path.read_text(encoding="utf-8").splitlines()
-                if not line.strip()
-                or json.loads(line).get("content", "").casefold().strip() not in dropped
-            ]
+            def keep(line: str) -> bool:
+                """Keep demoted signals; one corrupt line must not kill the
+                cycle *after* promotion (LightPhase deliberately tolerates
+                corrupt lines, so they can still be present here)."""
+                if not line.strip():
+                    return True
+                try:
+                    raw = json.loads(line)
+                except json.JSONDecodeError:
+                    return True  # unparseable: keep it, never crash the night
+                content = str(raw.get("content", "")) if isinstance(raw, dict) else ""
+                return content.casefold().strip() not in dropped
+
+            remaining = [line for line in path.read_text(encoding="utf-8").splitlines() if keep(line)]
             if remaining:
                 path.write_text("\n".join(remaining) + "\n", encoding="utf-8")
             else:
@@ -445,7 +449,7 @@ class DreamEngine:
                 continue
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
-            except OSError:  # noqa: BLE001 - best-effort consumption
+            except OSError:
                 continue
             cleaned = [
                 line

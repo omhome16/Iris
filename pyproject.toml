@@ -20,6 +20,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "httpx>=0.27",
     "jinja2>=3.1",
+    "typesafe-sdk>=0.5.7",
 ]
 
 [build-system]
@@ -36,8 +37,44 @@ package = true
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "ruff>=0.6",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["src", "tests", "scripts", "mcp_servers", "dashboard"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes: undefined names, unused imports/variables
+    "W",   # pycodestyle warnings
+    "I",   # import sorting
+    "B",   # bugbear: mutable defaults, bug-prone patterns
+    "UP",  # pyupgrade: dead syntax for the target version
+    "C4",  # comprehensions
+    "SIM", # simplifiable code
+    "RUF", # ruff-specific
+    "BLE", # blind except: every broad `except` must carry an explicit justification
+]
+ignore = [
+    "E501",   # line length is a formatter concern; 120 is enforced where it matters
+    "B008",   # FastAPI's Depends()/Query() idiom is a call in a default
+    "RUF001", # ambiguous unicode (em dashes in docstrings are intentional)
+    "RUF002",
+    "RUF003",
+    "RUF012", # ClassVar annotations add noise to these small config-ish classes
+    "SIM108", # ternaries are not always clearer than an if/else
+    "UP042",  # str-Enum mixins (`Origin`, `GuardAction`) are serialized into
+              # Postgres and read back as plain strings; StrEnum changes `str()`
+              # behaviour and the DB/ledger layer depends on today's shape.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]    # imports after sys.path/dir setup where needed
+"scripts/*" = ["E402"]  # .env loading must precede the iris imports

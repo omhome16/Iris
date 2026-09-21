@@ -19,9 +19,8 @@ from iris.memory.files import WorkspaceFiles
 from iris.memory.llm import LLMClient
 from iris.memory.provenance import Origin
 from iris.memory.skills import SkillLibrary
-from iris.onboarding import OnboardingState, OnboardingWizard
+from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
-
 
 # ── onboarding wizard ───────────────────────────────────────────────────────
 
@@ -469,7 +468,7 @@ async def test_forget_halts_for_approval_then_supersedes(tmp_path: Path):
     assert exc.value.payload["action"] == "forget"
     assert "lease ends March 2027" in exc.value.payload["hit"]
     assert "superseded" not in files.read(files.memory)
-    reply = await graph.resume("t-approve", decision="approved")
+    await graph.resume("t-approve", decision="approved")
     assert "superseded" in files.read(files.memory)
 
 

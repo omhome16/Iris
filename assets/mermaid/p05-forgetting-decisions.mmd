@@ -1,0 +1,22 @@
+flowchart TB
+    S["A memory chunk in the index"]
+    Q1{"Evergreen?<br/>MEMORY.md, USER.md, skills/*.md"}
+    K["Retention locked at 1.00<br/>never decays"]
+    Q2{"How old is it?<br/>(observed_at)"}
+    C["retention = 0.5 ^ (age / 30)<br/>Ebbinghaus-style decay"]
+    Q3{"retention below 0.20?"}
+    OK["Healthy - stays, decays slowly<br/>reinforcement resets nothing, age just grows"]
+    R["Flagged as ROT<br/>shown to owner via /rot and morning brief"]
+    Q4{"Owner approves forget?"}
+    SU["Line marked (superseded date)<br/>in the file, chunk dropped from index"]
+    KEEP["Kept alive by owner's decision"]
+    S --> Q1
+    Q1 -- "yes" --> K
+    Q1 -- "no" --> Q2
+    Q2 --> C
+    C --> Q3
+    Q3 -- "no" --> OK
+    Q3 -- "yes" --> R
+    R --> Q4
+    Q4 -- "yes" --> SU
+    Q4 -- "no" --> KEEP

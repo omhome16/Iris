@@ -11,8 +11,12 @@ Built to demonstrate three AI-engineering disciplines end to end:
   compaction, streaming visibility, subagent escalation, human-in-the-loop
   approval gates, sleep/consolidation graph, onboarding wizard.
 - **Context engineering** — bootstrap budgets, stable-prefix prompt caching,
-  trigger injection, cost-split recall lanes, bounded-history compaction,
-  per-turn JSON traces.
+  cost-split recall lanes, bounded-history compaction, per-turn JSON traces.
+- **Typed judgments (JEV)** — TypeSafe's System One model supplies the three
+  judgments that used to be hand-tuned heuristics: recall reranking, skill
+  selection, and instruction-injection screening of untrusted content. Every
+  call is best-effort with a deterministic fallback, so the stack is identical
+  with no key. See [`docs/jev.md`](docs/jev.md).
 
 She lives in your pocket (Telegram over MCP), sleeps on command (`/sleep`),
 dreams in `DREAMS.md`, teaches herself skills, and her memory is proven by a
@@ -44,9 +48,10 @@ workspace/
 └── memory/.dreams/        # staging, contextual-chunk cache, recall feedback
 ```
 
-Four provenances gate everything: **owner** (you), **agent** (her pipelines),
-**telegram** (chat history), **import** (bulk files). Curated content may only
-graduate from owner/agent sources.
+Four provenances gate everything: **owner** (you wrote it), **agent** (her own
+pipelines), **untrusted** (imports, web pages — recallable, never promotable),
+**system** (operational logs — never injected). Curated content may only
+graduate from owner/agent sources; the check is structural, not a prompt rule.
 
 ### What happens on every chat turn
 
@@ -62,13 +67,39 @@ flowchart TD
     S -->|yes| P["compaction turn<br/>flush durable facts → daily note<br/>summarize + trim (bounded forever)"]
     S -->|no| X["reply streamed to you<br/>thinking + tool calls visible"]
     P --> X
-    X --> W2["write path (cheap model)<br/>candidates → staged (tainted)"]
-    W2 --> D["checkpointer persists every step"]
+    X --> J["journal node (no LLM)<br/>digest line → daily note"]
+    J --> K["capture node<br/>prefilter → one judgment<br/>durable fact → daily note"]
+    K --> D["checkpointer persists every step"]
     X -.->|"parallel"| TR["turn trace → config/traces.jsonl"]
 ```
 
 Every turn is bounded by a **120 s budget** and a recursion cap — a provider
 hiccup can never hang you; you get a graceful "still thinking" instead.
+
+#### The capture node (why the memory tier isn't empty)
+
+The orchestration-v2 design deleted per-turn extraction and left the "is this
+worth keeping?" decision to the agent's own `note` tool. That was measured and
+it failed: **0 `note` calls across 36 traced turns**, so `MEMORY.md` only ever
+grew from compaction flush and the whole promotion pipeline ran on empty.
+
+The capture node restores the volume without restoring v2's problems:
+
+1. **A deterministic prefilter** (`capture.worth_capturing`) decides whether a
+turn is even worth *spending* a judgment on — first-person + durability cues,
+plus a length floor. "ok"/"thanks" turns cost **zero** model calls, which was
+v2's actual win.
+2. **One judgment** decides whether the turn holds a new durable fact: one JEV
+request (`Noul` ×2 + a `Score` for importance, all in a single call) when
+TypeSafe is configured, otherwise one cheap-tier JSON call. JEV supplies the
+judgment; the owner's own words supply the fact, because Jev emits no text.
+3. **It cannot write curated memory.** A capture is an ADD-only line in the
+daily note, stamped `(note)`, agent provenance, and it must still clear the
+deterministic Light-phase gate to reach `MEMORY.md`.
+
+Recall-loop prevention is structural, not a prompt plea: the judgment is shown
+the same assembled context Iris sees and asked *"is this already in it?"*, so a
+fact recalled a hundred times still enters the daily note once.
 
 ### Context engineering
 
@@ -82,18 +113,29 @@ hiccup can never hang you; you get a graceful "still thinking" instead.
   compaction turn flushes durable facts into the daily note, summarizes, and
   trims history to a keep-budget (2k). The conversation stays bounded forever
   without losing what mattered.
+  and `USER.md` enter the prompt inside hard token budgets
+  (`BOOTSTRAP_BUDGET_TOKENS` / `USER_PROFILE_BUDGET_TOKENS`), truncated by whole
+  lines from the tail so Markdown structure survives.
 - **Contextual chunking** — before embedding, each chunk gets a cheap-model
   context header (≤60 tokens) explaining the surrounding document, so vectors
   carry document-level meaning (Anthropic-style contextual retrieval). Results
   are cached per file by content hash in `memory/.dreams/contexts/`; plain
   chunks are the automatic fallback.
-- **Trigger injection** — fast prefilter injects a compact block when inbound
-  messages match curated memory trigger phrases.
+- **JEV skill selection** — the skills block names only the skill worth looking
+  at, chosen by one TypeSafe judgment over the roster (see
+  [`docs/jev.md`](docs/jev.md)); the deterministic trigger matcher is the
+  offline fallback.
+- **Explicit budgets, not vibes** — `BOOTSTRAP_BUDGET_TOKENS` (4000) for
+  `MEMORY.md`, `USER_PROFILE_BUDGET_TOKENS` (1500) for `USER.md`, a 2k keep-budget
+  after compaction, ≤60 tokens per context header, and the capture node's own
+  prefilter. Every one of them is a setting, not a magic number in the code.
 
 ### Recall lanes
 
-- **Default lane** — precision-tuned hybrid search (vector + FTS × recency
-  decay × importance, MMR diversity). Best for "what do you know about X".
+- **Default lane** — vector + FTS shortlist, **reranked by JEV** (one request
+  per recall, one probability per candidate), then × recency decay × importance
+  and MMR diversity. JEV supplies relevance only; decay and importance stay in
+  code because they encode forgetting policy, not relevance.
 - **Escalation lane** — decay disabled, daily notes only, triggered by
   temporal questions ("when did…", "last month") or a weak default lane.
   Recovers the old facts the default lane deliberately hides. Proven by the
@@ -196,12 +238,17 @@ in `.env` — `auto` uses the first key it finds:
 
 | Provider | Env var (key) | Strong (default) | Cheap (default) | Notes |
 |---|---|---|---|---|
-| **OpenRouter** | `OPENROUTER_API_KEY` | `openrouter/deepseek/deepseek-chat-v3.1:free` | `openrouter/meta-llama/llama-3.1-8b-instruct:free` | free `:free` models; override with `OPENROUTER_STRONG_MODEL` / `_CHEAP_MODEL` |
-| **Groq** | `GROQ_API_KEY` | `groq/llama-3.3-70b-versatile` | `groq/llama-3.1-8b-instant` | generous free tier, very fast |
+| **OpenRouter** | `OPENROUTER_API_KEY` | `openrouter/nvidia/nemotron-3-super-120b-a12b:free` | `openrouter/nvidia/nemotron-nano-9b-v2:free` | free `:free` variants; override with `OPENROUTER_STRONG_MODEL` / `_CHEAP_MODEL` |
+| **Groq** | `GROQ_API_KEY` | `groq/openai/gpt-oss-120b` | `groq/openai/gpt-oss-20b` | free tier (30 RPM / 1k RPD), very fast. Ids verified 2026-09-21 — the previous defaults had a doubled `groq/groq/` prefix and named a decommissioned model |
 | **Gemini** | `GEMINI_API_KEY` | `gemini/gemini-3.5-flash` | `gemini/gemini-3.1-flash-lite` | also powers embeddings |
-| **Ollama** | *none* (local) | `ollama/llama3.1:8b` | `ollama/llama3.1:8b` | `ollama serve` + `ollama pull llama3.1:8b`; base URL via `OLLAMA_BASE_URL` |
+| **Ollama** | *none* (local) | `ollama/qwen2.5-coder:3b` | `ollama/qwen2.5-coder:3b` | `ollama serve` + `ollama pull <model>`; base URL via `OLLAMA_BASE_URL` |
 | voice (always Groq) | `GROQ_API_KEY` | — | — | `groq/whisper-large-v3-turbo` |
 | web search (optional) | `TAVILY_API_KEY` | — | — | free tier at tavily.com |
+| **JEV (optional)** | `TYPESAFE_API_KEY` | — | — | `jev-latest` (TypeSafe System One) for recall reranking, skill selection and injection screening. No key = deterministic fallbacks. See [`docs/jev.md`](docs/jev.md) |
+
+The table above mirrors the defaults in `src/iris/config.py` — that file is the
+single source of truth. Model names drift, so treat it as the contract and these
+docs as a snapshot.
 
 **Embeddings** are the one constraint: OpenRouter and Groq don't offer them.
 Iris uses Gemini when `GEMINI_API_KEY` is set, otherwise falls back to
@@ -287,15 +334,22 @@ rollups + cache-hit %), and turn traces (per-turn latency + tools + approvals).
 
 | Command | What it does |
 |---|---|
-| `/sleep` · `/wake` | run / pause the dream cycle |
+| `/start` | bind this chat as the owner (ignored once bound) |
+| `/sleep` | run the dream cycle now |
+| `/wake` | morning-style briefing (chunks, decaying memories, rot) |
 | `/mind` | inspect what she currently knows |
-| `/remember <x>` | direct memory write (owner provenance) |
-| `/forget <x>` | supersede a memory (**approval-gated**, two-phase) |
+| `/forget <text>` | supersede a memory, two-phase with an explicit confirm |
+| `/forget-confirm` · `/forget-cancel` | complete or abort a pending forget |
 | `/skills` | list learned skills |
 | `/tasks` | list pending scheduled tasks |
 | `/rot` · `/retention` | forgetting report |
-| `/dream_now` | force a consolidation pass |
 | `/help` | command list |
+
+These are the commands the bridge actually dispatches
+(`mcp_servers/telegram/server.py: CommandDispatcher`). There is deliberately no
+`/remember` or `/dream_now` slash command — durable facts are written by the
+agent's own `remember`/`note` tools during conversation, and `/sleep` covers
+consolidation.
 
 Scheduled tasks: ask her in chat — *"remind me in 3 days to renew the lease"*
 or *"run the weekly summary tomorrow 9:30"* — she parses ISO/relative/shorthand
@@ -332,12 +386,22 @@ never proxies to a dead core.
 ### Tests, eval lab
 
 ```bash
-uv run pytest tests -q --ignore=tests/test_memory_pipeline.py   # 146 tests, deterministic, no API calls
+uv run pytest tests -q --ignore=tests/test_memory_pipeline.py   # 197 tests, deterministic, no API calls
+uv run ruff check .                       # lint (also enforced in CI)
 uv run python scripts/eval_lab.py         # ablation study → reports/eval_lab.md
 ```
 
 (The 5 tests in `test_memory_pipeline.py` need a local Postgres at
-`localhost:5433` — they run in the compose stack.)
+`localhost:5433` — CI runs them against a real `pgvector/pgvector:pg16`
+service, so they are no longer local-only.)
+
+### Quality gates
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and PR:
+**ruff**, the **full** test suite against a real pgvector Postgres, and a
+production **image build** that asserts the container is non-root. Before this,
+the repo had no CI and no linter at all — "lint passes" and "tests pass" were
+both unmeasurable.
 
 ### Reset
 
@@ -350,6 +414,19 @@ re-runs onboarding.
 
 ---
 
+## Docs
+
+| Document | What it covers |
+|---|---|
+| `README.md` (this file) | Pitch, architecture, quickstart, operations |
+| [`docs/jev.md`](docs/jev.md) | JEV: what it is, where it is integrated, where it is deliberately not, config, troubleshooting |
+| `docs/superpowers/specs/2026-08-15-iris-design.md` | **Historical.** Original design + rejected alternatives |
+| `docs/superpowers/specs/2026-08-20-memory-orchestration-v2.md` | **Implemented, with a stated caveat.** The one-curator write path — its "let the agent decide" half is now backed by the capture node |
+| [`docs/deployment.md`](docs/deployment.md) | Hosting options, volumes and ownership, secrets, backups, rollback, demo mode |
+| `research/` | Research synthesis that informed the design (Aug 2026 snapshot) |
+| `reports/eval_lab.md` | Recall ablation results (regenerate with `scripts/eval_lab.py`) |
+| `assets/mermaid/*.mmd` | Mermaid sources for the day cycle, dream pipeline and forgetting decision diagrams |
+
 ## Architecture map
 
 ```mermaid
@@ -358,7 +435,7 @@ flowchart LR
     U -->|"browser"| DB["dashboard<br/>:8080 · FastAPI"]
     TG -->|"send_message/send_photo<br/>HITL approvals"| CORE["iris-core :8000 · FastAPI"]
     DB -->|"chat + panels (proxied)"| CORE
-    CORE -->|"chat graph<br/>LangGraph + MemorySaver"| MEM["memory engine<br/>hybrid index · dreaming<br/>forgetting · skills"]
+    CORE -->|"chat graph<br/>LangGraph + PostgresSaver"| MEM["memory engine<br/>hybrid index · dreaming<br/>forgetting · skills"]
     CORE -->|"run_core.py"| S["APScheduler<br/>nightly sleep · morning brief"]
     MEM -->|"rebuildable index"| PG[("Postgres 16<br/>+ pgvector")]
     MEM -->|"source of truth"| FS["workspace/ · Markdown soul"]

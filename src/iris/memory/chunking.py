@@ -99,7 +99,7 @@ def store_context_cache(cache_dir: Path, text: str, contexts: dict[int, str]) ->
             ),
             encoding="utf-8",
         )
-    except OSError:  # noqa: BLE001 - cache is best-effort
+    except OSError:
         return
 
 
