@@ -29,7 +29,7 @@ it is named.
 - **Repo lint config** (`ruff`) and **CI** (`.github/workflows/ci.yml`): ruff,
   the full test suite against a real `pgvector/pgvector:pg16` service, and a
   production image build that asserts the container is non-root.
-- **Test coverage for the new paths** — `tests/test_jev.py` (30),
+- **Test coverage for the new paths** — `tests/test_jev.py` (17),
   `tests/test_capture.py` (21), `tests/test_audit_fixes.py` (12).
   Suite: **147 → 197 passing** (5 more need Postgres and run in CI).
 

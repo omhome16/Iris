@@ -1,5 +1,15 @@
 # Eval lab — recall ablation study
 
+> **Status note (2026-09-21).** The table below is the pre-JEV baseline:
+the `full` mode it measures is the hand-tuned `0.6·vector + 0.4·FTS` fusion,
+not the JEV-reranked pipeline Iris now ships. `scripts/eval_lab.py` gained a
+`no_rerank` mode and forces JEV off for every row (`jev_disabled_reason`), so `full`
+still means "deterministic pipeline" and the rows stay comparable. The JEV
+rerank has **no measured number yet** — the lab needs a local pgvector Postgres
+(`docker compose up -d postgres`) and the run was not performed in this pass.
+Treat the rerank's benefit as an untested hypothesis until this file is
+regenerated.
+
 Date: 2026-08-15 · synthetic corpus, deterministic embeddings, no model calls · the real `MemoryIndex.search` code path, one knob toggled per row.
 
 | mode | recall@5 | mrr@5 | mean gold rank | vs full |
