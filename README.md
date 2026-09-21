@@ -16,7 +16,14 @@ Built to demonstrate three AI-engineering disciplines end to end:
   judgments that used to be hand-tuned heuristics: recall reranking, skill
   selection, and instruction-injection screening of untrusted content. Every
   call is best-effort with a deterministic fallback, so the stack is identical
-  with no key. See [`docs/jev.md`](docs/jev.md).
+  with no key, and **every judgment is recorded per turn** — which memory won
+  and by how much, what was refused at the door, and where the seconds went.
+  See [`docs/jev.md`](docs/jev.md).
+- **A console that shows all of it at once** — a dawn-sky canvas with nine live
+  panels and no collapsed sidebar: conversation, the last turn's judgment
+  waterfall, all four memory tiers, the dream diary, the forgetting curve,
+  skills, schedule, spend and turn history. Screenshots and design notes in
+  [`docs/console.md`](docs/console.md).
 
 She lives in your pocket (Telegram over MCP), sleeps on command (`/sleep`),
 dreams in `DREAMS.md`, teaches herself skills, and her memory is proven by a
@@ -67,10 +74,11 @@ flowchart TD
     S -->|yes| P["compaction turn<br/>flush durable facts → daily note<br/>summarize + trim (bounded forever)"]
     S -->|no| X["reply streamed to you<br/>thinking + tool calls visible"]
     P --> X
-    X --> J["journal node (no LLM)<br/>digest line → daily note"]
+    X --> J["journal node<br/>digest line → daily note<br/>reflection pass → background"]
     J --> K["capture node<br/>prefilter → one judgment<br/>durable fact → daily note"]
     K --> D["checkpointer persists every step"]
-    X -.->|"parallel"| TR["turn trace → config/traces.jsonl"]
+    X -.->|"parallel"| TR["turn trace → config/traces.jsonl<br/>+ judgment events + stage timings"]
+    J -.->|"fire & forget"| RF["reflection pass<br/>hallucination triage<br/>off the reply path"]
 ```
 
 Every turn is bounded by a **120 s budget** and a recursion cap — a provider
@@ -112,10 +120,8 @@ fact recalled a hundred times still enters the daily note once.
 - **Compaction** — when serialized history exceeds the trigger (12k tokens), a
   compaction turn flushes durable facts into the daily note, summarizes, and
   trims history to a keep-budget (2k). The conversation stays bounded forever
-  without losing what mattered.
-  and `USER.md` enter the prompt inside hard token budgets
-  (`BOOTSTRAP_BUDGET_TOKENS` / `USER_PROFILE_BUDGET_TOKENS`), truncated by whole
-  lines from the tail so Markdown structure survives.
+  without losing what mattered. The cut is repaired at a turn boundary, so tool
+  results are never orphaned from the calls that produced them.
 - **Contextual chunking** — before embedding, each chunk gets a cheap-model
   context header (≤60 tokens) explaining the surrounding document, so vectors
   carry document-level meaning (Anthropic-style contextual retrieval). Results
@@ -129,6 +135,33 @@ fact recalled a hundred times still enters the daily note once.
   `MEMORY.md`, `USER_PROFILE_BUDGET_TOKENS` (1500) for `USER.md`, a 2k keep-budget
   after compaction, ≤60 tokens per context header, and the capture node's own
   prefilter. Every one of them is a setting, not a magic number in the code.
+
+### Latency: what was on the reply path that shouldn't have been
+
+Two post-reply passes had very different contracts and were treated the same:
+
+- **Capture** decides whether the turn taught her something, and the trace
+  reports it — it must finish before the turn is done.
+- **Reflection** (hallucination triage) only appends to
+  `config/hallucination_flags.jsonl`. It cannot change the reply, the memory or
+  the trace, and its own docstring already claimed it was not on the reply path
+  — but it was awaited, so **every retrieval-backed turn waited on an extra
+  cheap-tier completion (~2–6 s) before the graph returned.** That was pure
+  latency, and it is now a tracked background task (`iris/background.py`): a
+  bare `asyncio.create_task` is not enough, because the loop holds only a weak
+  reference and can garbage-collect a task mid-flight.
+
+Where the judgment layer *is* the latency win: one JEV request carries many
+independent questions, so a rerank of twenty candidates is one round trip
+rather than twenty, a batched guard screen is one request for a whole search
+result page, and the capture judgment replaced a full cheap-tier generation with
+one probability call. JEV also became the fallback-aware front door for all
+three: with no `TYPESAFE_API_KEY` the deterministic paths run unchanged.
+
+Per-stage timings are recorded on every turn (`stages_ms` in the trace) and
+rendered as a waterfall in the console, so this is measured rather than asserted
+— including on the streamed path, where the agent stage is what the owner is
+actually waiting on.
 
 ### Recall lanes
 
@@ -301,34 +334,35 @@ wizard** kicks in — you name her, pick her personality/tone/timezone/sleep
 preferences, and she writes her identity to `USER.md` + `config/iris.json`.
 That's the moment she's born.
 
-### The dashboard
+### The console
 
-A chat-first console on `:8080` — conversation owns the screen, and everything
-else lives in a collapsible left sidebar:
+A single-canvas console on `:8080`, styled as a dawn sky with drifting cloud
+strata (and a night-sky theme that keeps the same contrast budget). Nothing is
+collapsed and nothing is behind a click, because the whole claim is that the
+mind is *visible*:
 
-```
-┌──────────────────┬───────────────────────────────────────────────┐
-│ ◉ IRIS · memory  │  status ●   theme ◐                            │
-│ console     [≡]  │                                                │
-├──────────────────┼────────────────────────────────────────────────┤
-│ ◆ memory   124   │     CONVERSATION                               │
-│   MEMORY.md      │   ┌──────────────────────────────────────────┐ │
-│   USER.md        │   │ chat log (streaming replies)             │ │
-│ ☾ dreams    —    │   │ ▸ activity  thinking & tool calls live   │ │
-│ ∿ decay    3 rot │   └──────────────────────────────────────────┘ │
-│ ⚙ skills   12    │   [ type a message…                   send ↵ ] │
-│ ◷ tasks    5     │                                                │
-│ $ spend   $0.42  │                                                │
-│ ⤳ traces  20     │                                                │
-├──────────────────┴────────────────────────────────────────────────┤
-│  index: 124 chunks · owner 118 · agent 6 · iris — memory eng.     │
-└────────────────────────────────────────────────────────────────────┘
-```
+| Panel | What it shows |
+|---|---|
+| **masthead vitals** | core reachability, indexed chunks by origin, whether the judgment layer is live (and why not if it isn't), today's spend |
+| **conversation** | streamed replies with live thinking + tool calls |
+| **judgment** | the last turn end to end: recall probabilities per memory, guard verdicts (`pass`/`review`/`block`), skill selection with its gate inputs, what capture kept or declined and why, whether reflection ran inline or in the background, and a per-stage time waterfall |
+| **memory** | `MEMORY.md` · `USER.md` · `AGENTS.md` · `DREAMS.md` tabs — the actual files, plus provenance counts |
+| **dream diary** | `DREAMS.md` and the unverified-claim count from the reflection pass |
+| **forgetting** | retention curve with one mote per stored chunk (age × retention), plus the rot list |
+| **skills / schedule / spend / turn history** | procedures she wrote, pending reminders, per-day cost + cache-hit rate, and recent turns with per-stage latency |
 
-`[≡]` collapses the sidebar to an icon rail; sections expand in place.
-Panels: memory (files + avg retention), dreams (run cycle + hallucination
-flags), decay (retention curve + rot), skills, tasks, llm spend (daily
-rollups + cache-hit %), and turn traces (per-turn latency + tools + approvals).
+![the console at dawn](docs/screenshots/console-dawn.png)
+
+<sub>Dawn and night themes — the night variant is
+[`docs/screenshots/console-night.png`](docs/screenshots/console-night.png), and the
+phone layout is [`docs/screenshots/console-mobile.png`](docs/screenshots/console-mobile.png).</sub>
+
+The sky is decoration, never information: cloud layers are `aria-hidden`, frozen
+under `prefers-reduced-motion`, and every label sits on a frosted panel that
+meets WCAG AA in both themes. Contrast was verified by compositing each text
+colour against its real backdrop stack (axe cannot resolve translucent layers),
+and the page reports zero axe violations at desktop and phone widths.
+Design notes and the verification method: [`docs/console.md`](docs/console.md).
 
 ### Commands
 
@@ -374,9 +408,26 @@ core logs a warning at boot. Recommended for anything beyond localhost.
   markers, and **what the capture node wrote** (`capture`) — so the write path
   is observable rather than something you take on faith. `GET /traces` and the
   dashboard *traces* panel show it as `💭 [importance] fact`.
+- **Judgment events + stage timings** — the same trace line carries an
+  `events` list (every recall rerank with the probability it gave each
+  candidate, every guard verdict including the ones that passed, the skill
+  decision with its gate inputs, the capture verdict and its rejection reason,
+  and whether reflection ran inline or in the background) plus `stages_ms`
+  (`assemble`, `agent`, `tools`, `rerank`, `guard`, `capture`, `reflection`,
+  `jev`). A judgment nobody can inspect is indistinguishable from one that
+  silently failed, so "not checked" is recorded as explicitly as "checked".
+  `git log`-style detail: `iris/turnlog.py`.
+- **Judgment health** — `GET /jev` (authenticated; `/health` carries the
+  summary as `judgment`) reports whether JEV is enabled, *why not* if it is not,
+  and its request/failure counters and last latency. `background.pending` in
+  `/health` shows in-flight post-reply work.
 - **Reflection** — turns that actually retrieved memory get a cheap-model
   pass that flags claims not supported by the retrieved excerpts
   (`config/hallucination_flags.jsonl`, counted on the dashboard and in `/mind`).
+  It runs **off the reply path** by default (`IRIS_REFLECTION_BACKGROUND=0` to
+  run it inline): it only appends to a telemetry file, so making the owner wait
+  on it was pure latency. `background.drain()` is awaited on shutdown so a
+  deliberate fire-and-forget still finishes.
 
 ### Healthchecks
 
@@ -388,7 +439,7 @@ never proxies to a dead core.
 ### Tests, eval lab
 
 ```bash
-uv run pytest tests -q --ignore=tests/test_memory_pipeline.py   # 197 tests, deterministic, no API calls
+uv run pytest tests -q --ignore=tests/test_memory_pipeline.py   # 217 tests, deterministic, no API calls
 uv run ruff check .                       # lint (also enforced in CI)
 uv run python scripts/eval_lab.py         # ablation study → reports/eval_lab.md
 ```
@@ -430,6 +481,7 @@ re-runs onboarding.
 |---|---|
 | `README.md` (this file) | Pitch, architecture, quickstart, operations |
 | [`docs/jev.md`](docs/jev.md) | JEV: what it is, where it is integrated, where it is deliberately not, config, troubleshooting |
+| [`docs/console.md`](docs/console.md) | The console: design language, every panel, accessibility verification, how to preview it |
 | `docs/superpowers/specs/2026-08-15-iris-design.md` | **Historical.** Original design + rejected alternatives |
 | `docs/superpowers/specs/2026-08-20-memory-orchestration-v2.md` | **Implemented, with a stated caveat.** The one-curator write path — its "let the agent decide" half is now backed by the capture node |
 | [`docs/deployment.md`](docs/deployment.md) | Hosting options, volumes and ownership, secrets, backups, rollback, demo mode |
@@ -485,6 +537,11 @@ flowchart LR
    visibility, images, subagent escalation, recall-feedback dreaming,
    contextual chunking, approval-gated forgetting, turn traces, provider
    matrix (OpenRouter/Groq/Gemini/Ollama), dashboard redesign
+10. **v0.3 pass** — typed judgments (JEV) for recall reranking, skill selection
+    and injection screening; the capture node that un-starved the write path;
+    CI + lint + non-root image; per-turn judgment events and stage timings;
+    reflection moved off the reply path; the console rebuilt as a single
+    dawn-sky canvas
 
 Research basis: `research/00-synthesis.md` (12 parallel research briefs,
 Aug 2026). Design: `docs/superpowers/specs/2026-08-15-iris-design.md`.

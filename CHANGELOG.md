@@ -4,6 +4,57 @@ Notable changes, newest first. Every entry is grounded in something measured or
 verified rather than asserted — where a number appears, the method that produced
 it is named.
 
+## Unreleased — console + latency pass
+
+### Added
+
+- **A judgment panel, and the data behind it.** `src/iris/turnlog.py` records
+  per-turn what the judgment layer decided and how long each stage took;
+  `src/iris/agent/chat.py` writes both into `config/traces.jsonl`
+  (`events`, `counts`, `stages_ms`). The console renders it as a waterfall plus
+  per-memory probabilities and guard verdicts. "Not checked" is now recorded as
+  explicitly as "checked and clean".
+- **`GET /jev`** (authenticated) — judgment-layer health: enabled or not, why
+  not, request/failure counters, last latency and last error. `/health` exposes
+  the same block as `judgment`, alongside `background.pending`.
+- **`src/iris/background.py`** — tracked fire-and-forget tasks with `drain()`,
+  because a bare `asyncio.create_task` can be garbage-collected mid-flight.
+- **The console rebuilt as one canvas** (`dashboard/templates/index.html`,
+  `static/style.css`, `static/app.js`): a dawn-sky single-page board with nine
+  panels — conversation, judgment, all four memory tiers, dream diary,
+  forgetting curve, skills, schedule, spend, turn history — plus a night theme.
+  Screenshots in `docs/screenshots/`, design notes in `docs/console.md`.
+- **`/mind` returns `agents` (AGENTS.md), `daily` and `today`** — the persona
+  file and the episodic tier were missing from the snapshot, so the console could
+  show what Iris believes but never what she was told today.
+
+### Changed
+
+- **The reflection pass is off the reply path.** It only appends to a telemetry
+  file, yet it was awaited, costing every retrieval-backed turn an extra
+  cheap-tier completion (~2–6 s) before the graph returned. Now a tracked
+  background task, with `IRIS_REFLECTION_BACKGROUND=0` to force inline. The
+  trace records which mode ran.
+- **`append_daily` writes one block in a single call** so the journal digest and
+  the capture note line cannot interleave their shared timestamp.
+- **JEV client construction is lock-guarded**, since judgements can now overlap.
+- **Capture records its rejection reason** (`prefilter declined`, `already in
+  context`, `daily cap reached`, …) so a quiet turn is distinguishable from a
+  broken one.
+
+### Fixed
+
+- **Dawn-theme text failed WCAG AA.** The faint tier measured 2.8–3.4:1 against
+  the sky and panels; it is now 4.9+:1, and 22 text styles pass in both themes.
+- **The retention chart deleted its own accessible name** — the redraw counted
+  `childNodes` (whitespace included) and removed the `<title>`/`<desc>` that
+  `aria-labelledby` points at.
+- **`<dt>`/`<dd>` outside a `<dl>`** in the spend panel (axe `dlitem`), and
+  scrollable regions that were not keyboard-focusable.
+- **A name collision** where the new turn log shadowed the module logger inside
+  `ChatGraph.respond`, breaking the recursion-limit path with an
+  `AttributeError`.
+
 ## Unreleased — modernization pass (branch `refactor/modernize-jev`)
 
 ### Added

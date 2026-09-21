@@ -216,10 +216,32 @@ Verify the integration is live:
 
 ```bash
 uv run python -c "from iris.jev import JevClient; c=JevClient(); print(c.enabled, c.unavailable_reason())"
-uv run pytest tests/test_jev.py -q      # 17 tests, no key, no network
+uv run pytest tests/test_jev.py -q      # 22 tests, no key, no network
+curl -s localhost:8000/jev -H "Authorization: Bearer $IRIS_API_TOKEN"   # health, counters, last error
 ```
 
-## 8. Tests
+## 8. Observability
+
+Three things make the layer checkable rather than assumed:
+
+- **`GET /jev`** (authenticated) reports `enabled`, the reason it is off when
+  it is, and `requests` / `failures` / `last_latency_ms` / `last_error`.
+  `/health` carries the same block as `judgment` (plus `/health`'s `jev` bool).
+  A layer that is silently falling back looks identical to a healthy one
+  without these counters.
+- **Every decision lands in the turn trace.** `config/traces.jsonl` gains an
+  `events` list and `stages_ms`: each rerank records the probability given to
+  each of its top candidates, each guard verdict records `action` and its
+  injection/exfiltration/severity scores — **including the items that passed,
+  and including `screened: false` when nothing was checked** — and each skill
+  decision records its gate inputs. Recording is bounded per turn and cannot
+  raise; see `src/iris/turnlog.py`.
+- **One `asyncio.Lock` guards client construction.** A single turn can issue a
+  rerank (inside a recall tool), a guard screen (inside `web_search`) and a
+  capture judgment, and reflection now runs in the background — without the
+  lock two concurrent callers each build a client and leak one.
+
+## 9. Tests
 
 `tests/test_jev.py` (17 tests) and the audit suite pin the whole adapter
 contract without a key or a network: normalization of SDK answers, ledger
