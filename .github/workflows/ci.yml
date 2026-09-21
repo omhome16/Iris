@@ -63,6 +63,16 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
+      - name: Create the memory-pipeline test database
+        # test_memory_pipeline.py targets a *separate* database
+        # (IRIS_TEST_POSTGRES_DSN) so a test run can never touch real memory,
+        # and the pgvector service only creates POSTGRES_DB. Run psql from
+        # inside the service container rather than depending on the runner
+        # image having a client installed.
+        run: |
+          container=$(docker ps --filter "publish=5433" --format '{{.ID}}' | head -1)
+          docker exec "$container" psql -U iris -d iris -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE iris_test;'
       - name: Unit + integration tests
         # The DB-backed suite is included here on purpose: it is skipped
         # locally whenever Postgres is down, which is how it stayed dark.

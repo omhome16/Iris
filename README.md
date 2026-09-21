@@ -395,7 +395,15 @@ uv run python scripts/eval_lab.py         # ablation study → reports/eval_lab.
 
 (The 5 tests in `test_memory_pipeline.py` need a local Postgres at
 `localhost:5433` — CI runs them against a real `pgvector/pgvector:pg16`
-service, so they are no longer local-only.)
+service, so they are no longer local-only. They use their **own** database so a
+test run can never touch real memory:
+
+```bash
+docker compose up -d postgres
+docker compose exec postgres psql -U iris -d iris -c 'CREATE DATABASE iris_test;'
+```
+
+Point them elsewhere with `IRIS_TEST_POSTGRES_DSN`.)
 
 ### Quality gates
 
