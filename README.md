@@ -370,8 +370,10 @@ core logs a warning at boot. Recommended for anything beyond localhost.
   unknown models price at $0). `GET /costs` and the dashboard *spend* panel
   show daily/weekly/total rollups + prompt-cache hit rates.
 - **Turn traces** — one JSON line per turn in `config/traces.jsonl` (rotated
-  at 1 MB): timestamp, session, latency, tools called, and pending-approval
-  markers. `GET /traces` and the dashboard *traces* panel.
+  at 1 MB): timestamp, session, latency, tools called, pending-approval
+  markers, and **what the capture node wrote** (`capture`) — so the write path
+  is observable rather than something you take on faith. `GET /traces` and the
+  dashboard *traces* panel show it as `💭 [importance] fact`.
 - **Reflection** — turns that actually retrieved memory get a cheap-model
   pass that flags claims not supported by the retrieved excerpts
   (`config/hallucination_flags.jsonl`, counted on the dashboard and in `/mind`).

@@ -309,7 +309,10 @@ async function refreshPanels() {
         const d = document.createElement("div");
         d.className = "skill-desc";
         const tools = (t.tools || []).map((x) => x.name).join(", ");
-        d.textContent = `you: ${t.user || "—"}${tools ? ` · 🔧 ${tools}` : ""}`;
+        // The capture line is the write path made visible: what this turn
+        // actually taught her, or nothing when the prefilter declined.
+        const captured = t.capture ? ` · 💭 ${t.capture}` : "";
+        d.textContent = `you: ${t.user || "—"}${tools ? ` · 🔧 ${tools}` : ""}${captured}`;
         item.append(n, d);
         list.appendChild(item);
       }

@@ -15,6 +15,9 @@ it is named.
   instruction-injection screening for untrusted content (`guard.py`). With
   `TYPESAFE_API_KEY` unset the stack behaves exactly as before. See
   [`docs/jev.md`](docs/jev.md).
+- **Capture shows up in the turn trace** — `config/traces.jsonl` records what
+  the capture node wrote (`capture`, empty when the prefilter or the judgment
+  declined), rendered as `💭 [importance] fact` in the dashboard's traces panel.
 - **Capture node** (`src/iris/memory/capture.py`) — the write-path safety net.
   A deterministic prefilter keeps trivial turns free; one judgment (JEV, else
   the cheap tier) decides whether a turn holds a durable fact; the result is an

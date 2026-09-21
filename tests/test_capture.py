@@ -28,6 +28,7 @@ from iris.memory.capture import (
 from iris.memory.dreaming import _NOTE_LINE_RE
 from iris.memory.files import WorkspaceFiles
 from iris.onboarding import OnboardingWizard
+from iris.trace import TraceLogger
 from test_agent_graph import make_runtime
 
 INFORMATIVE = (
@@ -189,6 +190,7 @@ async def test_graph_captures_a_durable_fact_into_the_daily_note(tmp_path: Path)
     )
     runtime = make_runtime(files, llm)
     runtime.reindexer = _NoopReindexer()  # type: ignore[assignment]
+    runtime.traces = TraceLogger(files.root / "config" / "traces.jsonl")
     graph = ChatGraph(runtime, MemorySaver())
 
     await graph.respond(INFORMATIVE, session_id="cap1")
@@ -203,6 +205,14 @@ async def test_graph_captures_a_durable_fact_into_the_daily_note(tmp_path: Path)
 
     # Recall-loop prevention: the judgment is shown what Iris already has.
     assert "Already in Iris's context" in llm.judgments[0]
+
+    # The write path is observable in the turn trace, not taken on faith.
+    traced = runtime.traces.recent()[0]
+    assert traced["capture"].startswith("[7] Owner prefers black coffee.")
+
+    # ...and the next turn must not report the previous turn's capture.
+    await graph.respond("thanks!", session_id="cap1")
+    assert runtime.traces.recent()[0]["capture"] == ""
 
 
 async def test_graph_skips_trivial_turns_without_any_judgment(tmp_path: Path):

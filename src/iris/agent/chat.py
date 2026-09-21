@@ -37,7 +37,7 @@ from iris.agent.context import ContextAssembler
 from iris.agent.runtime import Runtime
 from iris.agent.tools import dispatch, tool_schemas
 from iris.config import settings
-from iris.memory.capture import judge_capture, note_line, worth_capturing
+from iris.memory.capture import condense, judge_capture, note_line, worth_capturing
 from iris.memory.chunking import estimate_tokens
 from iris.onboarding import OnboardingWizard
 from iris.text import text_of
@@ -92,6 +92,10 @@ class IrisState(MessagesState):
     stream: bool = False
     session_id: str
     origin: str = "owner"
+    # What the capture node wrote this turn ("" when it wrote nothing). Cleared
+    # at the start of every turn so a trace can never report a previous turn's
+    # capture as if it were this one's.
+    last_capture: str = ""
 
 
 def _human_content(message: str, image: str | None) -> object:
@@ -382,6 +386,9 @@ class ChatGraph:
             self.runtime.files.append_daily(note_line(result), day=day, stamp=False)
             await self.runtime.reindexer.index_daily_note(f"memory/{day.isoformat()}.md")
             log.info("captured memory (importance %.0f): %s", result.importance, result.fact[:120])
+            return {
+                "last_capture": f"[{result.importance:.0f}] {condense(result.fact, max_chars=140)}"
+            }
         except Exception as exc:  # noqa: BLE001 - the safety net must never fail a turn
             log.warning("capture skipped: %s", exc)
         return {}
@@ -436,6 +443,7 @@ class ChatGraph:
         messages: list,
         *,
         pending: dict | None = None,
+        capture: str = "",
     ) -> None:
         if self.runtime.traces is None:
             return
@@ -458,6 +466,10 @@ class ChatGraph:
                 "tools": tools,
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "pending": pending,
+                # What this turn taught her, surfaced in the dashboard so the
+                # write path is observable rather than something you take on
+                # faith. Empty when the prefilter or the judgment declined.
+                "capture": capture,
             }
         )
 
@@ -499,6 +511,7 @@ class ChatGraph:
                     "messages": [{"role": "user", "content": _human_content(message, image)}],
                     "session_id": session_id,
                     "origin": origin,
+                    "last_capture": "",
                 },
                 config,
             )
@@ -509,7 +522,9 @@ class ChatGraph:
             payload = result["__interrupt__"][0].value
             self._trace_turn(session_id, message, started, result["messages"], pending=payload)
             raise ApprovalRequired(payload)
-        self._trace_turn(session_id, message, started, result["messages"])
+        self._trace_turn(
+            session_id, message, started, result["messages"], capture=result.get("last_capture", "")
+        )
         return result["messages"][-1].content
 
     async def resume(self, session_id: str, *, decision: str) -> str:
@@ -555,6 +570,7 @@ class ChatGraph:
                     "session_id": session_id,
                     "origin": origin,
                     "stream": True,
+                    "last_capture": "",
                 },
                 config,
                 stream_mode=["custom", "updates"],
@@ -570,7 +586,13 @@ class ChatGraph:
                 yield "custom", {"kind": "approval", "payload": interrupts[0].value}
             else:
                 messages = snapshot.values.get("messages", []) if snapshot else []
-                self._trace_turn(session_id, message, started, messages)
+                self._trace_turn(
+                    session_id,
+                    message,
+                    started,
+                    messages,
+                    capture=(snapshot.values.get("last_capture", "") if snapshot else ""),
+                )
         except GraphRecursionError:
             log.warning("streamed turn exceeded recursion limit %s", settings.graph_recursion_limit)
             yield "error", "That conversation got deep — let's take it one step at a time. Ask me again."
