@@ -32,7 +32,12 @@ DIRECT_ENV = {
 # rather than typed into `.env`. Kept as an explicit list so "internal" is a
 # decision somebody made, the same way tool classes are declared rather than
 # implied.
-INTERNAL_SETTINGS: set[str] = set()
+INTERNAL_SETTINGS: set[str] = {
+    # Set by Settings at boot when LLM_PROVIDER is unknown or unusable, so a
+    # turn can degrade onto a working provider and `iris doctor` can say why.
+    # An operator does not type this into .env.
+    "PROVIDER_WARNING",
+}
 
 
 def _pyproject() -> dict:

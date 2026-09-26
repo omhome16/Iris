@@ -129,18 +129,15 @@ class LLMClient:
             log.warning("could not enable the LiteLLM cache: %s", exc)
 
     def _auth_kwargs(self, model: str) -> dict[str, Any]:
-        """Provider credentials from settings (so .env works without shell
-        exports). LiteLLM names: api_key for cloud providers, api_base for
-        Ollama."""
-        if model.startswith("gemini/"):
-            return {"api_key": settings.gemini_api_key} if settings.gemini_api_key else {}
-        if model.startswith("groq/"):
-            return {"api_key": settings.groq_api_key} if settings.groq_api_key else {}
-        if model.startswith("openrouter/"):
-            return {"api_key": settings.openrouter_api_key} if settings.openrouter_api_key else {}
-        if model.startswith("ollama/"):
-            return {"api_base": settings.ollama_base_url}
-        return {}
+        """Provider credentials from settings, so .env works without shell
+        exports.
+
+        Resolved by the provider registry (`Settings.auth_for_model`) rather
+        than a chain of `startswith` here: the OpenAI-compatible gateways all
+        share the `openai/` prefix and differ only by api_base, so a local
+        prefix check would silently send a Zen call to OpenAI's endpoint.
+        """
+        return dict(settings.auth_for_model(model))
 
     def _record(self, model: str, tier: str, usage: Any) -> None:
         prompt = int(getattr(usage, "prompt_tokens", 0) or 0)

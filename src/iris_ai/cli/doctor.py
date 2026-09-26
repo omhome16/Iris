@@ -8,7 +8,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-PROVIDER_KEY_NAMES = ("GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY")
+from iris_ai.providers import AUTO_ORDER, KEYED_PROVIDERS, PROVIDERS
+
+# Every key that can carry a model-provider credential, straight from the
+# registry — so adding a provider does not leave `doctor` silently blind to it.
+PROVIDER_KEY_NAMES = tuple(p.key_env for p in KEYED_PROVIDERS)
+
+
+def _resolve_provider(requested: str, env: Mapping[str, str]) -> str:
+    """Which provider a turn would actually use, from env alone.
+
+    Deliberately mirrors `Settings._autodetect_provider` without constructing
+    Settings: doctor must stay offline and must not raise on a malformed .env.
+    """
+    if requested != "auto" and requested in PROVIDERS:
+        return requested
+    for name in AUTO_ORDER:
+        spec = PROVIDERS[name]
+        if spec.key_env and env.get(spec.key_env, "").strip():
+            return name
+    return "ollama"
 
 
 @dataclass(frozen=True)
@@ -74,6 +93,22 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
         checks.append(Check("provider keys", "ok", ", ".join(present)))
     else:
         checks.append(Check("provider keys", "warn", "none set — set a provider key"))
+
+    requested = (env.get("LLM_PROVIDER", "auto") or "auto").strip().lower()
+    resolved = _resolve_provider(requested, env)
+    checks.append(Check("model provider", "ok", f"{PROVIDERS[resolved].label} (LLM_PROVIDER={requested})"))
+    if requested not in ("auto",) and requested not in PROVIDERS:
+        checks.append(
+            Check("LLM_PROVIDER", "warn", f"{requested!r} is not a known provider — falling back to {resolved}")
+        )
+    # A provider can only be used once a model id exists for it. The registry
+    # names the field, so the env var to look for is derived rather than listed.
+    spec = PROVIDERS[resolved]
+    model_env = spec.strong_field.upper()
+    if spec.requires_model_config and not env.get(model_env, "").strip():
+        checks.append(
+            Check("strong model", "warn", f"{model_env} is unset — {spec.label} cannot be used yet")
+        )
 
     if env.get("TYPESAFE_API_KEY", "").strip():
         checks.append(Check("TYPESAFE_API_KEY", "ok", "set"))

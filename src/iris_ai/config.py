@@ -10,6 +10,8 @@ from __future__ import annotations
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from iris_ai.providers import AUTO_ORDER, PROVIDERS
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -25,20 +27,33 @@ class Settings(BaseSettings):
     # embeddings — Gemini does; fall back to Ollama nomic-embed-text if no
     # GEMINI_API_KEY is set).
     #
-    # Provider pick: LLM_PROVIDER=auto|openrouter|groq|gemini|ollama.
-    # auto = whichever key is present: gemini > groq > openrouter
-    # (then ollama if nothing is configured).
+    # Provider pick: LLM_PROVIDER=<name>|auto. The registry in
+    # `iris_ai.providers` is the single source of truth for which names exist,
+    # which key each needs, and the failover order — adding a provider is one
+    # entry there plus the fields below, and the client, the failover chain and
+    # `iris doctor` all read that same table so they cannot drift apart.
     #
-    # Keys you need, per provider:
-    #   openrouter — OPENROUTER_API_KEY (openrouter.ai/keys; free models:
-    #                openrouter_strong_model / _cheap_model below)
-    #   groq       — GROQ_API_KEY (console.groq.com/keys)
-    #   gemini     — GEMINI_API_KEY (aistudio.google.com/apikey)
-    #   ollama     — no key; run `ollama serve` and `ollama pull <model>`
+    #   auto              — first usable key, in AUTO_ORDER
+    #   gemini | groq | openrouter | ollama   — as before
+    #   openai | deepseek | xai | mistral | together | fireworks
+    #   opencode          — OpenCode Zen   (OPENCODE_API_KEY, /zen/v1)
+    #   opencode-go       — OpenCode Go    (OPENCODE_API_KEY, /zen/go/v1)
+    #   openai-compatible — any OpenAI-compatible /v1 endpoint (vLLM, LM Studio,
+    #                       a self-hosted gateway): set _BASE_URL and a model
+    #
+    # Keys you need, per provider: the *_api_key fields below (ollama needs
+    # none; run `ollama serve` and `ollama pull <model>`).
     #
     # Model ids are LiteLLM-style "provider/model" strings; the *:free suffix
-    # selects OpenRouter free variants. Set *_MODEL env vars to override.
+    # selects OpenRouter free variants. Set <PROVIDER>_STRONG_MODEL /
+    # _CHEAP_MODEL env vars to override any default. Providers whose ids are not
+    # stable enough to pin ship empty, so `iris doctor` says so instead of the
+    # first call 404ing.
     llm_provider: str = "auto"
+    # Set at boot when LLM_PROVIDER names something unknown or unusable. The
+    # turn still runs on the fallback; doctor and /jev surface this instead of
+    # it being a silent surprise.
+    provider_warning: str = ""
 
     # ── Secrets ──────────────────────────────────────────────────────────
     # All credential-bearing fields are `repr=False`: Settings is a plain
@@ -72,49 +87,163 @@ class Settings(BaseSettings):
     ollama_embedding_model: str = "ollama/nomic-embed-text"
     ollama_embedding_dim: int = 768
 
+    # ── Further providers (names and failover live in iris_ai.providers) ──
+    # Each block is a key plus a strong and a cheap model id. An empty model id
+    # means "this provider is not usable yet" — Iris refuses to guess an id and
+    # call it, because a guessed id is a 404 at runtime rather than an error at
+    # startup. `iris doctor` reports exactly which are configured.
+    openai_api_key: str = Field(default="", repr=False)
+    openai_strong_model: str = ""
+    openai_cheap_model: str = ""
+
+    deepseek_api_key: str = Field(default="", repr=False)
+    deepseek_strong_model: str = ""
+    deepseek_cheap_model: str = ""
+
+    xai_api_key: str = Field(default="", repr=False)
+    xai_strong_model: str = ""
+    xai_cheap_model: str = ""
+
+    mistral_api_key: str = Field(default="", repr=False)
+    mistral_strong_model: str = ""
+    mistral_cheap_model: str = ""
+
+    together_api_key: str = Field(default="", repr=False)
+    together_strong_model: str = ""
+    together_cheap_model: str = ""
+
+    fireworks_api_key: str = Field(default="", repr=False)
+    fireworks_strong_model: str = ""
+    fireworks_cheap_model: str = ""
+
+    # OpenCode Zen and Go share one key and differ only by endpoint. Ids were
+    # verified against opencode.ai/docs on 2026-09-26 (see providers.VERIFIED);
+    # Zen's free tier makes it a genuinely zero-cost default, so the free
+    # variants are what ships here.
+    opencode_api_key: str = Field(default="", repr=False)
+    opencode_strong_model: str = "openai/deepseek-v4-pro"
+    opencode_cheap_model: str = "openai/deepseek-v4-flash-free"
+    opencode_go_strong_model: str = "openai/deepseek-v4-pro"
+    opencode_go_cheap_model: str = "openai/deepseek-v4-flash"
+
+    # Bring-your-own endpoint: any OpenAI-compatible /v1 service.
+    openai_compatible_api_key: str = Field(default="", repr=False)
+    openai_compatible_base_url: str = ""
+    openai_compatible_strong_model: str = ""
+    openai_compatible_cheap_model: str = ""
+
     # Web search (Tavily free tier). Empty = web_search tool says "not configured".
     tavily_api_key: str = Field(default="", repr=False)
 
     # Voice notes — Groq Whisper (needs groq_api_key).
     voice_model: str = "groq/whisper-large-v3-turbo"
 
+    # ── Provider resolution (table-driven; see iris_ai.providers) ────────
+    def _provider_key(self, name: str) -> str:
+        """The API key configured for a provider, or "" if it needs none."""
+        spec = PROVIDERS[name]
+        return getattr(self, spec.key_field, "") if spec.key_field else ""
+
+    def _provider_base(self, name: str) -> str:
+        """The api_base for a provider: fixed for gateways, a setting for
+        self-hosted endpoints and Ollama, empty when LiteLLM already knows."""
+        spec = PROVIDERS[name]
+        if spec.base_url:
+            return spec.base_url
+        if spec.base_url_field:
+            return getattr(self, spec.base_url_field, "") or ""
+        return ""
+
+    def _provider_usable(self, name: str) -> bool:
+        """Credentials present *and* a model id configured.
+
+        An unusable provider is skipped rather than attempted: calling with an
+        empty or guessed model id turns a configuration mistake into a runtime
+        404 on every turn.
+        """
+        spec = PROVIDERS[name]
+        if spec.key_field and not self._provider_key(name).strip():
+            return False
+        if not (self._models_strong.get(name) or "").strip():
+            return False
+        return not (spec.base_url_field and not self._provider_base(name).strip())
+
+    def _autodetect_provider(self) -> str:
+        """First usable provider in AUTO_ORDER, else local Ollama.
+
+        Ollama is the floor and needs neither key nor network, so this never
+        returns None — a keyless install still boots and still answers.
+        """
+        for name in AUTO_ORDER:
+            if self._provider_usable(name):
+                return name
+        return "ollama"
+
+    def _auth_for_provider(self, name: str) -> dict[str, str]:
+        """Exactly the LiteLLM kwargs this provider needs — no more."""
+        auth: dict[str, str] = {}
+        key = self._provider_key(name)
+        if key:
+            auth["api_key"] = key
+        base = self._provider_base(name)
+        if base:
+            auth["api_base"] = base
+        return auth
+
+    def auth_for_model(self, model: str) -> dict[str, str]:
+        """LiteLLM auth kwargs for a model string built outside the failover
+        chain (embeddings are the only current caller).
+
+        Configured model ids are matched exactly first, because the
+        OpenAI-compatible providers (Zen, Go, bring-your-own) share the
+        `openai/` prefix and differ only by api_base; the prefix is then a
+        fallback for anything else.
+        """
+        for name in PROVIDERS:
+            for mid in (self._models_strong.get(name, ""), self._models_cheap.get(name, "")):
+                if mid and model == mid:
+                    return self._auth_for_provider(name)
+        for name, spec in PROVIDERS.items():
+            if model.startswith(spec.prefix) and self._provider_usable(name):
+                return self._auth_for_provider(name)
+        return {}
+
     def model_post_init(self, __context) -> None:
         # Keep the per-provider model names before resolution overwrites
         # `strong_model`/`cheap_model` — the failover chain needs them.
         self._models_strong = {
-            "gemini": self.strong_model,
-            "groq": self.groq_strong_model,
-            "openrouter": self.openrouter_strong_model,
-            "ollama": self.ollama_strong_model,
+            name: getattr(self, spec.strong_field, "") for name, spec in PROVIDERS.items()
         }
         self._models_cheap = {
-            "gemini": self.cheap_model,
-            "groq": self.groq_cheap_model,
-            "openrouter": self.openrouter_cheap_model,
-            "ollama": self.ollama_cheap_model,
+            name: getattr(self, spec.cheap_field, "") for name, spec in PROVIDERS.items()
         }
-        provider = self.llm_provider.strip().lower()
-        if provider == "auto":
-            if self.gemini_api_key:
-                provider = "gemini"
-            elif self.groq_api_key:
-                provider = "groq"
-            elif self.openrouter_api_key:
-                provider = "openrouter"
-            else:
-                provider = "ollama"
+
+        requested = self.llm_provider.strip().lower() or "auto"
+        provider = self._autodetect_provider() if requested == "auto" else requested
+        if provider not in PROVIDERS:
+            # An unknown name is a configuration error worth surfacing, but it
+            # must not stop boot — a typo shouldn't make Iris unstartable.
+            self.provider_warning = (
+                f"unknown LLM_PROVIDER {self.llm_provider!r}; using {self._autodetect_provider()!r}"
+            )
+            provider = self._autodetect_provider()
+        elif not self._provider_usable(provider):
+            # Named but unusable (no key, or no model id yet). Degrade to the
+            # same auto path rather than failing every call.
+            fallback = self._autodetect_provider()
+            if fallback != provider:
+                self.provider_warning = (
+                    f"LLM_PROVIDER={provider!r} is not usable "
+                    f"(missing key or model id); using {fallback!r}"
+                )
+                provider = fallback
         self._resolved_provider = provider
-        if provider == "openrouter":
-            self.strong_model = self.openrouter_strong_model
-            self.cheap_model = self.openrouter_cheap_model
-        elif provider == "groq":
-            self.strong_model = self.groq_strong_model
-            self.cheap_model = self.groq_cheap_model
-        elif provider == "ollama":
-            self.strong_model = self.ollama_strong_model
-            self.cheap_model = self.ollama_cheap_model
+        # Only overwrite the public model fields when the provider actually has
+        # a value; an explicit STRONG_MODEL in .env must survive.
+        self.strong_model = self._models_strong.get(provider, "") or self.strong_model
+        self.cheap_model = self._models_cheap.get(provider, "") or self.cheap_model
         # Embeddings stay Gemini when a key exists; otherwise fall back to
-        # Ollama nomic-embed-text so OpenRouter/Groq-only setups still index.
+        # Ollama nomic-embed-text so a chat-only provider still indexes.
         if not self.gemini_api_key:
             self.embedding_model = self.ollama_embedding_model
             self.embedding_dim = self.ollama_embedding_dim
@@ -123,32 +252,22 @@ class Settings(BaseSettings):
         """Provider failover chain for a model tier.
 
         Returns (provider, model, auth) tuples ordered by priority: the
-        resolved provider leads, the rest follow (only those with
-        credentials), with local ollama as the always-available last resort.
+        resolved provider leads, then every other *usable* provider in registry
+        order (cloud first, gateways after), with local Ollama last as the
+        always-available floor. A provider that is configured but unusable is
+        skipped rather than attempted.
         """
         models = self._models_strong if tier == "strong" else self._models_cheap
-        order = ["gemini", "groq", "openrouter", "ollama"]
-        lead = getattr(self, "_resolved_provider", None) or order[0]
-        ordered = [lead, *[p for p in order if p != lead]]
+        lead = getattr(self, "_resolved_provider", None) or self._autodetect_provider()
+        ordered = [lead, *[name for name in PROVIDERS if name != lead]]
         out: list[tuple[str, str, dict]] = []
-        for provider in ordered:
-            if provider == "ollama":
-                auth = {"api_base": self.ollama_base_url}
-            elif provider == "gemini":
-                if not self.gemini_api_key:
-                    continue
-                auth = {"api_key": self.gemini_api_key}
-            elif provider == "groq":
-                if not self.groq_api_key:
-                    continue
-                auth = {"api_key": self.groq_api_key}
-            elif provider == "openrouter":
-                if not self.openrouter_api_key:
-                    continue
-                auth = {"api_key": self.openrouter_api_key}
-            else:
+        for name in ordered:
+            if not self._provider_usable(name):
                 continue
-            out.append((provider, models[provider], auth))
+            model = (models.get(name) or "").strip()
+            if not model:
+                continue
+            out.append((name, model, self._auth_for_provider(name)))
         return out
 
     # ── Infra ────────────────────────────────────────────────────────────
