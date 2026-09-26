@@ -172,16 +172,32 @@ one that refuses to start.
 
 ## Quickstart
 
-Prerequisites: Python 3.13 + [uv](https://docs.astral.sh/uv/). Docker only for
-Postgres and the full stack.
+Prerequisites: Python 3.13. [uv](https://docs.astral.sh/uv/) for a checkout,
+Docker only for Postgres and the full stack.
+
+Install the package:
 
 ```bash
-git clone <this repo> && cd Iris
+pip install iris-personal-ai    # or: uv add iris-personal-ai
+iris --help
+```
+
+Working on Iris itself — the recommended path, because a checkout is where the
+shipped skills, docs, eval scripts and `scripts/` live:
+
+```bash
+git clone https://github.com/omhome16/Iris.git && cd Iris
 uv sync                      # install the library + CLI into .venv
 uv run iris --help           # the CLI shell
 uv run iris doctor           # what's configured, and what isn't
 uv run iris chat             # talk to her (add --once "hi" to script one turn)
 ```
+
+Names: the distribution is **`iris-personal-ai`**, the import package is
+**`iris_ai`**, and the console command is **`iris`**. The bare `iris` name was
+not available — it is another project's on PyPI, and the `iris` import belongs
+to SciTools Iris — so the package had to be renamed before it could be shipped
+at all.
 
 To give her a brain, copy the env template and fill in one provider key (see
 [Providers](#providers)); `iris doctor` reports which key names it found:
@@ -661,22 +677,44 @@ Since P3 the bridge is **a client of the library, not a second brain**:
 
 ### Providers
 
-Two-tier brain via LiteLLM (any provider works). Pick one with `LLM_PROVIDER`
-in `.env` — `auto` uses the first key it finds:
+Two-tier brain via LiteLLM. Every provider lives in one table —
+[`src/iris_ai/providers.py`](src/iris_ai/providers.py) — holding its name, key
+var, model-id prefix and base URL. `Settings`, the failover chain and
+`iris doctor` all read that table, so adding a provider cannot leave one of
+them behind. Pick one with `LLM_PROVIDER` in `.env`; `auto` uses the first key
+it finds:
 
 | Provider | Env var (key) | Strong (default) | Cheap (default) | Notes |
 |---|---|---|---|---|
 | **OpenRouter** | `OPENROUTER_API_KEY` | `openrouter/nvidia/nemotron-3-super-120b-a12b:free` | `openrouter/nvidia/nemotron-nano-9b-v2:free` | free `:free` variants; override with `OPENROUTER_STRONG_MODEL` / `_CHEAP_MODEL` |
 | **Groq** | `GROQ_API_KEY` | `groq/openai/gpt-oss-120b` | `groq/openai/gpt-oss-20b` | free tier (30 RPM / 1k RPD), very fast. Ids verified 2026-09-21 — the previous defaults had a doubled `groq/groq/` prefix and named a decommissioned model |
 | **Gemini** | `GEMINI_API_KEY` | `gemini/gemini-3.5-flash` | `gemini/gemini-3.1-flash-lite` | also powers embeddings |
+| **OpenCode Zen** | `OPENCODE_API_KEY` | `openai/deepseek-v4-pro` | `openai/deepseek-v4-flash-free` | curated gateway with **free** models; base URL `https://opencode.ai/zen/v1`. Ids verified 2026-09-26 |
+| **OpenCode Go** | `OPENCODE_API_KEY` *(shared)* | `openai/deepseek-v4-pro` | `openai/deepseek-v4-flash` | same key, endpoint `https://opencode.ai/zen/go/v1` |
+| **OpenAI** | `OPENAI_API_KEY` | *(you set it)* | *(you set it)* | set `OPENAI_STRONG_MODEL` / `_CHEAP_MODEL` |
+| **DeepSeek** | `DEEPSEEK_API_KEY` | *(you set it)* | *(you set it)* | e.g. `deepseek/deepseek-chat` |
+| **xAI Grok** | `XAI_API_KEY` | *(you set it)* | *(you set it)* | e.g. `xai/grok-4` |
+| **Mistral** | `MISTRAL_API_KEY` | *(you set it)* | *(you set it)* | e.g. `mistral/mistral-large-latest` |
+| **Together** | `TOGETHER_API_KEY` | *(you set it)* | *(you set it)* | hosted open weights (`together_ai/...`) |
+| **Fireworks** | `FIREWORKS_API_KEY` | *(you set it)* | *(you set it)* | hosted open weights (`fireworks_ai/...`) |
+| **Any OpenAI-compatible** | `OPENAI_COMPATIBLE_API_KEY` | *(you set it)* | *(you set it)* | vLLM, LM Studio, a self-hosted gateway: also set `OPENAI_COMPATIBLE_BASE_URL` |
 | **Ollama** | *none* (local) | `ollama/qwen2.5-coder:3b` | `ollama/qwen2.5-coder:3b` | `ollama serve` + `ollama pull <model>`; base URL via `OLLAMA_BASE_URL` |
 | voice (always Groq) | `GROQ_API_KEY` | — | — | `groq/whisper-large-v3-turbo` |
 | web search (optional) | `TAVILY_API_KEY` | — | — | free tier at tavily.com |
 | **JEV (optional)** | `TYPESAFE_API_KEY` | — | — | `jev-latest` (TypeSafe System One) for recall reranking, skill selection and injection screening. No key = deterministic fallbacks. See [`docs/jev.md`](docs/jev.md) |
 
-The table above mirrors the defaults in `src/iris_ai/config.py` — that file is the
-single source of truth. Model names drift, so treat it as the contract and these
-docs as a snapshot.
+Providers with no pinned id ship **empty on purpose**. Model names drift
+constantly — two Groq defaults in this repo were wrong at runtime, which is why
+the ids that do ship carry the date they were checked. A guessed id is a 404 on
+every turn rather than an error you can see, so a provider with a key but no
+model id is *skipped*, never attempted, and `iris doctor` names it:
+
+```text
+$ iris doctor
+  ok   provider keys: OPENCODE_API_KEY
+  ok   model provider: OpenCode Zen (LLM_PROVIDER=opencode)
+  warn strong model: OPENAI_STRONG_MODEL is unset — OpenAI cannot be used yet
+```
 
 **Embeddings** are the one constraint: OpenRouter and Groq don't offer them.
 Iris uses Gemini when `GEMINI_API_KEY` is set, otherwise falls back to

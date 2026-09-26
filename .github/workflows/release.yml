@@ -1,0 +1,72 @@
+name: release
+
+# Cut a release by pushing a tag: `git tag v0.2.0 && git push origin v0.2.0`.
+#
+# Two deliberate choices:
+#
+# * TestPyPI first, PyPI second. A publish is irreversible — you cannot
+#   overwrite a version on PyPI, only yank it — so the same artifacts are
+#   proven to install on the test index before they reach the real one.
+# * Trusted publishing (OIDC), not an API token. `id-token: write` plus a
+#   configured publisher on PyPI means there is no long-lived secret in this
+#   repository to leak, rotate, or accidentally print.
+#
+# One-time setup on PyPI and TestPyPI: add a trusted publisher for this
+# repository with workflow `release.yml` and environments `pypi` / `testpypi`.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv build
+      - name: The artifact must install and run, not just build
+        # Installing into a clean venv and running it from /tmp is the only way
+        # to catch a packaging bug (missing data files, a broken entry point)
+        # that a `uv build` on its own will happily produce.
+        run: |
+          python -m venv /tmp/rel
+          /tmp/rel/bin/pip install --quiet dist/*.whl
+          /tmp/rel/bin/iris version
+          /tmp/rel/bin/iris --help
+          cd /tmp && /tmp/rel/bin/iris skills list | grep -q web-page-to-notes
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write # OIDC for trusted publishing; no token secret
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    needs: testpypi
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

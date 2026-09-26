@@ -4,6 +4,50 @@ Notable changes, newest first. Every entry is grounded in something measured or
 verified rather than asserted — where a number appears, the method that produced
 it is named.
 
+## Unreleased — the publish pass: a name that exists, twelve providers, and an artifact that installs
+
+**Phase:** after the hardening pass, aimed at the first public release. Suite:
+**824 passed**, ruff clean, `uv build` produces `iris_personal_ai-0.2.0` with the
+builtin skill inside it.
+
+### Changed
+
+- **Renamed to something publishable.** `iris` on PyPI is another project's, and
+the `iris` *import* is SciTools Iris — so the distribution is now
+`iris-personal-ai`, the import package is `iris_ai`, and the console command
+stays `iris`. Verified free: `iris-ai`, `iris-mind` and `iris-personal-ai` all
+404 on PyPI, `iris` returns 200.
+- **Providers became a registry.** Twelve providers (including OpenCode Zen and
+Go, verified endpoints `/zen/v1` and `/zen/go/v1` sharing `OPENCODE_API_KEY`),
+plus a bring-your-own `openai-compatible` provider for vLLM, LM Studio or any
+gateway. `Settings`, the failover chain and `iris doctor` all read one table.
+A provider with a key but no model id is **skipped rather than attempted** — a
+guessed model id is a 404 on every turn, which is exactly how two shipped Groq
+defaults had already failed. `iris doctor` gained `model provider` and
+`strong model` checks.
+
+### Fixed
+
+- **The shipped skill did not survive `pip install`.** The wheel packaged only
+`src/iris_ai`, so `iris skills list` on an installed copy had no builtins while
+the README called that skill "the format's proof". Hatch now force-includes
+`skills/` as `iris_ai/builtin_skills` (and the Mermaid assets), `builtin_root()`
+falls back to the packaged copy, and CI runs `iris skills list` from `/tmp` —
+where the checkout's `skills/` is not on the path — as a gate.
+
+### Added
+
+- **A release workflow** (`.github/workflows/release.yml`): tag → build → install
+and run the artifact → TestPyPI → PyPI, using OIDC trusted publishing so no
+long-lived token exists in the repo.
+- **LICENSE, authors, urls, classifiers, keywords**, and a version that matches
+the changelog (0.1.0 → 0.2.0).
+- **`docs/vault-review.md`** — Iris against a 112-note AI-engineering vault:
+what already matches, what was adopted, what was deliberately rejected and why,
+and the accepted backlog.
+
+---
+
 ## Unreleased — the hardening pass: the day ceiling made real, JEV on the last decision, and a CLI worth looking at
 
 **Phase:** after P8 ([`docs/blueprint.md`](docs/blueprint.md)), driven by three
