@@ -7,7 +7,9 @@ component at a time:
 
   memory_off     no retrieval at all — the OFF baseline every other row is read against
   full           hybrid vector+FTS × recency decay × importance, then MMR
-  vector_only    pure cosine similarity (no hybrid, no decay, no importance)
+  vector_only    cosine relevance only (no FTS hybrid term, no JEV rerank — decay
+                 and importance still apply, since the knob changes the relevance
+                 term and nothing else)
   no_decay       hybrid + importance, recency removed
   no_importance  hybrid + decay, importance removed
   no_mmr         full scoring but no diversity re-ranking (top-k by score)

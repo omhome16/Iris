@@ -36,6 +36,47 @@ jobs:
       - name: Ruff
         run: uv run ruff check .
 
+  retrieval:
+    # Two-speed gating: deterministic retrieval metrics on every change, judge
+    # suites (which need a key, a budget and a calibration study before their
+    # numbers mean anything) later. This job is the first speed, and it is
+    # deliberately the cheap one — a labelled fixture scored with recall@k and
+    # nDCG@k against a real pgvector index, with no model call anywhere. It has
+    # its own slot rather than a step in `test` so a ranking regression names
+    # itself in the checks list instead of hiding inside a 900-test run.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: iris
+          POSTGRES_PASSWORD: iris_dev_password
+          POSTGRES_DB: iris
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U iris"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      IRIS_EVAL_POSTGRES_DSN: postgresql+psycopg://iris:iris_dev_password@localhost:5433/iris_eval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Create the eval scratch database
+        # `iris_eval` is created by postgres/init.sql only on a *first* boot, and
+        # a service container is already initialised. It is the eval scratch
+        # database the gate and scripts/eval_lab.py both wipe and re-seed.
+        run: |
+          container=$(docker ps --filter "publish=5433" --format '{{.ID}}' | head -1)
+          docker exec "$container" psql -U iris -d iris -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE iris_eval;'
+      - name: Retrieval gate (labelled fixture, no model)
+        run: uv run pytest tests/test_retrieval_gate.py tests/test_retrieval_metrics.py -q
+
   package:
     # "The wheel builds" is a claim about the artifact, not about pyproject.toml.
     # Build it, install it into a clean venv, and run the console entry from the
@@ -84,16 +125,20 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
-      - name: Create the memory-pipeline test database
+      - name: Create the scratch databases
         # test_memory_pipeline.py targets a *separate* database
-        # (IRIS_TEST_POSTGRES_DSN) so a test run can never touch real memory,
-        # and the pgvector service only creates POSTGRES_DB. Run psql from
-        # inside the service container rather than depending on the runner
-        # image having a client installed.
+        # (IRIS_TEST_POSTGRES_DSN) so a test run can never touch real memory, and
+        # the retrieval gate targets the eval scratch database that
+        # postgres/init.sql creates on a *first* boot (a service container is
+        # already initialised, so neither exists here). The pgvector service only
+        # creates POSTGRES_DB. Run psql from inside the service container rather
+        # than depending on the runner image having a client installed.
         run: |
           container=$(docker ps --filter "publish=5433" --format '{{.ID}}' | head -1)
           docker exec "$container" psql -U iris -d iris -v ON_ERROR_STOP=1 \
             -c 'CREATE DATABASE iris_test;'
+          docker exec "$container" psql -U iris -d iris -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE iris_eval;'
       - name: Unit + integration tests
         # The DB-backed suite is included here on purpose: locally those tests
         # fail loudly when no Postgres is listening (they do not skip), so on a

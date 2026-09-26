@@ -28,14 +28,18 @@ without an explicit instruction. Publishing steps are in §5 and are the user's 
 
 ```bash
 uv run ruff check .                     # must be clean before every commit
-uv run pytest tests -q --ignore=tests/test_memory_pipeline.py   # fast, no DB
+uv run pytest tests -q --ignore=tests/test_memory_pipeline.py \
+                        --ignore=tests/test_retrieval_gate.py   # fast, no DB
 docker compose up -d postgres           # then the full suite (5 DB-backed tests)
 uv run pytest tests -q                  # full suite
 uv run iris version && uv run iris doctor
 ```
 
 - The 5 tests in `tests/test_memory_pipeline.py` need pgvector on `:5433` and
-  **fail loudly** when it is absent (they do not skip).
+  **fail loudly** when it is absent (they do not skip). `tests/test_retrieval_gate.py`
+  is the same: it uses the `iris_eval` scratch database (`postgres/init.sql`
+  creates it on first boot), and `tests/test_retrieval_metrics.py` is the
+  DB-free half of that gate.
 - Never print a secret value. `iris doctor` prints presence only, deliberately.
 - Commit convention: `type(scope): imperative summary`, a body that explains
   **why**, ending with the Codebuff footer used by every commit on this branch.
