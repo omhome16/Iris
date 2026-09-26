@@ -163,7 +163,7 @@ async def screen_untrusted_many(
                 severity,
             )
         # Every screened item is recorded, not only the hostile ones: the
-        # dashboard should be able to show what passed the door as well as what
+        # traces should show what passed the door as well as what
         # was refused at it.
         turnlog.record(
             "guard",

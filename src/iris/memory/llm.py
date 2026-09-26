@@ -23,6 +23,7 @@ from typing import Any
 
 import litellm
 
+from iris import turnlog
 from iris.config import settings
 
 log = logging.getLogger("iris.llm")
@@ -118,7 +119,7 @@ class LLMClient:
     def _ensure_cache() -> None:
         """The per-call `caching=True` flag is a silent no-op unless a
         cache object is actually installed on litellm. Without this, the
-        dashboard's cache-hit panel always read 0% no matter what."""
+        /costs cache-hit readout always read 0% no matter what."""
         if not settings.llm_caching or litellm.cache is not None:
             return
         try:
@@ -142,16 +143,29 @@ class LLMClient:
         return {}
 
     def _record(self, model: str, tier: str, usage: Any) -> None:
-        if self.ledger is None:
-            return
         prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
         completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        # The turn-scoped accumulator comes first, and deliberately before the
+        # ledger check: the ledger is the long-term record, this is what makes a
+        # turn's own spend visible while it is still happening (the multi-agent
+        # path costs ~15x a chat, so it must be priced where the choice was
+        # made). A turn with no ledger configured still gets a token count.
+        cached = _cached_tokens(usage)
+        turnlog.add_usage(
+            tier=tier,
+            model=model,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            cached_tokens=cached,
+        )
+        if self.ledger is None:
+            return
         self.ledger.record(
             model=model,
             tier=tier,
             prompt_tokens=prompt,
             completion_tokens=completion,
-            cached_tokens=_cached_tokens(usage),
+            cached_tokens=cached,
         )
 
     @classmethod

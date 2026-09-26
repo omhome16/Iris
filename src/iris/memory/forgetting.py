@@ -1,11 +1,11 @@
 """Forgetting — decay curves, supersession and rot detection.
 
 Ebbinghaus-style exponential decay for episodic content (already used at
-recall time in `index.recency_weight`); here we expose the *curves* for the
-dashboard and flag memory rot: entries past their useful half-life that have
+recall time in `index.recency_weight`); here we expose the *curves* for API
+consumers and flag memory rot: entries past their useful half-life that have
 been superseded or never reinforced.
 
-Forgetting is a first-class function: measurable, dashboard-visible,
+Forgetting is a first-class function: measurable, trace-visible,
 manually overridable (`/forget`). Nothing is hard-deleted silently — retired
 entries carry `(superseded <date>)` markers instead.
 """
@@ -37,7 +37,7 @@ def retention_fraction(age_days: int, *, half_life_days: int | None = None) -> f
 
 
 def decay_curve(*, span_days: int = 90, half_life_days: int | None = None) -> list[tuple[int, float]]:
-    """Dashboard series: (day, retention) pairs."""
+    """Retention series: (day, retention) pairs."""
     return [(d, round(retention_fraction(d, half_life_days=half_life_days), 4)) for d in range(span_days + 1)]
 
 
@@ -48,7 +48,7 @@ class ForgettingEngine:
         self.index = index
 
     async def retention_report(self, *, today: date | None = None) -> list[dict]:
-        """Per-chunk retention stats, oldest first — dashboard feed."""
+        """Per-chunk retention stats, oldest first — API feed."""
         rows = await self.index.list_chunks()
         out = []
         for r in rows:
@@ -128,7 +128,7 @@ def supersede_in_text(content: str, target: str, marker: str) -> str | None:
 
 
 def supersession_stats(memory_md: str) -> dict:
-    """Count retired entries in a curated file — for the dashboard."""
+    """Count retired entries in a curated file — for API consumers."""
     superseded = sum(1 for line in memory_md.splitlines() if "(superseded" in line)
     total = sum(1 for line in memory_md.splitlines() if line.strip().startswith("- ["))
     return {"entries": total, "superseded": superseded}

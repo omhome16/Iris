@@ -29,6 +29,25 @@ class Skill:
     success_score: float = 0.5  # 0..1, updated on apply outcomes
     created: str = ""
     updated: str = ""
+    # ── manifest (P4) ────────────────────────────────────────────────────
+    # Every field below is defaulted, so sidecars written before the manifest
+    # existed keep loading unchanged: this is the same object, widened.
+    version: str = ""
+    # Where the skill was discovered: learned | workspace | builtin | package:<dist>.
+    # `learned` is the flat sidecar pair the writing loop produces.
+    source: str = "learned"
+    enabled: bool = True
+    # Empty means "no restriction" (what every pre-P4 skill means). Non-empty
+    # narrows the turn to these tools while the skill is active — a skill can
+    # only ever remove capability, never add it.
+    allowed_tools: list[str] = field(default_factory=list)
+    timeout_seconds: float = 10.0  # upper bound for this skill's scripts
+    license: str = ""
+    compatibility: str = ""
+    root: str = ""  # skill directory for standard-format skills ("" for flat ones)
+    scripts: list[str] = field(default_factory=list)  # relative paths under scripts/
+    references: list[str] = field(default_factory=list)  # relative paths under references/
+    metadata: dict[str, str] = field(default_factory=dict)  # the spec's extension map
 
     def to_markdown(self) -> str:
         created = self.created or datetime.now().isoformat(timespec="seconds")

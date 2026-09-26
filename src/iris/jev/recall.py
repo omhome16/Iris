@@ -45,11 +45,17 @@ class JevReranker:
         enabled: bool | None = None,
         max_candidates: int | None = None,
         blend: float | None = None,
+        timeout_seconds: float | None = None,
     ) -> None:
         self.jev = jev
         self._enabled = enabled
         self.max_candidates = max_candidates if max_candidates is not None else settings.jev_rerank_candidates
         self.blend = blend if blend is not None else settings.jev_rerank_blend
+        self.timeout_seconds = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else float(settings.jev_rerank_timeout_seconds)
+        )
 
     @property
     def enabled(self) -> bool:
@@ -89,7 +95,12 @@ class JevReranker:
                 {"id": i, "text": (text or "")[:_CANDIDATE_CHARS]} for i, text in enumerate(head)
             ],
         }
-        answers = await self.jev.ask(state, questions)  # type: ignore[union-attr] - guarded by `enabled`
+        # A recall rerank sits on the reply path: the agent's next model call
+        # waits for it. The budget is what keeps "JEV is optional" honest — past
+        # it, the deterministic shortlist is used and the turn keeps moving.
+        answers = await self.jev.ask(  # type: ignore[union-attr] - guarded by `enabled`
+            state, questions, timeout=self.timeout_seconds
+        )
         if answers is None:
             return None
         return [answers.noul(f"c{i}") for i in range(len(head))]

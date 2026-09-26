@@ -32,6 +32,16 @@ from iris.memory.provenance import Origin, Provenance
 
 log = logging.getLogger("iris.memory.index")
 
+
+class MemoryUnavailable(RuntimeError):
+    """Recall was asked for and the index cannot serve it.
+
+    Raised by the degraded stand-in (`iris.memory.null_index.NullIndex`) when
+    no database is reachable. A degraded session must say so out loud rather
+    than answer from an empty result set, so the message always carries the
+    DSN and the command that fixes it.
+    """
+
 _SCHEMA = f"""
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -68,6 +78,10 @@ class MemoryHit:
     origin: Origin
     observed_at: date
     evergreen: bool
+    # Which chunk of `path` this is. `forget`'s confirm step edits a specific
+    # entry, so a hit without one (-1) cannot be acted on: the API skips it
+    # instead of handing the caller an unusable candidate.
+    chunk_index: int = -1
     lane: str = "default"  # "default" | "escalate"
     # Scoring components, kept so the relevance term can be replaced (JEV
     # rerank) without recomputing or losing the deterministic policy
@@ -268,7 +282,7 @@ class MemoryIndex:
             await register_vector(conn)
             return await conn.fetch(
                 """
-                SELECT content, path, importance, origin, observed_at, evergreen, embedding,
+                SELECT content, path, chunk_index, importance, origin, observed_at, evergreen, embedding,
                        (1 - (embedding <=> $1::vector)) AS vscore,
                        ts_rank(to_tsvector('english', content), plainto_tsquery('english', $2)) AS fscore
                 FROM memory_chunks
@@ -326,6 +340,7 @@ class MemoryIndex:
                 origin=Origin(row["origin"]),
                 observed_at=row["observed_at"],
                 evergreen=row["evergreen"],
+                chunk_index=int(row["chunk_index"]),
                 relevance=hybrid,
                 decay=decay,
                 imp_mult=imp_mult,
@@ -405,7 +420,7 @@ class MemoryIndex:
             await register_vector(conn)
             return await conn.fetch(
                 """
-                SELECT content, path, importance, origin, observed_at, evergreen, embedding,
+                SELECT content, path, chunk_index, importance, origin, observed_at, evergreen, embedding,
                        (1 - (embedding <=> $1::vector)) AS vscore,
                        ts_rank(to_tsvector('english', content), plainto_tsquery('english', $2)) AS fscore
                 FROM memory_chunks
@@ -451,6 +466,7 @@ class MemoryIndex:
                 origin=Origin(row["origin"]),
                 observed_at=row["observed_at"],
                 evergreen=row["evergreen"],
+                chunk_index=int(row["chunk_index"]),
                 lane="escalate",
                 relevance=hybrid,
                 decay=1.0,  # the escalation lane deliberately has no decay
@@ -514,7 +530,7 @@ class MemoryIndex:
             return {"total_chunks": total, "by_origin": by_origin}
 
     async def list_chunks(self) -> list[dict]:
-        """All chunks (no embeddings) — for forgetting reports and dashboard."""
+        """All chunks (no embeddings) — for forgetting reports and API consumers."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """

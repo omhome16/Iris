@@ -105,7 +105,7 @@ class JevClient:
         # capture judgment, and the reflection pass now runs in the background.
         # Without this lock two of them can each build a client and leak one.
         self._lock: asyncio.Lock | None = None
-        # Telemetry for the dashboard: a judgment layer nobody can inspect is
+        # Telemetry for operators: a judgment layer nobody can inspect is
         # indistinguishable from one that is failing silently.
         self.requests = 0
         self.failures = 0
@@ -159,7 +159,7 @@ class JevClient:
             return client
 
     def status(self) -> dict[str, Any]:
-        """Health of the judgment layer, for `/health` and the dashboard."""
+        """Health of the judgment layer, for `/health` and status consumers."""
         return {
             "enabled": self.enabled,
             "model": self._model,
@@ -181,11 +181,24 @@ class JevClient:
         await self.close()
 
     # ── the one call ─────────────────────────────────────────────────────
-    async def ask(self, state: Any, questions: Mapping[str, dict]) -> JevAnswers | None:
+    async def ask(
+        self,
+        state: Any,
+        questions: Mapping[str, dict],
+        *,
+        timeout: float | None = None,
+    ) -> JevAnswers | None:
         """One request, many independent questions. `None` on any failure.
 
         Never raises: JEV sits in front of decisions the deterministic path can
         still make, so a JEV outage degrades quality, never availability.
+
+        `timeout` is a **per-call latency budget**, and call sites on the reply
+        path pass one. Client-level timeouts protect the request; a budget
+        protects the turn — a slow judgment layer must cost a bounded number of
+        seconds before the deterministic path takes over, or "JEV is optional"
+        stops being true the moment its latency is bad. The budget can only be
+        shorter than the client timeout, never longer.
         """
         if not questions or not self.enabled:
             return None
@@ -195,7 +208,14 @@ class JevClient:
         self.requests += 1
         try:
             client = await self._ensure()
-            response = await client.system_one(state=state, questions=dict(questions))
+            call = client.system_one(state=state, questions=dict(questions))
+            response = await (asyncio.wait_for(call, timeout) if timeout else call)
+        except TimeoutError:
+            self.failures += 1
+            self.last_error = f"budget exceeded: {timeout}s"
+            log.warning("jev budget of %ss exceeded; using the deterministic path", timeout)
+            await self._reset()
+            return None
         except Exception as exc:  # noqa: BLE001 - heterogeneous transport/API failures
             self.failures += 1
             self.last_error = f"{type(exc).__name__}: {exc}"[:240]

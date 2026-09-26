@@ -88,6 +88,63 @@ call.
 | 1 | **Recall reranking** | `src/iris/jev/recall.py`, called from `MemoryIndex._rerank` | one **Noul** per candidate, all in one request | the `0.6·vector + 0.4·FTS` score |
 | 2 | **Skill suggestion** | `src/iris/jev/skills.py`, called from `ContextAssembler._skills_block` | **Choice** over the roster + a "needs a skill at all?" **Noul**, in one request | `SkillLibrary.match_triggers` |
 | 3 | **Injection screening** | `src/iris/jev/guard.py`, called from the `web_search` and `ingest_url` tools | 2 **Nouls** (injection, exfiltration) + 1 **Score** (severity) per item, batched into one request | plain `[UNTRUSTED]` tagging only |
+| 4 | **Skill script gate** | `src/iris/skills/guard.py`, called from the `skill_run` tool | 1 **Noul** (does this script do only what its skill describes?) against the skill's description, the script source and the deterministic pre-screen findings | no judgment → approval-only, and the trace records that the gate did not run |
+| 5 | **Delegation effort** | `src/iris/jev/agents.py`, called from `Orchestrator.fan_out` | 1 **Noul** (does this ask for several independent things?) | no fan-out: one bounded researcher call |
+| 6 | **Answer sufficiency** | `src/iris/jev/agents.py`, called from `Orchestrator.verify` and the `verify_answer` tool | 1 **Noul** (is every factual claim supported?) + 1 **Choice** (supported / partial / unsupported), one request | no forced revision; the critic still runs and reports |
+| 7 | **Capture gate** | `src/iris/memory/capture.py`, called from the `capture` node | 1 **Noul** (does the owner's turn state a durable fact?) + 1 **Noul** (is it already in context?) + 1 **Score** (importance 1-10), one request | the cheap-tier extraction prompt, and a deterministic prefilter before either runs |
+| 8 | **Reflection** (P8) | `src/iris/memory/reflection.py`, called from the `journal` node | 1 **Noul per claim sentence** (is this supported by the excerpts?), one request | the cheap-tier fact-checking completion |
+
+### 3.0 The audit behind that table
+
+JEV is not a garnish here: **every decision on the reply path that can be
+answered from supplied text is a JEV judgment**, and the remaining model calls
+were checked one by one to confirm they are *generation*, not decisions.
+
+| Model call | Verdict |
+|---|---|
+| `agent` ReAct loop (`complete_with_tools`) | stays — this *is* the reply |
+| recall rerank | **JEV** (#1) |
+| skill suggestion | **JEV** (#2) |
+| injection screening | **JEV** (#3) |
+| skill script gate | **JEV** (#4) |
+| delegation effort + sufficiency | **JEV** (#5, #6) |
+| capture (extract-or-not, importance) | **JEV** (#7) |
+| reflection (hallucination triage) | **JEV** (#8) — converted in P8; it was the last LLM-driven *decision* on the turn path |
+| compaction summary | stays — summarising is generation, and the *trigger* is already deterministic token arithmetic |
+| contextual chunk headers | stays — generation, cached per file content hash |
+| dream consolidation / REM statements | stays — generation |
+| onboarding prose | stays — generation |
+| embeddings, voice transcription | stays — no JEV capability |
+
+**What that buys.** Jev bills **input tokens only** at $0.042/Mtok, so a judgment
+is a fraction of a completion's cost, and one request carries many questions
+(the rerank sends one per candidate). Two conversions had a second, larger
+effect: the capture gate skips the extraction completion for most turns, and the
+reflection pass now spends no completion at all while producing a *probability
+per sentence* instead of an opaque list.
+
+**Latency discipline.** A judgment on the reply path is only "free" if it is
+bounded, so the rerank carries its own budget
+(`JEV_RERANK_TIMEOUT_SECONDS`, default 2.5 s) separate from the client timeout:
+past it the deterministic shortlist is used and the turn keeps moving. Without a
+budget, a slow judgment layer would cost the full `JEV_TIMEOUT_SECONDS` on every
+recall — which is how "JEV is optional" quietly stops being true
+(`tests/test_jev.py::test_a_reply_path_judgment_carries_a_latency_budget`).
+
+**Deliberately not converted.** Anything that needs *generation* stays with the
+LLM (see §4), and two candidates were rejected on the project's own rule that a
+quality change needs evidence before it ships: gating contextual chunk headers on
+a "this chunk is self-contained" judgment, and replacing the compaction trigger,
+both of which would change stored/recalled memory with no measurement behind the
+change yet. They are recorded here rather than quietly skipped.
+
+**#4 is the one binding judgment in Iris.** Everywhere else a JEV verdict shapes a
+heuristic; here a refusal *stops* an action (a skill's script does not run) and
+no owner approval can override it — the threat model is a manipulated model
+asking the owner nicely. The gate is calibrated, not guessed: live calls on
+2026-09-23 scored the shipped stdlib-only script `0.72` and a
+credential-exfiltrating variant `0.01`, which is why `SKILL_GUARD_GATE` defaults
+to `0.60` rather than the original `0.70`.
 
 ### 3.1 Recall reranking — the composition rule
 
@@ -144,12 +201,54 @@ verdict is PASS-with-`screened=False`, which is exactly the pre-JEV behaviour.
 Untrusted content stays untrusted either way — screening is an additional gate,
 never the trust boundary.
 
+### 3.4 Multi-agent judgments (P5)
+
+Two decisions on the delegation path are judgments, and both are places a
+hand-tuned heuristic is known to fail.
+
+**Effort** (`agent_effort`) answers "does this ask for several independent
+things, or is it one question?" — because the documented failure of production
+multi-agent systems is the opposite of under-delegation: a swarm of subagents
+spawned for a simple query, spending ~15x a chat's tokens for nothing. Above
+`MULTI_AGENT_EFFORT_GATE` the orchestrator may fan out; below it, one call.
+
+**Sufficiency** (`answer_check`) answers "is every factual claim in this draft
+supported by the findings?" This is the one judgment the product promise rests
+on (*never fabricate*), and it is exactly the judgment that must **not** be left
+to the generator: an LLM reviewing its own output mostly agrees with it
+(self-preference bias), and self-correction without external feedback frequently
+makes answers worse rather than better. So the verdict comes from a different
+model tier than the prose, and code — not the model — decides what follows:
+below `MULTI_AGENT_CRITIQUE_GATE` the critic reads the draft claim by claim and
+exactly **one** revision is allowed, after which the lead must state what it
+could not ground.
+
+Neither judgment is binding in the P4 sense: both fail open, so with no key the
+multi-agent path behaves as it did before P5 (no fan-out, no forced revision).
+The sufficiency judgment is also *cheaper* than it looks — it runs first and
+alone, so a draft it is confident about costs one request instead of a whole
+critic invocation.
+
+Measured live (2026-09-24, `jev-latest`, 4 requests, 0 failures):
+
+| State | Judgment | Result |
+|---|---|---|
+| "Who did I meet in Lisbon last March, and separately what did I decide about the Berlin trip budget?" | effort | `multi_part=0.960` → fan out |
+| "What is my cat called?" | effort | `multi_part=0.040` → no fan out |
+| draft asserting two facts with `(no findings were returned)` | sufficiency | `grounded=0.020`, `unsupported` → below gate |
+| draft asserting one fact, with its source line | sufficiency | `grounded=0.920`, `supported` → above gate |
+
+The gate is a single number on both sides (0.60) with a wide margin either way,
+which is the property worth having: these judgments are separated, not finely
+tuned.
+
 ## 4. Where JEV is deliberately **not** used
 
 | Not used | Why |
 |---|---|
 | Provenance / promotion gating, decay math, supersession, SQL, hashing, sandboxes | Deterministic guarantees. A probabilistic model must not sit inside a security or integrity boundary. |
 | Reply generation, persona, voice | Jev produces no text. |
+| Deciding *which lane* to search (default vs escalation) | Not a heuristic to replace: the agent chooses the lane as a tool argument. |
 | Compaction summaries, REM consolidation statements, contextual chunk headers, onboarding prose | These need *generation*. The cheap-tier LLM stays. |
 | Embeddings / vector search | Jev has no embedding endpoint. |
 | Images, voice notes | Text-only input. |
@@ -165,6 +264,10 @@ JEV_TIMEOUT_SECONDS=12.0
 JEV_RERANK_ENABLED=true
 JEV_RERANK_CANDIDATES=20     # shortlist head that gets reranked (one request)
 JEV_RERANK_BLEND=0.15        # weight kept for the deterministic hybrid score
+JEV_RERANK_TIMEOUT_SECONDS=2.5   # reply-path budget; past it the deterministic order wins
+JEV_REFLECTION_ENABLED=true
+JEV_REFLECTION_THRESHOLD=0.35    # support probability below which a sentence is flagged
+JEV_REFLECTION_MAX_CLAIMS=12     # sentences judged per turn (one request)
 JEV_SKILL_GATE=0.30
 JEV_SKILL_MIN_CONFIDENCE=0.30
 JEV_GUARD_ENABLED=true
@@ -207,6 +310,7 @@ stored_banner = verdict.banner()
 |---|---|---|
 | `jev disabled (TYPESAFE_API_KEY is not set)` at boot | No key | Expected — every integration falls back. Set the key to enable. |
 | `jev disabled (typesafe-sdk is not importable …)` | SDK missing from the environment | `uv sync` |
+| `jev request failed (…TypeSafeAuthenticationError)`, 401 in logs | The key is revoked, or a copy was truncated/mangled on the way into `.env` | Re-copy it into `.env` (no quotes, no trailing space). The symptom is quiet: the caller falls back, so recall just looks deterministic — `last_error` on `/jev` and the boot log name the cause. |
 | `jev request failed (…TypeSafeRateLimitError)` in logs | 429 | The SDK retries with backoff and honours `Retry-After`; the caller falls back to the deterministic path meanwhile. Lower `JEV_RERANK_CANDIDATES` to cut tokens/request. |
 | Recall ordering looks unchanged | `JEV_RERANK_ENABLED=false`, no key, or an ablation is active | Check `/health` (`"jev": true`) and the boot log line. |
 | Everything scored `PASS` and `screened: false` | Screening disabled/unavailable | By design (fail open). |
