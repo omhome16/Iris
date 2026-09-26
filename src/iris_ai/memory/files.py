@@ -71,6 +71,14 @@ class WorkspaceFiles:
     def config_file(self) -> Path:
         return self.root / "config" / "iris.json"
 
+    def skill_approvals_path(self) -> Path:
+        """Hash pins for third-party skill manifests (see skills/approvals.py).
+
+        Beside `iris.json` because it is trust state about this workspace, not a
+        skill: nothing here is ever read as procedural memory.
+        """
+        return self.root / "config" / "skill_approvals.json"
+
     # ── reading ───────────────────────────────────────────────────────────
     def read(self, path: Path, *, max_tokens: int | None = None) -> str:
         if not path.exists():

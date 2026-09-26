@@ -95,10 +95,10 @@ def chat(
 
 @app.command()
 def skills(
-    action: str = typer.Argument("list", help="list | show <name> | validate"),
-    name: str | None = typer.Argument(None, help="Skill name (for `show`)."),
+    action: str = typer.Argument("list", help="list | show <name> | validate | approve <name>"),
+    name: str | None = typer.Argument(None, help="Skill name (for `show`/`approve`)."),
 ) -> None:
-    """Inspect the skill registry (read-only): list, show, validate."""
+    """Inspect the skill registry: list, show, validate, approve."""
     raise typer.Exit(code=skills_mod.run(action=action, name=name))
 
 

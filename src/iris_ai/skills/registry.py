@@ -10,11 +10,16 @@ Sources, highest precedence first:
 | `package:<dist>` | distributions advertising the `iris_ai.skills` entry point | spec |
 | `builtin` | `settings.skills_builtin_dir` (repo `skills/`) | spec |
 
-Two design commitments, both about trust rather than features:
+Three design commitments, all about trust rather than features:
 
 - **A name clash is data, not a coin flip.** The higher-precedence copy wins and
   every losing copy becomes a `RegistryConflict` naming both sources and the
   path — visible in `iris skills validate`.
+- **A third-party manifest is hash-pinned.** Sources this workspace does not own
+  (`package:`, `extra`) are approved by digest, and a *changed* digest disables
+  the skill until `iris skills approve <name>` re-pins it. A trusted tool that
+  quietly changes under you is the rug pull the vault warns about; see
+  `iris_ai/skills/approvals.py`.
 - **No caching.** `list()` re-reads the sources on every call. At this roster size
   a scan is a handful of small files, and a stale roster is a much worse failure
   than a repeated glob: the writing side of this system is *dreaming*, which
@@ -37,6 +42,12 @@ from pathlib import Path
 from iris_ai.config import settings
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.memory.skills import Skill, SkillLibrary
+from iris_ai.skills.approvals import (
+    ApprovalRecord,
+    SkillApprovalStore,
+    approval_key,
+    is_pinned,
+)
 from iris_ai.skills.manifest import (
     ManifestError,
     ValidationIssue,
@@ -164,6 +175,7 @@ class SkillRegistry:
         known_tools: set[str] | None = None,
         enabled: bool | None = None,
         library: SkillLibrary | None = None,
+        approvals: SkillApprovalStore | None = None,
     ) -> None:
         self.files = files
         self.builtin_dir = Path(builtin_dir) if builtin_dir else None
@@ -171,6 +183,9 @@ class SkillRegistry:
         self._entry_points = entry_points if entry_points is not None else _default_entry_points
         self.known_tools = known_tools
         self._enabled = enabled
+        # Trust state for third-party manifests, derived from the workspace so
+        # every construction site (engine, CLI, tests) agrees without passing it.
+        self.approvals = approvals if approvals is not None else SkillApprovalStore(files.skill_approvals_path())
         # Writes are delegated wholesale: dreaming, `skill_write` and the
         # reinforce/revise loop keep writing exactly where they always did.
         self.library = library if library is not None else SkillLibrary(files)
@@ -187,7 +202,12 @@ class SkillRegistry:
         return skills
 
     def selectable(self) -> list[Skill]:
-        """The roster the selector and the prompt may use: enabled and valid."""
+        """The roster the selector and the prompt may use: enabled and valid.
+
+        Error-level issues are keyed `(name, source)`, which is exactly how a
+        failed approval pin removes a skill here — the same mechanism that
+        already drops a manifest naming a tool that does not exist.
+        """
         if not self.enabled:
             return []
         skills, issues, _conflicts = self._resolve()
@@ -251,6 +271,67 @@ class SkillRegistry:
     def revise(self, name: str, *, delta: float = 0.1) -> Skill | None:
         return self._write_target(name).revise(name, delta=delta)
 
+    # ── approvals (third-party manifests) ────────────────────────────────
+    def approve(self, name: str) -> ApprovalRecord | None:
+        """Re-pin a third-party skill's current manifest.
+
+        The remedy for a `changed` digest: the owner has looked at the new
+        content and accepts it. Returns None when the skill is unknown or comes
+        from a source this workspace owns — owner-authored and learned skills
+        are not pinned, so there is nothing to re-approve. Raises
+        `ApprovalLedgerError` when the ledger itself is unreadable, because the
+        fix for that is repairing the file, not pinning on top of it.
+        """
+        skill = self.get(name)
+        if skill is None or not is_pinned(skill.source):
+            return None
+        if not skill.root:
+            return None
+        manifest = Path(skill.root) / "SKILL.md"
+        return self.approvals.record(
+            approval_key(skill.source, skill.name), manifest.read_text(encoding="utf-8")
+        )
+
+    def _approval_issues(self, source: str, skill: Skill, text: str, path: Path) -> list[ValidationIssue]:
+        """Refuse a third-party manifest that no longer matches its pin."""
+        check = self.approvals.check(approval_key(source, skill.name), text)
+        if check.status in ("unchanged", "first-sight"):
+            return []
+        if check.status == "unreadable":
+            return [
+                ValidationIssue(
+                    "error",
+                    f"the approval ledger ({self.approvals.path}) is unreadable, so this "
+                    f"third-party skill cannot be trusted: repair or delete it, then run "
+                    f"`iris skills approve {skill.name}`",
+                    name=skill.name,
+                    source=source,
+                    path=str(path),
+                )
+            ]
+        if check.status == "unapproved":
+            return [
+                ValidationIssue(
+                    "error",
+                    "has no approval pin and trust-on-first-use is off: review it and run "
+                    f"`iris skills approve {skill.name}`",
+                    name=skill.name,
+                    source=source,
+                    path=str(path),
+                )
+            ]
+        return [
+            ValidationIssue(
+                "error",
+                f"manifest changed since it was approved ({check.approved[:12]} → "
+                f"{check.digest[:12]}): review it and run `iris skills approve {skill.name}` "
+                "if the change is expected",
+                name=skill.name,
+                source=source,
+                path=str(path),
+            )
+        ]
+
     # ── validation ───────────────────────────────────────────────────────
     def validate(self) -> list[ValidationIssue]:
         skills, issues, conflicts = self._resolve()
@@ -289,10 +370,14 @@ class SkillRegistry:
         def collect(paths: Iterable[tuple[Path, str]]) -> None:
             for path, source in paths:
                 try:
-                    parsed = parse_sidecar(
-                        json.loads(path.read_text(encoding="utf-8")), source=source
-                    ) if path.suffix == ".json" else parse_skill_md(
-                        path.read_text(encoding="utf-8"), root=path.parent, source=source
+                    # Read once: the same text is parsed *and* digested when the
+                    # source is third-party, and re-reading could pin content
+                    # that differs from what was parsed.
+                    text = path.read_text(encoding="utf-8")
+                    parsed = (
+                        parse_sidecar(json.loads(text), source=source)
+                        if path.suffix == ".json"
+                        else parse_skill_md(text, root=path.parent, source=source)
                     )
                 except ManifestError as exc:
                     issues.append(
@@ -304,6 +389,12 @@ class SkillRegistry:
                         ValidationIssue("error", f"could not be read: {exc}", name=path.stem, source=source, path=str(path))
                     )
                     continue
+                if is_pinned(source):
+                    # A pin failure is recorded but the candidate is still kept:
+                    # the name must resolve to *this* copy (so `show`/`approve`
+                    # can see it) rather than silently falling through to a
+                    # lower-precedence skill of the same name.
+                    issues.extend(self._approval_issues(source, parsed.skill, text, path))
                 candidates.append((source, parsed.skill, path))
                 issues.extend(parsed.issues)
 
