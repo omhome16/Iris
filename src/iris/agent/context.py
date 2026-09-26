@@ -28,6 +28,17 @@ class ContextAssembler:
         self.runtime = runtime
 
     async def assemble(self, user_message: str, *, session_id: str) -> str:
+        """The prompt prefix. Skill-agnostic callers (tests, tooling) use this."""
+        text, _skills = await self.assemble_turn(user_message, session_id=session_id)
+        return text
+
+    async def assemble_turn(self, user_message: str, *, session_id: str) -> tuple[str, list[str]]:
+        """The prefix **and** which skills it just named.
+
+        The graph needs the second half: naming a skill in the prompt is a
+        promise that the turn will obey that skill's policy, and only the
+        assembler knows which skill it actually chose.
+        """
         parts: list[str] = []
 
         # Bootstrap budgets are enforced here (bootstrap_user/bootstrap_memory
@@ -46,23 +57,25 @@ class ContextAssembler:
         if curated.strip():
             parts.append(f"## Long-term memory (curated)\n{curated}")
 
-        skill_block = await self._skills_block(user_message)
+        skill_block, active = await self._skills_block(user_message)
         if skill_block:
             parts.append(skill_block)
 
-        return "\n\n".join(parts)
+        return "\n\n".join(parts), active
 
-    async def _skills_block(self, user_message: str) -> str:
+    async def _skills_block(self, user_message: str) -> tuple[str, list[str]]:
         """Name only the skills worth looking at — never the procedure itself.
 
         Enough for the agent to decide whether to call `skill_apply` (which
         returns the full procedure on demand), and nothing more.
         """
         if not user_message.strip():
-            return ""
-        skills = self.runtime.skills.list()
+            return "", []
+        # selectable(), not list(): a disabled or invalid skill must never be
+        # named in the prompt, because naming it activates its policy.
+        skills = self.runtime.skills.selectable()
         if not skills:
-            return ""
+            return "", []
 
         names: list[str] = []
         suggestion = await suggest_skill(
@@ -75,14 +88,13 @@ class ContextAssembler:
             # Deterministic fallback: lexical trigger match, zero latency.
             names = [s.name for s in self.runtime.skills.match_triggers(user_message)]
         if not names:
-            return ""
+            return "", []
 
         by_name = {s.name: s for s in skills}
+        named = [name for name in names if name in by_name]
         lines = [
-            f"- {name}: {by_name[name].description} (matched this turn)"
-            for name in names
-            if name in by_name
+            f"- {name}: {by_name[name].description} (matched this turn)" for name in named
         ]
         if not lines:
-            return ""
-        return "## Relevant skills\n" + "\n".join(lines)
+            return "", []
+        return "## Relevant skills\n" + "\n".join(lines), named

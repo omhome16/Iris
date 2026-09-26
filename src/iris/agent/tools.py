@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from langgraph.types import interrupt
 
-from iris.agent.runtime import Runtime, current_session
+from iris import turnlog
+from iris.agent.runtime import Runtime, current_session, current_tool_call
+from iris.approval import Envelope
+from iris.computer.actions import Action, ActionKind
 from iris.config import settings
 from iris.ingest import fetch_text, ingest_url, web_search
 from iris.jev import GuardAction, screen_untrusted, screen_untrusted_many
@@ -24,6 +27,11 @@ from iris.memory.files import ConcurrencyError
 from iris.memory.forgetting import supersede_in_text
 from iris.memory.provenance import Origin
 from iris.memory.skills import Skill
+from iris.skills.guard import screen_script
+from iris.skills.policy import policy_for
+from iris.skills.runner import ScriptError, pre_screen, resolve_script, run_script
+from iris.toolpolicy import resolve as resolve_tool_policy
+from iris.toolpolicy import surface_order
 
 
 @dataclass(slots=True)
@@ -50,6 +58,27 @@ def _ok(**extra: Any) -> str:
 
 def _err(reason: str) -> str:
     return json.dumps({"ok": False, "error": reason}, ensure_ascii=False)
+
+
+def _err_detail(reason: str, **extra: Any) -> str:
+    """A failure with the detail the model needs to act on it (stderr, findings)."""
+    return json.dumps({"ok": False, "error": reason, **extra}, ensure_ascii=False)
+
+
+def approval_payload(action: str, args: dict, *, side_effecting: bool = True) -> dict:
+    """The binding half of an approval interrupt (P8, audit G4).
+
+    Carries the `call_id` of the tool call being approved and a digest of the
+    *effective* arguments, so an approval grants the action the owner was shown
+    and can only be granted once per thread. The arguments themselves are never
+    in the payload — the digest is enough to bind, and a payload is displayed.
+    """
+    return Envelope(
+        action=action,
+        call_id=current_tool_call.get(),
+        args=args,
+        side_effecting=side_effecting,
+    ).payload()
 
 
 def memory_result_payload(hit) -> dict:
@@ -126,9 +155,38 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     )
 
     async def deep_dive(query: str) -> str:
-        """Run the bounded research subagent (cheap tier, max 3 tool rounds)
-        and return its report. Use for temporal or multi-hop questions that
-        need digging through daily notes and sandbox files."""
+        """Run the bounded research role (read-only, capped tool rounds) and
+        return its findings with their sources. Use for temporal or multi-hop
+        questions that need digging through daily notes and sandbox files.
+
+        Routed through the orchestrator when one is wired (P5): the call is
+        charged against the turn's allowance, and the result comes back with
+        provenance — a report the researcher produced without consulting
+        anything is marked unsourced rather than presented as fact.
+        """
+        orchestrator = getattr(runtime, "orchestrator", None)
+        if orchestrator is not None:
+            try:
+                handoff = await orchestrator.delegate("researcher", query)  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001 - tool errors surface as JSON
+                return _err(str(exc))
+            if handoff.refused:
+                return _err_detail(
+                    f"research is unavailable this turn ({handoff.refused})",
+                    refused=handoff.refused,
+                )
+            report, truncated = orchestrator.merge([handoff])  # type: ignore[attr-defined]
+            summary = handoff.trace_summary()
+            return _ok(
+                report=report,
+                truncated=truncated,
+                sourced=summary["sourced"],
+                unsourced=summary["unsourced"],
+                tokens=summary["tokens"],
+            )
+
+        # Pre-P5 path: a runtime built without the delegation layer still gets
+        # the researcher it had before.
         if runtime.research is None:
             return _err("research subagent not available")
         try:
@@ -140,9 +198,11 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     tools.append(
         Tool(
             "deep_dive",
-            "Run a bounded research pass (cheap tier) over long-term memory, "
-            "daily notes, and sandbox files. Use for temporal, multi-hop, or "
-            "'dig through everything' questions before answering.",
+            "Run a bounded research pass (cheap tier, read-only) over long-term "
+            "memory, daily notes, and sandbox files. Use for temporal, "
+            "multi-hop, or 'dig through everything' questions before answering. "
+            "Finding text is marked UNSOURCED when the researcher could not "
+            "trace it to the record.",
             {
                 "type": "object",
                 "properties": {
@@ -151,6 +211,64 @@ def build_tools(runtime: Runtime) -> list[Tool]:
                 "required": ["query"],
             },
             deep_dive,
+        )
+    )
+
+    async def verify_answer(draft: str) -> str:
+        """Check a draft answer's factual claims against what this turn actually
+        found. Call this before asserting facts you did not retrieve.
+
+        A judgment decides whether the draft is grounded; if it is not, a critic
+        reads it claim by claim. `revise` is true at most once per turn: after
+        that, say what you could not ground instead of asserting it.
+        """
+        orchestrator = getattr(runtime, "orchestrator", None)
+        if orchestrator is None:
+            return _err("verification is not available")
+        try:
+            handoff, revise = await orchestrator.verify(draft)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 - tool errors surface as JSON
+            return _err(str(exc))
+        if handoff.refused:
+            return _err_detail(
+                f"verification is unavailable this turn ({handoff.refused})",
+                refused=handoff.refused,
+            )
+        critique = handoff.claims[0].text if handoff.claims else ""
+        if revise:
+            guidance = (
+                "Revise once: ground or drop the unsupported claims. If a claim still "
+                "cannot be grounded, say plainly what you could not ground instead of "
+                "asserting it."
+            )
+        else:
+            guidance = (
+                "The revision allowance for this turn is spent (or the draft is grounded). "
+                "State anything you could not ground instead of asserting it."
+            )
+        return _ok(
+            verdict=handoff.verdict or None,
+            grounded=handoff.score,
+            gate=handoff.gate,
+            revise=revise,
+            critique=critique[:2000],
+            guidance=guidance,
+        )
+
+    tools.append(
+        Tool(
+            "verify_answer",
+            "Check a draft answer claim by claim against the findings gathered this "
+            "turn, and learn whether one revision is still allowed. Use it before "
+            "stating facts you are not certain you retrieved.",
+            {
+                "type": "object",
+                "properties": {
+                    "draft": {"type": "string", "description": "the answer you intend to give"},
+                },
+                "required": ["draft"],
+            },
+            verify_answer,
         )
     )
 
@@ -460,11 +578,10 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         hit = hits[0]
         decision = interrupt(
             {
-                "type": "approval",
-                "action": "forget",
                 "query": query,
                 "hit": hit.content[:120],
                 "path": hit.path,
+                **approval_payload("forget", {"query": query, "path": hit.path}),
             }
         )
         if decision != "approved":
@@ -595,6 +712,98 @@ def build_tools(runtime: Runtime) -> list[Tool]:
                 "required": ["name"],
             },
             skill_revise,
+        )
+    )
+
+    async def skill_run(name: str, script: str, args: list[str] | None = None) -> str:
+        """Run one script of a skill through the P4 boundary.
+
+        Four gates, in order, all of which can refuse: the script must resolve
+        inside that skill's own `scripts/` directory; the judgment layer must
+        not score it unsafe (a refusal no approval can override); the owner must
+        approve the run, with the deterministic findings in front of them; and
+        the process itself is bounded by a timeout and a stripped environment.
+        """
+        skill = runtime.skills.get(name)
+        if skill is None:
+            return _err(f"no skill named {name!r}")
+        try:
+            path = resolve_script(skill, script)
+        except ScriptError as exc:
+            return _err(str(exc))
+
+        source = path.read_text(encoding="utf-8", errors="replace")
+        findings = pre_screen(source)
+        verdict = await screen_script(
+            getattr(runtime, "jev", None), skill=skill, script=script, source=source, findings=findings
+        )
+        if not verdict.allowed:
+            turnlog.record("skill_run", event="blocked", skill=name, script=script, score=verdict.score)
+            return _err(verdict.reason)
+
+        if settings.skill_script_require_approval:
+            shown_args = [str(a) for a in (args or ())]
+            decision = interrupt(
+                {
+                    "skill": name,
+                    "script": script,
+                    # Arguments are shown, not hidden: the runner cannot know what
+                    # a path *means*, so the owner is the one who sees where the
+                    # script was pointed.
+                    "args": shown_args,
+                    "findings": findings,
+                    "guard": {
+                        "screened": verdict.screened,
+                        "score": round(verdict.score, 3),
+                        "reason": verdict.reason,
+                    },
+                    **approval_payload(
+                        "skill_run", {"skill": name, "script": script, "args": shown_args}
+                    ),
+                }
+            )
+            if decision != "approved":
+                turnlog.record("skill_run", event="cancelled", skill=name, script=script)
+                return _err("run cancelled by the owner")
+
+        result = await run_script(skill, script, args or (), max_output=settings.skill_script_max_output_chars)
+        turnlog.record(
+            "skill_run",
+            event="ran" if result.ok else "failed",
+            skill=name,
+            script=script,
+            exit_code=result.exit_code,
+            timed_out=result.timed_out,
+            guard_score=round(verdict.score, 3),
+        )
+        if not result.ok:
+            return _err_detail(result.error, stderr=result.stderr[-2000:], findings=findings)
+        return _ok(stdout=result.stdout, stderr=result.stderr[-2000:], findings=findings)
+
+    tools.append(
+        Tool(
+            "skill_run",
+            "Run a script that a skill ships under its own scripts/ directory. "
+            "The script is screened, needs the owner's approval, runs with no "
+            "environment variables, and is killed if it overstays its timeout. "
+            "Use it after `skill_apply` tells you the procedure calls for a script.",
+            {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "the skill's name"},
+                    "script": {
+                        "type": "string",
+                        "description": "path relative to the skill directory, e.g. scripts/extract.py",
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "arguments passed to the script (optional)",
+                    },
+                },
+                "required": ["name", "script"],
+            },
+            skill_run,
         )
     )
 
@@ -731,6 +940,162 @@ def build_tools(runtime: Runtime) -> list[Tool]:
             )
         )
 
+    # Registered only when the owner switched computer-use on. Off means the
+    # capability does not exist in the tool surface at all — the audit's point
+    # that a grant is a boundary, not a flag, starts with the tool being absent.
+    if settings.computer_enabled and runtime.computer is not None:
+
+        async def computer(action: str, target: str = "", window: str = "", text: str = "") -> str:
+            """Drive one screen action through the P7 permission model.
+
+            The order matches the audit's guard chain: an unavailable driver
+            refuses before anything is asked, the allowlist refuses before the
+            owner is interrupted, a destructive action always confirms, and the
+            per-session grant bounds how many actions one approval buys.
+            """
+            machine = runtime.computer
+            if machine is None:  # pragma: no cover - registration guarantees it
+                return _err("computer-use is not available on this runtime")
+            try:
+                kind = ActionKind(action)
+            except ValueError:
+                expected = ", ".join(k.value for k in ActionKind)
+                return _err(f"unknown computer action {action!r}; expected one of {expected}")
+            if kind is ActionKind.NAVIGATE and not target.strip():
+                return _err("navigate needs a target URL")
+            if kind is ActionKind.TYPE and not text:
+                return _err("type needs the text to type")
+            pending = Action(kind=kind, target=target, window=window, text=text)
+
+            async def approve(candidate: Action, decision) -> bool:
+                # The typed text never enters the prompt: an approval dialog that
+                # repeats a password is a password in the scrollback and the logs.
+                envelope = approval_payload(
+                    "computer",
+                    {
+                        "action": candidate.kind.value,
+                        "target": candidate.target,
+                        "window": candidate.window,
+                        # The text is part of what is being approved (so the
+                        # digest binds it) but never part of what is shown.
+                        "text": candidate.text,
+                    },
+                )
+                payload = interrupt(
+                    {
+                        "computer_action": candidate.kind.value,
+                        "target": candidate.target,
+                        "window": candidate.window,
+                        "text_chars": len(candidate.text),
+                        "destructive": candidate.destructive,
+                        "touches_credentials": candidate.touches_credentials,
+                        "policy_reason": decision.reason,
+                        **envelope,
+                    }
+                )
+                return payload == "approved"
+
+            session = current_session.get() or "cli"
+            observation = await machine.execute(pending, session=session, approve=approve)
+            turnlog.record(
+                "computer",
+                event="action",
+                computer_action=kind.value,
+                ok=observation.ok,
+                unavailable=observation.unavailable,
+                session=session,
+            )
+            if not observation.ok:
+                return _err_detail(observation.error, unavailable=observation.unavailable)
+            return _ok(
+                detail=observation.detail,
+                url=observation.url,
+                title=observation.title,
+                screenshot=observation.screenshot,
+            )
+
+        tools.append(
+            Tool(
+                "computer",
+                "Operate a screen: take a screenshot, navigate to a URL, click an "
+                "element, or type into a field. Navigation and clicks are fenced "
+                "by an allowlist and every destructive action asks the owner "
+                "first. Only use this when the owner has granted it.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": [k.value for k in ActionKind],
+                            "description": "what to do on the screen",
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "URL for navigate; a CSS selector for click/type",
+                        },
+                        "window": {
+                            "type": "string",
+                            "description": "the page or app title the click/type acts in",
+                        },
+                        "text": {"type": "string", "description": "the text to type (type only)"},
+                    },
+                    "required": ["action"],
+                },
+                computer,
+            )
+        )
+
+    async def find_tools(query: str = "") -> str:
+        """Reach a tool whose schema was deferred off the visible surface.
+
+        Deferral is a *context* decision, not a permission one: the tool was
+        already callable by name. This puts its schema back so the model can call
+        it correctly instead of guessing at arguments.
+        """
+        all_tools = get_tools(runtime)
+        visible, deferred = surface_order(
+            settings.tool_surface_budget,
+            promoted=_channel_promotions(runtime),
+            present=[t.name for t in all_tools],
+        )
+        hidden = set(deferred)
+        pool = [t.schema() for t in all_tools if t.name in hidden]
+        if query.strip():
+            needle = query.strip().lower()
+            pool = [s for s in pool if needle in json.dumps(s, ensure_ascii=False).lower()]
+        turnlog.record(
+            "tools",
+            event="find_tools",
+            query=query,
+            matched=len(pool),
+            deferred=len(deferred),
+        )
+        return json.dumps(
+            {"ok": True, "visible": len(visible), "deferred": len(deferred), "tools": pool},
+            ensure_ascii=False,
+        )
+
+    tools.append(
+        Tool(
+            "find_tools",
+            "Search the tools that were left off this turn's visible list because "
+            "the surface is over budget. Returns the matching tool schemas so you "
+            "can call one of them directly — they are always callable, this only "
+            "restores their definitions. Call it with no query to see everything "
+            "that was deferred.",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "words to match against tool names and descriptions",
+                    },
+                },
+            },
+            find_tools,
+        )
+    )
+
     return tools
 
 
@@ -738,7 +1103,51 @@ def get_tools(runtime: Runtime) -> list[Tool]:
     """Tools are pure functions of the runtime; rebuilt per call so a
     channel that connects *after* boot (e.g. the Telegram retry task) is
     picked up immediately. Construction is just list building — cheap."""
-    return build_tools(runtime)
+    tools = build_tools(runtime)
+    unknown = {t.name for t in tools} - TOOL_NAMES
+    if unknown:
+        # A tool that exists but is not declared cannot be named in a skill
+        # manifest, so the skill policy would refuse it at call time. Fail
+        # loudly here instead (in tests) rather than at the owner's expense.
+        raise RuntimeError(f"tool(s) missing from TOOL_NAMES: {sorted(unknown)}")
+    return tools
+
+
+# Every tool `build_tools` can register — including the three that only exist
+# when the Telegram channel is connected. Declared for callers that must check a
+# skill manifest *without* a runtime (the CLI and the registry): a manifest may
+# legitimately name `send_message` on a host where Telegram is not wired up.
+# `get_tools` asserts the real registry is a subset of this, so the two cannot
+# drift in the dangerous direction (a tool nobody declared).
+TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "memory_search",
+        "deep_dive",
+        "verify_answer",
+        "file_create",
+        "file_write",
+        "file_read",
+        "file_list",
+        "web_search",
+        "ingest_url",
+        "remember",
+        "note",
+        "inspect_mind",
+        "forget",
+        "skill_write",
+        "skill_list",
+        "skill_apply",
+        "skill_revise",
+        "skill_run",
+        "schedule_task",
+        "computer",
+        "find_tools",
+        "dream_now",
+        "send_message",
+        "get_chat_history",
+        "send_photo",
+    }
+)
 
 
 # Durable-memory and dream tools are owner-session only. This is enforced
@@ -748,18 +1157,120 @@ def get_tools(runtime: Runtime) -> list[Tool]:
 NON_OWNER_BLOCKED = {"note", "remember", "dream_now", "skill_write"}
 
 
-def tool_schemas(runtime: Runtime, origin: str = "owner") -> list[dict]:
+def _channel_promotions(runtime: Runtime) -> list[str]:
+    """Tools that must stay on the visible surface because a channel is live.
+
+    Promotion beats the budget on purpose: a connected channel's own tools are not
+    optional, and hiding `send_message` to save schema bytes would leave the
+    bridge unable to deliver a reply.
+    """
+    if getattr(runtime, "telegram", None) is None:
+        return []
+    return ["send_message", "send_photo", "get_chat_history"]
+
+
+def _tool_name(schema: dict) -> str:
+    return str((schema.get("function") or {}).get("name", ""))
+
+
+def _apply_tool_policy(runtime: Runtime, schemas: list[dict]) -> list[dict]:
+    """Drop denied tools, then post the visible budget.
+
+    Two separate questions, answered in order: *may* this be used (class + policy,
+    where deny wins), and *is it worth the prompt tokens* (surface, where core is
+    never hidden). A denied tool is never offered, and a deferred one is recorded
+    so "why couldn't it call `send_message`?" has an answer in the trace.
+    """
+    overrides = settings.tool_policy_overrides
+    may_use: list[dict] = []
+    for schema in schemas:
+        decision = resolve_tool_policy(_tool_name(schema), overrides)
+        if decision.denied:
+            turnlog.record(
+                "tools",
+                event="tool_denied",
+                tool=decision.tool,
+                tool_class=decision.cls.value,
+                source=decision.source,
+                reason=decision.reason,
+            )
+            continue
+        may_use.append(schema)
+
+    visible, deferred = surface_order(
+        settings.tool_surface_budget,
+        promoted=_channel_promotions(runtime),
+        present=[_tool_name(s) for s in may_use],
+    )
+    if deferred:
+        turnlog.record(
+            "tools",
+            event="surface_deferred",
+            visible=len(visible),
+            deferred=deferred,
+            budget=settings.tool_surface_budget,
+        )
+    keep = set(visible)
+    return [s for s in may_use if _tool_name(s) in keep]
+
+
+def tool_schemas(
+    runtime: Runtime, origin: str = "owner", active_skills: Sequence[str] | None = None
+) -> list[dict]:
     """Tool schemas offered to the agent. Non-owner sessions (scheduled
     tasks, cron, heartbeats) never produce durable memory candidates —
-    the schema strips note/remember/dream_now/skill_write entirely."""
+    the schema strips note/remember/dream_now/skill_write entirely. An active
+    skill narrows what is offered further (never widens it). The declared tool
+    class then removes anything policy denies, and the surface budget defers the
+    rest — both of which can only ever shrink the list.
+    """
     if origin == "owner":
-        return [t.schema() for t in get_tools(runtime)]
-    return [t.schema() for t in get_tools(runtime) if t.name not in NON_OWNER_BLOCKED]
+        schemas = [t.schema() for t in get_tools(runtime)]
+    else:
+        schemas = [t.schema() for t in get_tools(runtime) if t.name not in NON_OWNER_BLOCKED]
+    narrowed = policy_for(runtime.skills, active_skills).filter_schemas(schemas)
+    return _apply_tool_policy(runtime, narrowed)
 
 
-async def dispatch(runtime: Runtime, name: str, args: dict, origin: str = "owner") -> str:
+async def dispatch(
+    runtime: Runtime,
+    name: str,
+    args: dict,
+    origin: str = "owner",
+    active_skills: Sequence[str] | None = None,
+) -> str:
+    # Session rule first, skill policy second, tool class third: they are
+    # independent, and a skill must never be able to re-open what the session or
+    # the class policy closed.
     if origin != "owner" and name in NON_OWNER_BLOCKED:
         return _err(f"tool {name!r} is not available in {origin} sessions")
+    decision = policy_for(runtime.skills, active_skills).check(name)
+    if not decision.allowed:
+        turnlog.record("skill", event="tool_denied", tool=name, skill=decision.skill, reason=decision.reason)
+        return _err(decision.reason)
+    class_decision = resolve_tool_policy(name, settings.tool_policy_overrides)
+    if class_decision.denied:
+        turnlog.record(
+            "tools",
+            event="tool_denied",
+            tool=name,
+            tool_class=class_decision.cls.value,
+            source=class_decision.source,
+            reason=class_decision.reason,
+        )
+        return _err(class_decision.reason)
+    if class_decision.needs_approval:
+        # Recorded, not enforced here: an `ask` class (control, credentialed)
+        # raises its own approval interrupt inside the handler, where the
+        # argument digest is known — the same pattern `skill_run` uses. The log
+        # entry is what makes the decision inspectable either way.
+        turnlog.record(
+            "tools",
+            event="tool_needs_approval",
+            tool=name,
+            tool_class=class_decision.cls.value,
+            source=class_decision.source,
+        )
     for tool in get_tools(runtime):
         if tool.name == name:
             return await tool.handler(**args)

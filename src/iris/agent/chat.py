@@ -23,6 +23,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Literal
 
@@ -37,7 +38,9 @@ from iris.agent.compaction import compact_turn, messages_tokens, trim_messages
 from iris.agent.context import ContextAssembler
 from iris.agent.runtime import Runtime
 from iris.agent.tools import dispatch, tool_schemas
+from iris.approval import ApprovalGate, ApprovalPolicy
 from iris.config import settings
+from iris.guards import GuardChain
 from iris.memory.capture import condense, judge_capture, note_line, worth_capturing
 from iris.memory.chunking import estimate_tokens
 from iris.onboarding import OnboardingWizard
@@ -97,6 +100,10 @@ class IrisState(MessagesState):
     # at the start of every turn so a trace can never report a previous turn's
     # capture as if it were this one's.
     last_capture: str = ""
+    # Skills the context node named in the prompt this turn. Naming one is what
+    # activates its `allowed-tools` policy, so this is the state the policy reads
+    # — set from the block that was actually injected, never guessed twice.
+    active_skills: tuple[str, ...] = ()
 
 
 def _human_content(message: str, image: str | None) -> object:
@@ -163,13 +170,73 @@ def _to_llm_messages(messages: list) -> list[dict]:
     return out
 
 
+def _interrupt_value(snapshot: object) -> dict | None:
+    """The first interrupt payload in a checkpoint snapshot, wherever it lives.
+
+    LangGraph has carried them in `values["__interrupt__"]` and in per-task
+    `interrupts`; checking both keeps this helper honest across versions.
+    """
+    interrupts = (getattr(snapshot, "values", None) or {}).get("__interrupt__")
+    for item in interrupts or ():
+        value = getattr(item, "value", None)
+        if isinstance(value, dict):
+            return value
+    for task in getattr(snapshot, "tasks", ()) or ():
+        for item in getattr(task, "interrupts", ()) or ():
+            value = getattr(item, "value", None)
+            if isinstance(value, dict):
+                return value
+    return None
+
+
+def _tool_failed(out: str) -> bool:
+    """Did a tool report failure? Tools return `{"ok": false, ...}` rather than
+    raising, so the circuit breaker reads the payload, not an exception."""
+    try:
+        payload = json.loads(out)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("ok") is False
+
+
 class ChatGraph:
     def __init__(self, runtime: Runtime, checkpointer: AsyncPostgresSaver) -> None:
         self.runtime = runtime
         self.assembler = ContextAssembler(runtime)
         self.wizard = OnboardingWizard(runtime.files, runtime.llm)
         self.checkpointer = checkpointer
+        # The guard chain is per graph, and its lifetime is the point: the
+        # turn-scoped detectors reset every turn, the day-scoped budget does not.
+        self.guards = runtime.guards if runtime.guards is not None else GuardChain.from_settings()
+        # Approval integrity (P8, audit G4): the gate remembers which call_ids
+        # were granted, and `_pending` remembers what was shown so a resume can be
+        # bound to it (`None` after a restart — the checkpoint is then the source).
+        self.approvals = ApprovalGate(
+            policy=ApprovalPolicy(
+                bind_digest=settings.approval_bind_digest,
+                guard_replay=settings.approval_guard_replay,
+            )
+        )
+        self._pending: dict[str, dict] = {}
         self.graph = self._build()
+
+    async def _read_pending(self, config: dict) -> tuple[dict | None, object | None]:
+        """`(pending_payload, snapshot)` read from the checkpoint.
+
+        `snapshot is None` means the state could not be read — and a read-only
+        check must never be the thing that blocks a legitimate approval, so the
+        caller proceeds. A snapshot that *was* read and carries no interrupt on a
+        finished run is the terminal case.
+        """
+        try:
+            snapshot = await self.graph.aget_state(config)
+        except Exception as exc:  # noqa: BLE001 - reading state must not break resume
+            log.warning("could not read the pending approval: %s", exc)
+            return None, None
+        if snapshot is None:
+            return None, None
+        pending = _interrupt_value(snapshot)
+        return pending, snapshot
 
     # ── nodes ────────────────────────────────────────────────────────────
 
@@ -206,9 +273,11 @@ class ChatGraph:
 
     async def _assemble(self, state: IrisState) -> dict:
         user_msg = text_of(state["messages"][-1].content)
+        skills: tuple[str, ...] = ()
         with turnlog.stage("assemble"):
-            ctx = await self.assembler.assemble(user_msg, session_id=state["session_id"])
-        return {"memory_context": ctx}
+            ctx, named = await self.assembler.assemble_turn(user_msg, session_id=state["session_id"])
+            skills = tuple(named)
+        return {"memory_context": ctx, "active_skills": skills}
 
     async def _agent(self, state: IrisState) -> dict:
         system = (
@@ -223,11 +292,13 @@ class ChatGraph:
         messages = [{"role": "system", "content": system}, *_to_llm_messages(state["messages"])]
         origin = state.get("origin") or "owner"
         if state.get("stream"):
-            return await self._agent_streamed(messages, origin)
+            return await self._agent_streamed(messages, origin, state.get("active_skills") or ())
         try:
             with turnlog.stage("agent"):
                 text, calls, _thinking = await self.runtime.llm.complete_with_tools(
-                    messages, tool_schemas(self.runtime, origin), max_attempts=2
+                    messages,
+                    tool_schemas(self.runtime, origin, state.get("active_skills") or ()),
+                    max_attempts=2,
                 )
         except Exception as exc:  # noqa: BLE001 - a provider outage must not 500 the turn
             log.warning("agent LLM call failed: %s", exc)
@@ -252,7 +323,9 @@ class ChatGraph:
             return {"messages": [ai]}
         return {"messages": [{"type": "ai", "content": text}]}
 
-    async def _agent_streamed(self, messages: list[dict], origin: str = "owner") -> dict:
+    async def _agent_streamed(
+        self, messages: list[dict], origin: str = "owner", active_skills: Sequence[str] = ()
+    ) -> dict:
         """Streamed agent node: emit thinking / text / tool-call events as
         custom LangGraph events, then return the same shape as _agent."""
         from langgraph.config import get_stream_writer
@@ -264,7 +337,9 @@ class ChatGraph:
             async for kind, payload in turnlog.stream_stage(
                 "agent",
                 self.runtime.llm.stream_complete_with_tools(
-                    messages, tool_schemas(self.runtime, origin), max_attempts=2
+                    messages,
+                    tool_schemas(self.runtime, origin, active_skills),
+                    max_attempts=2,
                 ),
             ):
                 if kind == "thinking" and payload:
@@ -298,19 +373,40 @@ class ChatGraph:
     async def _tools(self, state: IrisState) -> dict:
         last = state["messages"][-1]
         results = []
-        from iris.agent.runtime import current_session
+        from iris.agent.runtime import current_session, current_tool_call
 
         token = current_session.set(state.get("session_id") or "")
         try:
             origin = state.get("origin") or "owner"
             for tc in last.tool_calls:
+                # The guard chain runs *before* dispatch, outside the tool, so a
+                # refusal costs nothing and never reaches a provider. Order is
+                # budget → circuit → spiral/dedup; see iris/guards.py.
+                verdict = self.guards.before(tc["name"], tc["args"])
+                self.guards.record(verdict, tc["name"], tc["args"])
+                if verdict.refused:
+                    out = json.dumps(
+                        {"ok": False, "error": verdict.reason, "guard": str(verdict.guard)},
+                        ensure_ascii=False,
+                    )
+                    results.append(
+                        {"type": "tool", "name": tc["name"], "content": out, "tool_call_id": tc["id"]}
+                    )
+                    continue
+                call_token = current_tool_call.set(tc["id"] or "")
                 try:
                     # Timed per call, and accumulated by `turnlog`: a ReAct loop
                     # can run this node several times per turn, and the tool
                     # total (which includes any JEV screen or rerank inside the
                     # tool) is what the owner waits on.
                     with turnlog.stage("tools"):
-                        out = await dispatch(self.runtime, tc["name"], tc["args"], origin=origin)
+                        out = await dispatch(
+                            self.runtime,
+                            tc["name"],
+                            tc["args"],
+                            origin=origin,
+                            active_skills=state.get("active_skills") or (),
+                        )
                 except GraphInterrupt:
                     raise  # human-in-the-loop: halt the graph, never swallow
                 except Exception as exc:  # noqa: BLE001 - tool errors must not kill the graph
@@ -318,6 +414,11 @@ class ChatGraph:
                     # the hand-rolled JSON string the model received.
                     out = json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
                     log.warning("tool %s failed: %s", tc["name"], exc)
+                    self.guards.after(tc["name"], ok=False)
+                else:
+                    self.guards.after(tc["name"], ok=not _tool_failed(out))
+                finally:
+                    current_tool_call.reset(call_token)
                 results.append(
                     {"type": "tool", "name": tc["name"], "content": out, "tool_call_id": tc["id"]}
                 )
@@ -356,6 +457,9 @@ class ChatGraph:
                 reflection = ReflectionPass(
                     self.runtime.llm,
                     self.runtime.files.root / "config" / "hallucination_flags.jsonl",
+                    # JEV answers "is this sentence supported by these excerpts?"
+                    # in one batched request; the cheap model is the fallback.
+                    jev=self.runtime.jev,
                 )
                 def run_reflection():
                     return reflection.check(
@@ -525,7 +629,7 @@ class ChatGraph:
                 "tools": tools,
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "pending": pending,
-                # What this turn taught her, surfaced in the dashboard so the
+                # What this turn taught her, surfaced in the trace so the
                 # write path is observable rather than something you take on
                 # faith. Empty when the prefilter or the judgment declined.
                 "capture": capture,
@@ -560,6 +664,17 @@ class ChatGraph:
 
     # ── entry ────────────────────────────────────────────────────────────
 
+    def _bank_turn(self) -> None:
+        """Bank the finished turn's token spend into the day-scoped budget.
+
+        Called from a `finally` inside the turn's `turnlog.collect()` block, and
+        deliberately on every exit path — including a recursion bail-out — because
+        a turn that spent tokens must be counted even when it did not finish. The
+        per-day ceiling reads exactly these counters, so this call is what makes
+        the cross-session bound real rather than a number in a config file.
+        """
+        self.guards.end_turn(turnlog.usage_snapshot())
+
     async def respond(
         self, message: str, *, session_id: str, image: str | None = None, origin: str = "owner"
     ) -> str:
@@ -571,6 +686,7 @@ class ChatGraph:
         # Named `turn`, not `log`: the module logger is `log`, and shadowing it
         # here broke error handling with an AttributeError.
         with turnlog.collect() as turn:
+            self.guards.reset_turn()
             try:
                 result = await self.graph.ainvoke(
                     {
@@ -584,9 +700,12 @@ class ChatGraph:
             except GraphRecursionError:
                 log.warning("turn exceeded recursion limit %s; returning graceful message", settings.graph_recursion_limit)
                 return "That conversation got deep — let's take it one step at a time. Ask me again."
+            finally:
+                self._bank_turn()
             judgment = turn.to_trace() if settings.turnlog_enabled else None
             if result.get("__interrupt__"):
                 payload = result["__interrupt__"][0].value
+                self._pending[session_id] = payload
                 self._trace_turn(
                     session_id, message, started, result["messages"], pending=payload, judgment=judgment
                 )
@@ -612,11 +731,37 @@ class ChatGraph:
         }
         started = time.monotonic()
         with turnlog.collect() as turn:
+            # Approval integrity before anything else: a resume must target an
+            # approval that is actually waiting, and must not be a replay of one
+            # already granted. See iris/approval.py.
+            pending = self._pending.pop(session_id, None)
+            snapshot = None
+            if pending is None:
+                pending, snapshot = await self._read_pending(config)
+            if pending is None and snapshot is not None and not getattr(snapshot, "next", None):
+                # The run is finished and no interrupt is waiting: there is no
+                # approval to resume, only a replay or a bug.
+                turnlog.record("approval", event="resume_refused", reason="terminal")
+                return "There's no approval waiting on this conversation — that turn already finished."
+            if pending is not None:
+                verdict = self.approvals.verify(pending=pending, decision=decision, thread=session_id)
+                turnlog.record(
+                    "approval",
+                    event="resume" if verdict.allowed else "resume_refused",
+                    reason=verdict.reason,
+                    decision=decision,
+                )
+                if verdict.refused:
+                    log.warning("refused resume for %s: %s", session_id, verdict.reason)
+                    return f"I can't resume that: {verdict.reason}."
+            self.guards.reset_turn()
             try:
                 result = await self.graph.ainvoke(Command(resume=decision), config)
             except GraphRecursionError:
                 log.warning("resume exceeded recursion limit %s", settings.graph_recursion_limit)
                 return "That conversation got deep — let's take it one step at a time. Ask me again."
+            finally:
+                self._bank_turn()
             judgment = turn.to_trace() if settings.turnlog_enabled else None
             if result.get("__interrupt__"):
                 payload = result["__interrupt__"][0].value
@@ -645,6 +790,7 @@ class ChatGraph:
         }
         started = time.monotonic()
         with turnlog.collect() as turn:
+            self.guards.reset_turn()
             try:
                 async for mode, data in self.graph.astream(
                     {
@@ -662,6 +808,7 @@ class ChatGraph:
                 interrupts = snapshot.values.get("__interrupt__") if snapshot else None
                 judgment = turn.to_trace() if settings.turnlog_enabled else None
                 if snapshot and snapshot.next and interrupts:
+                    self._pending[session_id] = interrupts[0].value
                     self._trace_turn(
                         session_id, message, started, snapshot.values.get("messages", []),
                         pending=interrupts[0].value, judgment=judgment,
@@ -680,3 +827,5 @@ class ChatGraph:
             except GraphRecursionError:
                 log.warning("streamed turn exceeded recursion limit %s", settings.graph_recursion_limit)
                 yield "error", "That conversation got deep — let's take it one step at a time. Ask me again."
+            finally:
+                self._bank_turn()

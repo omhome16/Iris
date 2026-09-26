@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import itertools
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -35,19 +36,70 @@ from typing import Any
 
 # One turn can produce a judgment per recalled chunk; cap what we keep.
 _MAX_JUDGMENTS = 60
-# Free-text reasons are for a human reading the dashboard, not a log dump.
+# Free-text reasons are for a human reading a trace, not a log dump.
 _MAX_TEXT = 240
 
 _current: contextvars.ContextVar[TurnLog | None] = contextvars.ContextVar("iris_turnlog", default=None)
 
+# Monotonic per-turn id. State that must be scoped to *a turn* — the multi-agent
+# allowance is the reason this exists — keys on it rather than trying to work out
+# where a turn begins. `collect()` is only ever opened at a turn's entry point.
+_turn_seq = itertools.count(1)
+
 
 @dataclass(slots=True)
 class TurnLog:
-    """Judgments and stage timings for one graph run."""
+    """Judgments, stage timings and token spend for one graph run."""
 
+    id: int = 0  # identity of this turn (see `_turn_seq`)
     judgments: list[dict] = field(default_factory=list)
     stages: dict[str, int] = field(default_factory=dict)
     dropped: int = 0
+    # Which models served each tier this turn, for the trace and the `/costs`
+    # style readout. Kept separate from `usage` because it is an identity, not a
+    # count to add up.
+    models: dict[str, list[str]] = field(default_factory=dict)
+    # tier -> {calls, prompt_tokens, completion_tokens}. Per *turn*, not per
+    # process: the multi-agent path costs ~15x a chat, and that has to be
+    # visible where the decision was made rather than discovered in the ledger
+    # at the end of the month.
+    usage: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def add_usage(
+        self,
+        *,
+        tier: str,
+        model: str = "",
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cached_tokens: int = 0,
+    ) -> None:
+        bucket = self.usage.setdefault(
+            tier or "strong",
+            {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0},
+        )
+        bucket["calls"] += 1
+        bucket["prompt_tokens"] += int(prompt_tokens or 0)
+        bucket["completion_tokens"] += int(completion_tokens or 0)
+        # Cached prompt tokens are counted where they are observed, so the day
+        # budget's CACHED bucket has a source rather than being declared and
+        # always zero. Providers report them differently; the LLM client is the
+        # one place that knows, and it passes them through here.
+        bucket["cached_tokens"] += int(cached_tokens or 0)
+        if model:
+            models = self.models.setdefault(tier or "strong", [])
+            if model not in models:
+                models.append(model)
+
+    def total_tokens(self) -> int:
+        return sum(
+            int(b.get("prompt_tokens", 0)) + int(b.get("completion_tokens", 0))
+            for b in self.usage.values()
+        )
+
+    def cached_tokens(self) -> int:
+        """Prompt tokens served from a provider's cache this turn."""
+        return sum(int(b.get("cached_tokens", 0)) for b in self.usage.values())
 
     def add(self, kind: str, **fields: Any) -> None:
         if len(self.judgments) >= _MAX_JUDGMENTS:
@@ -71,12 +123,17 @@ class TurnLog:
     def to_trace(self) -> dict:
         """The `judgment` block of a trace line. Omitted entirely when empty,
         so an all-deterministic turn stays a compact line."""
-        if not self.judgments and not self.stages:
+        if not self.judgments and not self.stages and not self.usage:
             return {}
         out: dict[str, Any] = {"stages_ms": dict(self.stages)}
+        if self.usage:
+            out["usage"] = {tier: dict(b) for tier, b in self.usage.items()}
+            out["total_tokens"] = self.total_tokens()
+            if self.models:
+                out["models"] = {tier: list(names) for tier, names in self.models.items()}
         if self.judgments:
             out["events"] = self.judgments
-            # Counts let the dashboard summarise without re-scanning events.
+            # Counts let consumers summarise without re-scanning events.
             counts: dict[str, int] = {}
             for entry in self.judgments:
                 counts[entry["kind"]] = counts.get(entry["kind"], 0) + 1
@@ -109,6 +166,44 @@ def mark(stage: str, ms: float) -> None:
         log.mark(stage, ms)
 
 
+def add_usage(
+    *,
+    tier: str,
+    model: str = "",
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    cached_tokens: int = 0,
+) -> None:
+    """Add one model call's tokens to the turn in flight. No-op outside a turn.
+
+    Called by the LLM client's recording path, so every provider call is counted
+    without any call site having to remember to report it.
+    """
+    log = _current.get()
+    if log is None:
+        return
+    with contextlib.suppress(Exception):
+        log.add_usage(
+            tier=tier,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
+        )
+
+
+def usage_total() -> int:
+    """Prompt + completion tokens spent so far this turn (0 outside a turn)."""
+    log = _current.get()
+    return log.total_tokens() if log is not None else 0
+
+
+def usage_snapshot() -> dict[str, dict[str, int]]:
+    """A copy of the per-tier usage so far (empty outside a turn)."""
+    log = _current.get()
+    return {tier: dict(b) for tier, b in log.usage.items()} if log is not None else {}
+
+
 @contextmanager
 def stage(name: str) -> Iterator[None]:
     """Time a block into the turn's stage table.
@@ -138,10 +233,16 @@ async def stream_stage(name: str, source):
         mark(name, (time.monotonic() - started) * 1000)
 
 
+def active_id() -> int:
+    """The id of the turn in flight, or 0 outside a turn."""
+    log = _current.get()
+    return log.id if log is not None else 0
+
+
 @contextmanager
 def collect() -> Iterator[TurnLog]:
     """Start a fresh turn log. Nested calls isolate (the inner one wins)."""
-    log = TurnLog()
+    log = TurnLog(id=next(_turn_seq))
     token = _current.set(log)
     try:
         yield log
