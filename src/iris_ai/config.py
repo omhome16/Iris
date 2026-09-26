@@ -309,6 +309,14 @@ class Settings(BaseSettings):
     # Exceeding it is caught and turned into a graceful message, never a 500.
     graph_recursion_limit: int = 40
 
+    # ── Kill switch ──────────────────────────────────────────────────────
+    # Refuse every turn before it spends: no model call, no tool dispatch.
+    # Enforced in code rather than by killing the process, so it can be flipped
+    # on a running service (and in a test). The vault's framing is that
+    # unbounded consumption is a security problem, not only a cost one — this is
+    # the switch you reach for while working out what went wrong.
+    kill_switch: bool = False
+
     # ── Compaction (context engineering) ─────────────────────────────────
     # When the serialized history exceeds the trigger, a compaction turn
     # flushes durable facts to the daily note, summarizes, and trims history

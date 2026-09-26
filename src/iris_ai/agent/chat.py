@@ -675,6 +675,61 @@ class ChatGraph:
         """
         self.guards.end_turn(turnlog.usage_snapshot())
 
+    # ── Halting well ─────────────────────────────────────────────────────
+    def _killed_reply(self) -> str:
+        """What the owner sees when the kill switch is on.
+
+        A halt has to be legible: an unexplained refusal reads as a bug, so the
+        message says what happened and what to do about it.
+        """
+        return (
+            "I'm paused — the kill switch is on, so I won't call a model or run a tool. "
+            "Set KILL_SWITCH=false and ask again."
+        )
+
+    async def _best_so_far(self, config: dict) -> str:
+        """The last substantive thing the agent said before it was cut off.
+
+        A halted turn should degrade rather than fail. The checkpointer already
+        holds the partial state, so a research summary or a narrated tool result
+        is recoverable without re-running anything or spending another token —
+        which is the vault's "best-so-far" requirement, and strictly better than
+        discarding an almost-complete answer behind an apology.
+        """
+        try:
+            snapshot = await self.graph.aget_state(config)
+        except Exception as exc:  # noqa: BLE001 - recovery must never raise
+            log.debug("could not read partial state for best-so-far: %s", exc)
+            return ""
+        if snapshot is None:
+            return ""
+        for msg in reversed(snapshot.values.get("messages", []) or []):
+            if getattr(msg, "type", "") != "ai":
+                continue
+            content = getattr(msg, "content", "")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            # Some providers return content-block lists rather than a string.
+            if isinstance(content, list):
+                text = " ".join(
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict) and part.get("text")
+                ).strip()
+                if text:
+                    return text
+        return ""
+
+    async def _halt_reply(self, config: dict) -> str:
+        """Best-so-far, said honestly — or the plain fallback if nothing survived."""
+        best = await self._best_so_far(config)
+        if not best:
+            return "That conversation got deep — let's take it one step at a time. Ask me again."
+        return (
+            "I hit the step ceiling on that turn and stopped early. "
+            "Here is what I had established before I stopped:\n\n" + best
+        )
+
     async def respond(
         self, message: str, *, session_id: str, image: str | None = None, origin: str = "owner"
     ) -> str:
@@ -687,6 +742,13 @@ class ChatGraph:
         # here broke error handling with an AttributeError.
         with turnlog.collect() as turn:
             self.guards.reset_turn()
+            if settings.kill_switch:
+                # Refused before any provider call, and recorded, because a
+                # refusal nobody can see is indistinguishable from a failure.
+                turnlog.record("halt", reason="kill_switch", provider_calls=0)
+                judgment = turn.to_trace() if settings.turnlog_enabled else None
+                self._trace_turn(session_id, message, started, [], judgment=judgment)
+                return self._killed_reply()
             try:
                 result = await self.graph.ainvoke(
                     {
@@ -698,8 +760,17 @@ class ChatGraph:
                     config,
                 )
             except GraphRecursionError:
-                log.warning("turn exceeded recursion limit %s; returning graceful message", settings.graph_recursion_limit)
-                return "That conversation got deep — let's take it one step at a time. Ask me again."
+                log.warning(
+                    "turn exceeded recursion limit %s; returning best-so-far",
+                    settings.graph_recursion_limit,
+                )
+                turnlog.record("halt", reason="recursion_limit")
+                # The halt is traced, not just logged: a refusal nobody can see
+                # afterwards is indistinguishable from a silent failure.
+                judgment = turn.to_trace() if settings.turnlog_enabled else None
+                reply = await self._halt_reply(config)
+                self._trace_turn(session_id, message, started, [], judgment=judgment)
+                return reply
             finally:
                 self._bank_turn()
             judgment = turn.to_trace() if settings.turnlog_enabled else None
@@ -755,11 +826,15 @@ class ChatGraph:
                     log.warning("refused resume for %s: %s", session_id, verdict.reason)
                     return f"I can't resume that: {verdict.reason}."
             self.guards.reset_turn()
+            if settings.kill_switch:
+                turnlog.record("halt", reason="kill_switch", provider_calls=0)
+                return self._killed_reply()
             try:
                 result = await self.graph.ainvoke(Command(resume=decision), config)
             except GraphRecursionError:
-                log.warning("resume exceeded recursion limit %s", settings.graph_recursion_limit)
-                return "That conversation got deep — let's take it one step at a time. Ask me again."
+                log.warning("resume exceeded recursion limit %s; returning best-so-far", settings.graph_recursion_limit)
+                turnlog.record("halt", reason="recursion_limit")
+                return await self._halt_reply(config)
             finally:
                 self._bank_turn()
             judgment = turn.to_trace() if settings.turnlog_enabled else None
@@ -791,6 +866,10 @@ class ChatGraph:
         started = time.monotonic()
         with turnlog.collect() as turn:
             self.guards.reset_turn()
+            if settings.kill_switch:
+                turnlog.record("halt", reason="kill_switch", provider_calls=0)
+                yield "error", self._killed_reply()
+                return
             try:
                 async for mode, data in self.graph.astream(
                     {
@@ -825,7 +904,10 @@ class ChatGraph:
                         judgment=judgment,
                     )
             except GraphRecursionError:
-                log.warning("streamed turn exceeded recursion limit %s", settings.graph_recursion_limit)
-                yield "error", "That conversation got deep — let's take it one step at a time. Ask me again."
+                log.warning("streamed turn exceeded recursion limit %s; returning best-so-far", settings.graph_recursion_limit)
+                turnlog.record("halt", reason="recursion_limit")
+                judgment = turn.to_trace() if settings.turnlog_enabled else None
+                self._trace_turn(session_id, message, started, [], judgment=judgment)
+                yield "error", await self._halt_reply(config)
             finally:
                 self._bank_turn()

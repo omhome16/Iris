@@ -209,6 +209,54 @@ async def test_tool_loop_hits_recursion_cap_gracefully(
     assert "one step at a time" in reply
 
 
+async def test_kill_switch_refuses_before_the_graph_runs(tmp_path: Path, monkeypatch):
+    """The kill switch is enforced in code, before the graph is entered — so a
+    refusal costs nothing, and it can be flipped on a running service."""
+    from iris_ai.config import settings
+
+    monkeypatch.setattr(settings, "kill_switch", True)
+    files = WorkspaceFiles(tmp_path)
+    graph = ChatGraph(make_runtime(files, FakeLLM()), MemorySaver())
+
+    class _NeverRuns:
+        async def ainvoke(self, *_a, **_k):
+            raise AssertionError("the kill switch must refuse before the graph runs")
+
+    monkeypatch.setattr(graph, "graph", _NeverRuns())
+    reply = await graph.respond("anything", session_id="t-kill")
+    assert "kill switch" in reply
+    assert "KILL_SWITCH=false" in reply  # the halt says how to undo itself
+
+
+async def test_a_bailed_turn_returns_best_so_far_not_an_apology(tmp_path: Path, monkeypatch):
+    """Halting must degrade, not fail: what the agent already established exists in
+    the checkpoint and is returned, rather than discarded behind an apology."""
+    from types import SimpleNamespace
+
+    from langgraph.errors import GraphRecursionError
+
+    from iris_ai.config import settings
+
+    monkeypatch.setattr(settings, "graph_recursion_limit", 8)
+    files = WorkspaceFiles(tmp_path)
+    graph = ChatGraph(make_runtime(files, FakeLLM()), MemorySaver())
+
+    class _Snapshot:
+        values = {"messages": [SimpleNamespace(type="ai", content="Tea shows up in the March notes.")]}
+
+    class _Bails:
+        async def ainvoke(self, *_a, **_k):
+            raise GraphRecursionError("too many steps")
+
+        async def aget_state(self, *_a, **_k):
+            return _Snapshot()
+
+    monkeypatch.setattr(graph, "graph", _Bails())
+    reply = await graph.respond("what do you know about tea?", session_id="t-best")
+    assert "Tea shows up in the March notes." in reply
+    assert "one step at a time" not in reply
+
+
 async def test_skill_use_reinforces_success_score(tmp_path: Path):
     from fakes import WizardLLM
     from iris_ai.memory.skills import Skill
