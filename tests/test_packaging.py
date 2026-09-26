@@ -104,6 +104,27 @@ def test_every_setting_is_documented_in_the_sample_config():
     assert not undocumented, f"settings missing from .env.example: {undocumented}"
 
 
+def test_the_wheel_force_includes_the_shipped_skills():
+    """Pins the packaging contract, not just today's build.
+
+    `packages = ["src/iris_ai"]` alone leaves the repo-root `skills/` out of the
+    wheel, so an installed copy had no builtins at all.
+    """
+    wheel = _pyproject()["tool"]["hatch"]["build"]["targets"]["wheel"]
+    assert wheel["force-include"]["skills"] == "iris_ai/builtin_skills"
+
+
+def test_the_builtin_skill_is_discoverable():
+    """The README advertises `web-page-to-notes` as the format's proof; a
+    checkout resolves `<repo>/skills/` and an installed wheel resolves the
+    packaged copy, but either way it has to be there."""
+    from iris_ai.skills.registry import builtin_root
+
+    root = builtin_root()
+    assert root is not None, "no builtin root — the shipped skill would vanish"
+    assert (root / "web-page-to-notes" / "SKILL.md").is_file()
+
+
 def test_env_example_documents_the_p8_knobs():
     keys = {key.upper() for key in _env_keys()}
     for expected in (

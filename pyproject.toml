@@ -6,6 +6,18 @@ name = "iris-personal-ai"
 dynamic = ["version"]
 description = "Iris — a personal AI assistant with a visible mind (memory engineering, agent graphs, context engineering)"
 readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Iris contributors" }]
+keywords = ["llm", "agents", "agent-harness", "memory", "rag", "personal-assistant", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 requires-python = ">=3.12"
 dependencies = [
     "langgraph>=1.2",
@@ -35,6 +47,12 @@ dependencies = [
 [project.scripts]
 iris = "iris_ai.cli.main:app"
 
+[project.urls]
+Homepage = "https://github.com/omhome16/Iris"
+Repository = "https://github.com/omhome16/Iris"
+Issues = "https://github.com/omhome16/Iris/issues"
+Changelog = "https://github.com/omhome16/Iris/blob/main/CHANGELOG.md"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -44,6 +62,13 @@ path = "src/iris_ai/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/iris_ai"]
+# The shipped skills live at the repo root for contributors to read. Without
+# this mapping they are absent from the wheel, and `iris skills list` on an
+# installed copy would quietly lose the builtin that the README advertises.
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "iris_ai/builtin_skills"
+"assets/mermaid" = "iris_ai/assets/mermaid"
 
 [tool.uv]
 package = true

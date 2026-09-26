@@ -100,13 +100,32 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def packaged_builtin_root() -> Path | None:
+    """Builtins shipped *inside* the wheel.
+
+    In a source checkout the builtins are `<repo>/skills/`; an installed wheel
+    has no repo root, so hatch force-includes the same directory as
+    `iris_ai/builtin_skills`. Without this the shipped skill silently vanished
+    on `pip install` while the README still advertised it.
+    """
+    packaged = Path(__file__).resolve().parent.parent / "builtin_skills"
+    return packaged if packaged.is_dir() else None
+
+
 def builtin_root() -> Path | None:
-    """The configured builtin directory, resolved against the repository."""
+    """The configured builtin directory: the checkout's, else the packaged copy.
+
+    `skills_builtin_dir = ""` still disables the source entirely, which is why
+    the configured value is checked before the fallback.
+    """
     configured = settings.skills_builtin_dir.strip()
     if not configured:
         return None
     path = Path(configured)
-    return path if path.is_absolute() else repo_root() / path
+    resolved = path if path.is_absolute() else repo_root() / path
+    if resolved.is_dir():
+        return resolved
+    return packaged_builtin_root()
 
 
 def extra_roots() -> list[Path]:

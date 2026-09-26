@@ -54,6 +54,10 @@ jobs:
           /tmp/iris-venv/bin/pip install --quiet dist/*.whl
           /tmp/iris-venv/bin/iris version
           /tmp/iris-venv/bin/iris --help
+          # From /tmp, so repo-root `skills/` is NOT on the path: this asserts the
+          # builtin skill resolves out of the *packaged* copy, which is the bug
+          # that made `iris skills list` empty on an installed wheel.
+          cd /tmp && /tmp/iris-venv/bin/iris skills list | grep -q web-page-to-notes
 
   test:
     runs-on: ubuntu-latest

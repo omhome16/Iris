@@ -12,7 +12,7 @@ keeping `import iris_ai` (and therefore `iris_ai.cli`) cheap.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["Harness", "__version__", "harness"]
 
