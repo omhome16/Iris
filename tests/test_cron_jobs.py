@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from iris.tasks import (
+from iris_ai.tasks import (
     CALENDAR,
     EXPIRE,
     INTERVAL,
@@ -198,7 +198,7 @@ def test_a_job_is_described_in_words(tmp_path: Path):
 
 def test_the_store_caps_the_number_of_jobs(tmp_path: Path, monkeypatch):
     """A loop must not fill the disk with jobs."""
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "cron_max_jobs", 2)
     store = TaskStore(tmp_path / "tasks.json")
@@ -258,7 +258,7 @@ class _FakeGraph:
 def _scheduler(tmp_path: Path, *, fail: bool = False):
     from types import SimpleNamespace
 
-    from iris.tasks import TaskScheduler
+    from iris_ai.tasks import TaskScheduler
 
     store = TaskStore(tmp_path / "tasks.json")
     fake = _FakeScheduler()
@@ -311,7 +311,7 @@ def test_a_recurring_job_disables_itself_after_repeated_failure(tmp_path: Path, 
     the graph every interval until someone notices."""
     import asyncio
 
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "cron_max_failures", 2)
     sched, store, fake, _ = _scheduler(tmp_path, fail=True)
@@ -327,7 +327,7 @@ def test_a_recurring_job_disables_itself_after_repeated_failure(tmp_path: Path, 
 
 
 def test_a_disabled_job_is_not_reregistered_at_boot(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "cron_max_failures", 1)
     sched, store, fake, _ = _scheduler(tmp_path)

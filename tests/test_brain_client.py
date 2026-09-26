@@ -1,4 +1,4 @@
-"""`iris.channels.brain` — the brain-client contract.
+"""`iris_ai.channels.brain` — the brain-client contract.
 
 The bridge used to hand-parse SSE and hand-build every core URL; this is the
 single definition of that contract, tested against `httpx.MockTransport` so no
@@ -12,7 +12,7 @@ import json
 import httpx
 import pytest
 
-from iris.channels.brain import BrainEvent, HttpBrainClient, parse_sse_line
+from iris_ai.channels.brain import BrainEvent, HttpBrainClient, parse_sse_line
 
 
 @pytest.mark.parametrize(

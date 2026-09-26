@@ -8,9 +8,9 @@ from datetime import date
 import numpy as np
 import pytest
 
-import iris.memory.index as index_mod
-from iris.config import settings
-from iris.memory.index import MemoryIndex
+import iris_ai.memory.index as index_mod
+from iris_ai.config import settings
+from iris_ai.memory.index import MemoryIndex
 
 
 class CountingLLM:

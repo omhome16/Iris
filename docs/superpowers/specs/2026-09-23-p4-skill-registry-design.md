@@ -56,7 +56,7 @@ spec-sanctioned `metadata` map for standard-format skills.
 
 ## Data model
 
-`Skill` (in `src/iris/memory/skills.py`) gains manifest fields. Every new field
+`Skill` (in `src/iris_ai/memory/skills.py`) gains manifest fields. Every new field
 has a default, so existing `workspace/skills/*.json` sidecars keep loading:
 
 | Field | Default | Meaning |
@@ -93,7 +93,7 @@ Sources, highest precedence first:
 1. `workspace/skills/` — `source="learned"` for flat sidecar skills,
    `"workspace"` for `SKILL.md` directories the owner wrote there.
 2. `skills/` in the repository root — `source="builtin"` (versioned, shipped).
-3. Installed distributions advertising the `iris.skills` entry point, each
+3. Installed distributions advertising the `iris_ai.skills` entry point, each
    naming a directory of skill packages — `source="package:<dist>"`.
 
 Rules:

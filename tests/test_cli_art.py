@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from iris.cli import art
-from iris.cli.main import app
+from iris_ai.cli import art
+from iris_ai.cli.main import app
 
 runner = CliRunner()
 

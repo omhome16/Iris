@@ -43,7 +43,7 @@ services:
       # Bound to loopback so `docker compose up` never exposes an
       # auth-disabled API to the network.
       - "127.0.0.1:8000:8000"
-    command: uvicorn iris.api:app --host 0.0.0.0 --port 8000
+    command: uvicorn iris_ai.api:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\""]
       interval: 10s
@@ -52,7 +52,7 @@ services:
       start_period: 15s
 
   telegram-mcp:
-    # Root context: the bridge imports the library (`iris.channels.*`), so the
+    # Root context: the bridge imports the library (`iris_ai.channels.*`), so the
     # image needs the package source. See mcp_servers/telegram/Dockerfile.
     build:
       context: .

@@ -17,7 +17,7 @@ would break.
   (a client) │                    cron, tools, guards, doctor        │
              └───────────────┬──────────────────────────────────────┘
   Telegram   ┌───────────────▼──────────────────────────────────────┐
-  (a client) │ mcp_servers/telegram/   MCP server → iris.channels    │
+  (a client) │ mcp_servers/telegram/   MCP server → iris_ai.channels    │
              └───────────────┬──────────────────────────────────────┘
   HTTP       ┌───────────────▼──────────────────────────────────────┐
   (a client) │ iris/api.py        FastAPI; the only public surface   │
@@ -29,7 +29,7 @@ would break.
 ```
 
 Everything above the library is a **client**. They share exactly one contract
-(`iris.channels.brain.BrainClient`): `respond`, `resume`, `stream`, `json_get`,
+(`iris_ai.channels.brain.BrainClient`): `respond`, `resume`, `stream`, `json_get`,
 `json_post`. The CLI calls it in-process, the bridge calls it over HTTP, and both
 get the same behaviour because there is only one turn pipeline behind it. If you
 add a client, do not add a second pipeline.

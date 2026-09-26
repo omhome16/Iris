@@ -2,9 +2,9 @@
 
 Three claims this file pins down:
 
-1. `iris.turnlog` records what the judgment layer decided and where the time
+1. `iris_ai.turnlog` records what the judgment layer decided and where the time
    went — bounded, best-effort, and invisible outside a turn.
-2. `iris.background` runs post-reply passes without losing them: no bare
+2. `iris_ai.background` runs post-reply passes without losing them: no bare
    `create_task`, strong references, failures logged rather than raised, and
    `drain()` available so shutdown and tests can wait instead of racing.
 3. The reflection pass is off the reply path by default, and the trace says so.
@@ -19,10 +19,10 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from iris import background, turnlog
-from iris.agent.chat import ChatGraph
-from iris.config import settings
-from iris.trace import TraceLogger
+from iris_ai import background, turnlog
+from iris_ai.agent.chat import ChatGraph
+from iris_ai.config import settings
+from iris_ai.trace import TraceLogger
 from test_agent_graph import make_runtime
 from test_capture import _NoopReindexer, _onboarded
 
@@ -267,7 +267,7 @@ async def test_turnlog_can_be_switched_off(tmp_path: Path, monkeypatch: pytest.M
 # ── JEV client health ───────────────────────────────────────────────────────
 
 def test_status_explains_why_the_layer_is_off():
-    from iris.jev.client import JevClient
+    from iris_ai.jev.client import JevClient
 
     client = JevClient(api_key="")
     status = client.status()
@@ -279,8 +279,8 @@ def test_status_explains_why_the_layer_is_off():
 async def test_concurrent_callers_share_one_client(monkeypatch: pytest.MonkeyPatch):
     """A rerank, a guard screen and a capture judgment can now overlap; without
     the lock two of them would each build a client and leak one."""
-    from iris.jev import client as client_module
-    from iris.jev.client import JevClient
+    from iris_ai.jev import client as client_module
+    from iris_ai.jev.client import JevClient
 
     created: list[object] = []
 

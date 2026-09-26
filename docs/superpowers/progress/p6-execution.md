@@ -21,12 +21,12 @@ six gaps and no wrong turns; G5 (trace content policy + redaction) landed here.
 
 ## What already existed (and was therefore not rebuilt)
 
-`src/iris/tasks.py` already had the one-off half, and it is good: `parse_when`
+`src/iris_ai/tasks.py` already had the one-off half, and it is good: `parse_when`
 (ISO / relative / shorthand), `TaskStore` (JSON under `workspace/config/`), and a
 `TaskScheduler` that re-registers pending tasks at boot, runs each instruction
 through the chat graph with `origin="task"` (so a scheduled run can never write
 durable memory), delivers the reply over Telegram, and removes the task.
-`src/iris/scheduler.py` holds two hardcoded recurring jobs.
+`src/iris_ai/scheduler.py` holds two hardcoded recurring jobs.
 
 So P6 was not "build a scheduler". It was: **make recurrence and failure policy
 first-class, make the trace policy explicit, and give the owner a way to see and
@@ -39,8 +39,8 @@ change the schedule.**
 | 0 | Baseline | done | P5 exit state: ruff clean, 515 passed |
 | 1 | Job kinds: interval + calendar (TDD) | done | `parse_every`, `parse_calendar`, `Task.kind/every/at/weekdays`; `tests/test_cron_jobs.py` |
 | 2 | Catch-up / misfire policy, declared (TDD) | done | `missed_decision()` as the single decision point; run/miss/failure counters; self-disabling jobs |
-| 3 | `iris cron list \| add \| rm` (TDD) | done | `src/iris/cli/cron.py` + `cron` command; `POST /cron/reload`; `tests/test_cron_cli.py` |
-| 4 | Trace content policy + redaction (audit G5) (TDD) | done | `src/iris/redact.py`, `TraceLogger.record` policy gate; `tests/test_redaction.py` |
+| 3 | `iris cron list \| add \| rm` (TDD) | done | `src/iris_ai/cli/cron.py` + `cron` command; `POST /cron/reload`; `tests/test_cron_cli.py` |
+| 4 | Trace content policy + redaction (audit G5) (TDD) | done | `src/iris_ai/redact.py`, `TraceLogger.record` policy gate; `tests/test_redaction.py` |
 | 5 | Docs, progress, DoD | done | README / CHANGELOG / blueprint updated; this log |
 
 ## Verification log
@@ -108,7 +108,7 @@ test pins that `trace_content = redacted` brings the text back.
 2. **A stale one-off task vanished silently.** `register_all()` dropped past tasks
    with only a log line, so "why didn't my reminder fire?" had no answer. It is
    now counted (`missed`) and the decision recorded (`last_outcome`).
-3. **Nothing redacted anything**: `grep -riE "redact|scrub" src/iris` returned zero
+3. **Nothing redacted anything**: `grep -riE "redact|scrub" src/iris_ai` returned zero
    hits before this phase.
 
 ## Notes and follow-ups

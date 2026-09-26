@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from iris.memory.index import MemoryUnavailable
-from iris.memory.null_index import NullIndex
+from iris_ai.memory.index import MemoryUnavailable
+from iris_ai.memory.null_index import NullIndex
 
 DSN = "postgresql+psycopg://iris:iris_dev_password@localhost:5433/iris"
 

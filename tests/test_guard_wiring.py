@@ -7,16 +7,16 @@ from pathlib import Path
 from langgraph.checkpoint.memory import MemorySaver
 
 from fakes import WizardLLM, skill_registry
-from iris import turnlog
-from iris.agent.chat import ChatGraph
-from iris.agent.runtime import Runtime
-from iris.budget import Budget, BudgetPolicy
-from iris.config import settings
-from iris.guards import GuardChain
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
-from iris.onboarding import OnboardingWizard
-from iris.sandbox import Sandbox
+from iris_ai import turnlog
+from iris_ai.agent.chat import ChatGraph
+from iris_ai.agent.runtime import Runtime
+from iris_ai.budget import Budget, BudgetPolicy
+from iris_ai.config import settings
+from iris_ai.guards import GuardChain
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
+from iris_ai.onboarding import OnboardingWizard
+from iris_ai.sandbox import Sandbox
 
 
 async def _onboard(files: WorkspaceFiles) -> None:
@@ -86,7 +86,7 @@ async def test_a_spiralling_call_is_refused_before_dispatch(tmp_path: Path, monk
         dispatched.append(name)
         return '{"ok": true}'
 
-    monkeypatch.setattr("iris.agent.chat.dispatch", spy)
+    monkeypatch.setattr("iris_ai.agent.chat.dispatch", spy)
     files = WorkspaceFiles(tmp_path)
     await _onboard(files)
     runtime = _runtime(files, RepeatingLLM(times=10))
@@ -101,7 +101,7 @@ async def test_every_refusal_is_recorded_in_the_turn_trace(tmp_path: Path, monke
     async def spy(runtime, name, args, **kwargs):
         return '{"ok": true}'
 
-    monkeypatch.setattr("iris.agent.chat.dispatch", spy)
+    monkeypatch.setattr("iris_ai.agent.chat.dispatch", spy)
     files = WorkspaceFiles(tmp_path)
     # Capture the turn log directly: `record()` only writes inside a turn.
     runtime = _runtime(files, RepeatingLLM(times=10))
@@ -127,7 +127,7 @@ async def test_a_healthy_turn_is_untouched_by_the_guards(tmp_path: Path, monkeyp
         dispatched.append(name)
         return '{"ok": true}'
 
-    monkeypatch.setattr("iris.agent.chat.dispatch", spy)
+    monkeypatch.setattr("iris_ai.agent.chat.dispatch", spy)
     files = WorkspaceFiles(tmp_path)
     await _onboard(files)
     runtime = _runtime(files, RepeatingLLM(tool="file_read", args={"path": "notes.md"}, times=2))
@@ -143,7 +143,7 @@ async def test_a_tool_that_keeps_failing_opens_its_circuit(tmp_path: Path, monke
         dispatched.append(name)
         return '{"ok": false, "error": "boom"}'
 
-    monkeypatch.setattr("iris.agent.chat.dispatch", failing)
+    monkeypatch.setattr("iris_ai.agent.chat.dispatch", failing)
     files = WorkspaceFiles(tmp_path)
     await _onboard(files)
     runtime = _runtime(files, RepeatingLLM(tool="skill_run", args={"name": "x", "script": "s.py"}, times=10))
@@ -188,7 +188,7 @@ class SpendingLLM(LLMClient):
 async def test_a_finished_turn_banks_its_spend_into_the_day_budget(tmp_path: Path):
     """The day ceiling reads counters that only a finished turn writes.
 
-    This is the wiring the ceiling depends on: nothing in `iris.agent` used to
+    This is the wiring the ceiling depends on: nothing in `iris_ai.agent` used to
     call `Budget.note_usage`, so the cross-session bound read zero forever and
     could never refuse anything.
     """

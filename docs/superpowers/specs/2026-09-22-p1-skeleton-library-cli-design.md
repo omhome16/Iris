@@ -12,7 +12,7 @@
 | Decision | Choice |
 |---|---|
 | Relationship to Iris | **In-place rebirth** of this repo (approach A) |
-| Ship shape | **B: library + thin CLI** — `import iris` is the product; CLI is the face |
+| Ship shape | **B: library + thin CLI** — `import iris_ai` is the product; CLI is the face |
 | Long-term vision | Installable personal agent harness: Telegram, computer-use, skills/plugins, multi-agent, cron, memory/context/compaction |
 | Frontend | **Web dashboard deleted** in P1; beautiful CLI replaces it |
 | Phase order | A: P1 → P8 as table above |
@@ -60,7 +60,7 @@ Exit codes: `iris doctor` returns `1` only if a **fail** check fires; warnings d
 
 ```text
 Iris/
-├── src/iris/                 # library package (import path UNCHANGED)
+├── src/iris_ai/                 # library package (import path UNCHANGED)
 │   ├── __init__.py           # minimal public export list for P1 (see §6)
 │   ├── cli/                  # NEW
 │   │   ├── __init__.py
@@ -93,7 +93,7 @@ Iris/
 
 ### Keep
 
-- All `src/iris/**` library code (no dashboard imports exist today).
+- All `src/iris_ai/**` library code (no dashboard imports exist today).
 - `mcp_servers/telegram/**` (P3).
 - `tests/**` except dashboard-only tests (rules in §5).
 - `.github/workflows/ci.yml` — update if it references `dashboard`.
@@ -106,7 +106,7 @@ Iris/
 
 ```toml
 [project.scripts]
-iris = "iris.cli.main:app"
+iris = "iris_ai.cli.main:app"
 ```
 
 ### Commands
@@ -124,7 +124,7 @@ iris = "iris.cli.main:app"
 | Check | ok | warn | fail |
 |---|---|---|---|
 | `.env` readable | present | missing → hint `cp .env.example .env` | unreadable |
-| Package importable | print location | — | cannot `import iris` |
+| Package importable | print location | — | cannot `import iris_ai` |
 | ≥1 provider key | name(s) `set` | none → set a provider key | — |
 | `TYPESAFE_API_KEY` | set | missing → JEV off, deterministic fallback | — |
 | Postgres | not checked in P1 | — | — |
@@ -151,7 +151,7 @@ iris = "iris.cli.main:app"
 $ iris version
 iris 0.1.0
 python 3.13.9
-package  …/src/iris
+package  …/src/iris_ai
 
 $ iris doctor
 Iris doctor
@@ -183,7 +183,7 @@ Iris doctor
 
 ## 6. Public package surface (P1)
 
-`src/iris/__init__.py` may export a **minimal** stable list only (e.g. `__version__`). Do not freeze agent internals as public API in P1 — that is P2’s job.
+`src/iris_ai/__init__.py` may export a **minimal** stable list only (e.g. `__version__`). Do not freeze agent internals as public API in P1 — that is P2’s job.
 
 Internal imports inside the monorepo continue to use `iris.*` as today.
 

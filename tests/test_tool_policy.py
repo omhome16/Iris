@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from iris.agent.tools import TOOL_NAMES
-from iris.toolpolicy import (
+from iris_ai.agent.tools import TOOL_NAMES
+from iris_ai.toolpolicy import (
     CLASS_DEFAULTS,
     TOOL_DECLARATIONS,
     Policy,

@@ -12,7 +12,7 @@ verifies this phase's DoD.
 | Task | Description | Status | Evidence |
 |------|-------------|--------|----------|
 | 0 | Triage uncommitted audit work; relocate `_staged_preview` tests | done | `tests/test_staged_preview.py` (2 tests) holds the library coverage; the dashboard-side edits it came with were superseded by the Task 3 delete instead of being discarded file-by-file |
-| 1 | Deps, entry point, CLI package skeleton (TDD) | done | `src/iris/cli/{__init__,main,doctor,version,help_theme}.py`; `pyproject.toml` gained `typer>=0.12` / `rich>=13` and `[project.scripts] iris = "iris.cli.main:app"`; `tests/test_cli.py` (16 tests) green |
+| 1 | Deps, entry point, CLI package skeleton (TDD) | done | `src/iris_ai/cli/{__init__,main,doctor,version,help_theme}.py`; `pyproject.toml` gained `typer>=0.12` / `rich>=13` and `[project.scripts] iris = "iris_ai.cli.main:app"`; `tests/test_cli.py` (16 tests) green |
 | 2 | Test migration (`test_security.py`) | done | `tests/test_console_fixes.py` deleted after relocating its two library tests; `tests/test_security.py` keeps iris-core route auth (by introspection) + bridge forwarding — 7 tests |
 | 3 | Hard deletes + compose/CI/env cleanup | done | `dashboard/` absent; `docs/console.md` + `docs/screenshots/` gone; compose has `postgres`/`iris-core`/`telegram-mcp`; `DASHBOARD_USER`/`DASHBOARD_PASSWORD` gone from `.env.example` and CI; `docs/deployment.md` has no dashboard row |
 | 4 | Full suite + leftover grep sweep | done | `ruff` clean; 234 passed locally (the 5 DB-backed tests need Postgres); sweep finds no dashboard mention other than the intentional statements that it was removed |
@@ -62,7 +62,7 @@ All commands run from the repo root, 2026-09-23.
   Ingested URLs are UNTRUSTED web content *and* the owner's reading history, so
   they carry the same rule as `workspace/skills/` — a blanket `git add` must
   never be able to publish them. The directory was untracked but not ignored.
-- **Left alone deliberately:** `_BLOCKED_HOSTNAMES` in `src/iris/ingest.py` still
+- **Left alone deliberately:** `_BLOCKED_HOSTNAMES` in `src/iris_ai/ingest.py` still
   refuses a host named `dashboard` (and `tests/test_ingest.py` still exercises
   it). It is an SSRF blocklist entry, not a claim that a dashboard exists —
   removing it would be a behavior change for no benefit.

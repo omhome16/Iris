@@ -12,11 +12,11 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from iris import turnlog
-from iris.agents.roles import RESEARCHER
-from iris.agents.runner import RoleRunner
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
+from iris_ai import turnlog
+from iris_ai.agents.roles import RESEARCHER
+from iris_ai.agents.runner import RoleRunner
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
 from test_agent_graph import make_runtime
 
 
@@ -116,7 +116,7 @@ def test_cached_prompt_tokens_reach_the_accumulator():
 
 def test_the_ledger_still_receives_its_record(tmp_path: Path):
     """The accumulator observes; it does not replace accounting."""
-    from iris.ledger import CostLedger
+    from iris_ai.ledger import CostLedger
 
     ledger = CostLedger(tmp_path / "llm_calls.jsonl")
     client = LLMClient(ledger=ledger)

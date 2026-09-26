@@ -52,14 +52,14 @@ and labelled as such rather than claimed locally.
 
 ## Version discipline
 
-- **One source of truth.** The version lives in `src/iris/__init__.py`
+- **One source of truth.** The version lives in `src/iris_ai/__init__.py`
   (`__version__`), and hatchling reads it from there
-  (`[tool.hatch.version] path = "src/iris/__init__.py"`). `pyproject.toml` no
+  (`[tool.hatch.version] path = "src/iris_ai/__init__.py"`). `pyproject.toml` no
   longer hardcodes it, so the two cannot drift. A test asserts this.
 - **The changelog is the release note.** `CHANGELOG.md` is written per phase,
   newest first, and every number in it names the method that produced it.
 - **Cutting a release** (owner action — Iris does not tag or push itself):
-  1. Decide the version and edit `src/iris/__init__.py`.
+  1. Decide the version and edit `src/iris_ai/__init__.py`.
   2. Move the `## Unreleased — …` section of `CHANGELOG.md` under the new version.
   3. `uv build`, then confirm CI's `package` job is green.
   4. `git tag vX.Y.Z` and push — an explicit, deliberate act, never automatic.

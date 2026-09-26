@@ -8,10 +8,10 @@ from pathlib import Path
 from langgraph.checkpoint.memory import MemorySaver
 
 from fakes import FakeJev
-from iris import background, turnlog
-from iris.agent.chat import ChatGraph
-from iris.memory.llm import LLMClient
-from iris.memory.reflection import ReflectionPass, _claims, retrieved_excerpts
+from iris_ai import background, turnlog
+from iris_ai.agent.chat import ChatGraph
+from iris_ai.memory.llm import LLMClient
+from iris_ai.memory.reflection import ReflectionPass, _claims, retrieved_excerpts
 from test_agent_graph import make_runtime
 
 
@@ -100,8 +100,8 @@ async def test_reflection_no_flags_no_file(tmp_path: Path):
 
 async def test_graph_turn_with_retrieval_writes_flag(tmp_path: Path):
     from fakes import WizardLLM
-    from iris.memory.files import WorkspaceFiles
-    from iris.onboarding import OnboardingWizard
+    from iris_ai.memory.files import WorkspaceFiles
+    from iris_ai.onboarding import OnboardingWizard
 
     files = WorkspaceFiles(tmp_path)
     w = OnboardingWizard(files, WizardLLM())
@@ -215,8 +215,8 @@ async def test_the_graph_hands_the_jev_client_to_the_reflection_pass(tmp_path: P
     """The wiring, not just the unit: a real turn with a JEV client attached
     must flag through JEV and never reach the model path."""
     from fakes import WizardLLM
-    from iris.memory.files import WorkspaceFiles
-    from iris.onboarding import OnboardingWizard
+    from iris_ai.memory.files import WorkspaceFiles
+    from iris_ai.onboarding import OnboardingWizard
 
     files = WorkspaceFiles(tmp_path)
     w = OnboardingWizard(files, WizardLLM())
@@ -241,8 +241,8 @@ async def test_the_graph_hands_the_jev_client_to_the_reflection_pass(tmp_path: P
 
 async def test_graph_turn_without_retrieval_no_flag(tmp_path: Path):
     from fakes import WizardLLM
-    from iris.memory.files import WorkspaceFiles
-    from iris.onboarding import OnboardingWizard
+    from iris_ai.memory.files import WorkspaceFiles
+    from iris_ai.onboarding import OnboardingWizard
     from test_agent_graph import FakeLLM
 
     files = WorkspaceFiles(tmp_path)

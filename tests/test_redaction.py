@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from iris.redact import REDACTED, apply_content_policy, args_hash, redact, redact_text
-from iris.trace import TraceLogger
+from iris_ai.redact import REDACTED, apply_content_policy, args_hash, redact, redact_text
+from iris_ai.trace import TraceLogger
 
 SECRET = "sk-live-abcdef1234567890abcdef"
 
@@ -154,7 +154,7 @@ def test_sampling_behaves_like_redacted_for_one_entry():
 
 
 def test_a_credential_never_reaches_the_trace_file(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "trace_content", "redacted")
     logger = TraceLogger(tmp_path / "traces.jsonl")
@@ -165,7 +165,7 @@ def test_a_credential_never_reaches_the_trace_file(tmp_path: Path, monkeypatch):
 
 
 def test_metadata_mode_writes_no_content_at_all(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "trace_content", "metadata")
     monkeypatch.setattr(settings, "trace_content_sample_rate", 0.0)
@@ -179,7 +179,7 @@ def test_metadata_mode_writes_no_content_at_all(tmp_path: Path, monkeypatch):
 
 def test_the_trace_still_reads_back_as_a_trace(tmp_path: Path, monkeypatch):
     """Redaction must not break the readers (`/traces`, `iris agents handoffs`)."""
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "trace_content", "metadata")
     logger = TraceLogger(tmp_path / "traces.jsonl")

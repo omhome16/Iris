@@ -1,7 +1,7 @@
 """The brain-client module must stay importable without the engine.
 
 The Telegram bridge installs the package with `pip install --no-deps .`, so if
-`iris.channels.brain` pulled in LangGraph, asyncpg or the memory layer, the
+`iris_ai.channels.brain` pulled in LangGraph, asyncpg or the memory layer, the
 bridge image would silently need the whole engine — the dependency rule in the
 P3 spec, enforced rather than documented.
 """
@@ -12,11 +12,11 @@ import json
 import subprocess
 import sys
 
-FORBIDDEN = ["langgraph", "asyncpg", "numpy", "iris.agent", "iris.memory", "iris.jev", "iris.engine"]
+FORBIDDEN = ["langgraph", "asyncpg", "numpy", "iris_ai.agent", "iris_ai.memory", "iris_ai.jev", "iris_ai.engine"]
 
 _CODE = """
 import json, sys
-import iris.channels.brain  # noqa: F401
+import iris_ai.channels.brain  # noqa: F401
 forbidden = {forbidden!r}
 loaded = sorted(
     m for m in sys.modules if any(m == f or m.startswith(f + ".") for f in forbidden)
@@ -34,4 +34,4 @@ def test_brain_module_imports_without_the_engine():
     )
     assert proc.returncode == 0, proc.stderr
     loaded = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert loaded == [], f"iris.channels.brain dragged in the engine: {loaded}"
+    assert loaded == [], f"iris_ai.channels.brain dragged in the engine: {loaded}"

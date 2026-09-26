@@ -13,7 +13,7 @@
 | Question | Decision |
 |---|---|
 | What happens when no Postgres is reachable for `iris chat`? | **Best UX:** chat starts anyway in a clearly-labelled degraded mode (in-memory checkpointer, no vector recall), with a loud banner and an honest tool error. Nothing pretends to be a full session. |
-| How is the turn pipeline exposed? | **`iris.harness()` async context manager** — the boot wiring moves out of `api.py` into the library, and `api.py` is refactored onto it, so there is exactly one wiring path. |
+| How is the turn pipeline exposed? | **`iris_ai.harness()` async context manager** — the boot wiring moves out of `api.py` into the library, and `api.py` is refactored onto it, so there is exactly one wiring path. |
 | What about the local `learning doc/` vault? | **Refresh it** for the library + CLI shape (it currently documents the deleted dashboard). |
 
 ---
@@ -21,7 +21,7 @@
 ## 1. Context
 
 P1 deleted the web dashboard and made the repo library-first, but the engine is
-still only *bootable* through `iris.api`'s FastAPI lifespan. That wiring —
+still only *bootable* through `iris_ai.api`'s FastAPI lifespan. That wiring —
 WorkspaceFiles, cost ledger, LLM client, JEV, pgvector index, reindex, LangGraph
 Postgres checkpointer, Runtime, ChatGraph, scheduler, task scheduler — is the
 product's mind, and today it lives inside a web framework module. The Telegram
@@ -33,7 +33,7 @@ P2 makes the library the mind and the CLI a real client of it.
 
 ### Goals
 
-1. **One wiring path.** Extract the boot sequence into `src/iris/harness.py`; `api.py` delegates to it (behavior unchanged).
+1. **One wiring path.** Extract the boot sequence into `src/iris_ai/harness.py`; `api.py` delegates to it (behavior unchanged).
 2. **A public turn API.** `Harness.respond()`, `Harness.resume()`, `Harness.stream()` — the same methods the API and (P3) the bridge call.
 3. **`iris chat`.** A streaming REPL on that path: `--once` for a single turn, `--session` for continuity, an interactive HITL approval prompt, clean Ctrl+C/EOF exits.
 4. **Degraded mode, honestly labelled.** No Postgres → in-memory LangGraph checkpointer, no vector recall, a banner at start, and a recall tool that *says* it is unavailable (never a silent "I don't remember").
@@ -45,7 +45,7 @@ P2 makes the library the mind and the CLI a real client of it.
 - No Telegram-library integration (P3), no skills registry (P4), no
   multi-agent orchestration (P5), no cron surface (P6), no computer-use (P7), no
   packaging/release work (P8).
-- No change to `iris.api` route behavior, the Telegram bridge, memory
+- No change to `iris_ai.api` route behavior, the Telegram bridge, memory
   algorithms, JEV integrations, or the persona.
 - No new provider SDKs: the provider abstraction is the existing LiteLLM-backed
   `LLMClient` plus `LLM_PROVIDER`/key selection in `config.py`.
@@ -53,10 +53,10 @@ P2 makes the library the mind and the CLI a real client of it.
 
 ## 3. Interfaces
 
-### 3.1 `iris.harness()` — the library boot path
+### 3.1 `iris_ai.harness()` — the library boot path
 
 ```python
-# src/iris/harness.py
+# src/iris_ai/harness.py
 PostgresMode = Literal["require", "auto"]
 
 @asynccontextmanager
@@ -135,7 +135,7 @@ iris chat --help
 
 ## 4. Freezing the public surface
 
-`src/iris/__init__.py` gains exactly two public names beyond `__version__`:
+`src/iris_ai/__init__.py` gains exactly two public names beyond `__version__`:
 `harness` and `Harness`. Everything else stays internal until the phase that
 needs it (P3 will add the Telegram client seam). The P1 spec's rule still holds:
 do not freeze agent internals as public API.
@@ -158,7 +158,7 @@ No test may require Postgres, a network call, or an API key.
 [ ] uv run iris chat --help       → session/once flags documented
 [ ] uv run iris chat --once "hi"  → one reply (full mode with Postgres + a key)
 [ ] uv run iris chat              → REPL: streams, banner when degraded, /exit works
-[ ] python -c "import asyncio, iris; ..." → async with iris.harness() as h: await h.respond("hi")
+[ ] python -c "import asyncio, iris; ..." → async with iris_ai.harness() as h: await h.respond("hi")
 [ ] uv run ruff check .           → clean
 [ ] uv run pytest tests -q        → green (count recorded in CHANGELOG)
 [ ] README quickstart includes iris chat and matches reality
@@ -180,7 +180,7 @@ No test may require Postgres, a network call, or an API key.
 - `iris chat --voice`, image input from the CLI, a TUI, or a web view.
 - Auto-starting Docker/Postgres, or a Postgres check in `iris doctor`
   (doctor stays offline by the P1 rule).
-- Provider SDK additions; any change to `src/iris/memory/**` algorithms.
+- Provider SDK additions; any change to `src/iris_ai/memory/**` algorithms.
 - Rewriting historical specs under `docs/superpowers/specs/`.
 
 ## 9. Approval

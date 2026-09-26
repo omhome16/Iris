@@ -10,7 +10,7 @@
 > memory** and the **ablation study of no-memory vs files-only vs full engine**
 > (the shipped eval lab ablates *recall components*, not whole memory layers).
 > For current behaviour see `README.md`, `docs/jev.md` and the code under
-> `src/iris/`; for the second-generation write path see
+> `src/iris_ai/`; for the second-generation write path see
 > `2026-08-20-memory-orchestration-v2.md`.
 
 **Date:** 2026-08-15

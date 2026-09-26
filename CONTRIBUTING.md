@@ -1,6 +1,6 @@
 # Contributing to Iris
 
-Iris is a personal AI assistant built as a **library** (`import iris`) with a thin
+Iris is a personal AI assistant built as a **library** (`import iris_ai`) with a thin
 **CLI** and a Telegram bridge as its clients. This file is how to get a change
 merged without guessing at the conventions.
 
@@ -81,12 +81,12 @@ changes behaviour should say what the new behaviour is and what it replaced.
 
 | I want to… | Start here |
 |---|---|
-| add a tool | `src/iris/toolpolicy.py` (the class declaration) + `src/iris/agent/tools.py` |
+| add a tool | `src/iris_ai/toolpolicy.py` (the class declaration) + `src/iris_ai/agent/tools.py` |
 | add a skill | `skills/<name>/SKILL.md`, then `uv run iris skills validate` |
-| add a channel | `src/iris/channels/brain.py` (`BrainClient`); the bridge is the worked example |
-| add a specialist | `src/iris/agents/roles.py`, with its bounds explicit |
-| add a guard | `src/iris/guards.py` (it can only refuse) |
-| add a setting | `src/iris/config.py` **and** `.env.example` (a test enforces both directions) |
+| add a channel | `src/iris_ai/channels/brain.py` (`BrainClient`); the bridge is the worked example |
+| add a specialist | `src/iris_ai/agents/roles.py`, with its bounds explicit |
+| add a guard | `src/iris_ai/guards.py` (it can only refuse) |
+| add a setting | `src/iris_ai/config.py` **and** `.env.example` (a test enforces both directions) |
 | add an eval metric | `iris/eval/stats.py` — with an interval, not a point estimate |
 
 [`docs/extending.md`](docs/extending.md) has the detailed version of each of

@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from iris.memory.dreaming import DreamEngine, LightPhase, RemPhase, StagedSignal
-from iris.memory.files import WorkspaceFiles
-from iris.memory.forgetting import age_distribution, retention_fraction, supersession_stats
-from iris.memory.provenance import Origin, Provenance
-from iris.memory.skills import Skill, SkillLibrary
+from iris_ai.memory.dreaming import DreamEngine, LightPhase, RemPhase, StagedSignal
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.forgetting import age_distribution, retention_fraction, supersession_stats
+from iris_ai.memory.provenance import Origin, Provenance
+from iris_ai.memory.skills import Skill, SkillLibrary
 
 
 def make_signal(
@@ -139,7 +139,7 @@ def test_light_recall_feedback_pushes_borderline_signal_over_gate(tmp_path: Path
 
 
 def test_recall_feedback_rotates_at_max_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "recall_feedback_max_bytes", 200)
     files = WorkspaceFiles(tmp_path)

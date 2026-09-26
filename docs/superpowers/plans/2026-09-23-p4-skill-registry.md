@@ -26,7 +26,7 @@
       `--`, >64 chars), reject a missing description, warn on unknown keys, and
       normalize a legacy sidecar dict into the same `Skill`.
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** Create `src/iris/skills/` package: `manifest.py` with
+- [ ] **Step 3:** Create `src/iris_ai/skills/` package: `manifest.py` with
       `parse_frontmatter()`, `skill_from_skill_md()`, `skill_from_sidecar()`,
       `validate_skill()`; widen `Skill` with the manifest fields (all defaulted).
 - [ ] **Step 4:** Green + ruff + `tests/test_dreaming_skills.py` unchanged.
@@ -39,7 +39,7 @@
       selection but present in `list()`; malformed skills excluded *and* reported;
       deterministic ordering; a missing root is not an error.
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** `src/iris/skills/registry.py`: `SkillRegistry` (roots, entry-point
+- [ ] **Step 3:** `src/iris_ai/skills/registry.py`: `SkillRegistry` (roots, entry-point
       discovery, precedence, conflicts, `list()`, `get()`, `validate()`, `reload()`).
       Wire it into `engine.py` where `SkillLibrary` is built, and keep
       `runtime.skills` pointing at the object the tools already use (no churn in
@@ -53,7 +53,7 @@
       validation error; a refusal names the skill and is recorded in the turn trace;
       the policy can only intersect, never add (`NON_OWNER_BLOCKED` still blocked).
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** `src/iris/skills/policy.py` + `active_skills` in `IrisState`, set in
+- [ ] **Step 3:** `src/iris_ai/skills/policy.py` + `active_skills` in `IrisState`, set in
       `_assemble` from the context block, consumed by `dispatch(...)` in `agent/tools.py`
       and `_tools` in `agent/chat.py`. JEV suggestion unchanged.
 - [ ] **Step 4:** Green + ruff.
@@ -68,8 +68,8 @@
       child environment is stripped** (a script printing `os.environ` sees no
       `IRIS_*`/key vars); output is capped.
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** `src/iris/skills/runner.py` (`pre_screen`, `run_script`) +
-      `src/iris/skills/guard.py` (`screen_script` via `JevClient`) + the `skill_run`
+- [ ] **Step 3:** `src/iris_ai/skills/runner.py` (`pre_screen`, `run_script`) +
+      `src/iris_ai/skills/guard.py` (`screen_script` via `JevClient`) + the `skill_run`
       tool in `agent/tools.py` (approval interrupt, timeout, capped output, turnlog).
 - [ ] **Step 4:** Green + ruff + a real (hermetic) subprocess smoke in the test suite:
       run a tiny stdlib-only script from a skill directory and assert stdout.
@@ -82,7 +82,7 @@
       `iris skills validate` exits 1 when a skill is malformed and 0 when clean;
       the command registry grows to `{chat, doctor, skills, version}`.
 - [ ] **Step 2:** FAIL.
-- [ ] **Step 3:** `src/iris/cli/skills.py` + register in `cli/main.py`; update
+- [ ] **Step 3:** `src/iris_ai/cli/skills.py` + register in `cli/main.py`; update
       `tests/test_cli.py`'s exact-registry assertion.
 - [ ] **Step 4:** Green + ruff.
 

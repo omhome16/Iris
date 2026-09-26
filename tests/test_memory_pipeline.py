@@ -15,11 +15,11 @@ import numpy as np
 import pytest
 from asyncpg.exceptions import InvalidCatalogNameError
 
-from iris.memory.files import WorkspaceFiles
-from iris.memory.index import ChunkRecord, MemoryIndex
-from iris.memory.indexer import Reindexer
-from iris.memory.llm import LLMClient
-from iris.memory.provenance import Origin, Provenance
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.index import ChunkRecord, MemoryIndex
+from iris_ai.memory.indexer import Reindexer
+from iris_ai.memory.llm import LLMClient
+from iris_ai.memory.provenance import Origin, Provenance
 
 DSN = os.getenv(
     "IRIS_TEST_POSTGRES_DSN",

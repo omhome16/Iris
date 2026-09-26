@@ -12,7 +12,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from iris.agents.roles import (
+from iris_ai.agents.roles import (
     CRITIC,
     READ_ONLY_TOOLS,
     RESEARCHER,
@@ -88,13 +88,13 @@ def test_every_role_can_be_delegated_to(role):
 
 
 def test_read_only_tools_are_real_and_cannot_drift():
-    from iris.agent.tools import TOOL_NAMES
+    from iris_ai.agent.tools import TOOL_NAMES
 
     assert READ_ONLY_TOOLS <= TOOL_NAMES
 
 
 def test_the_shipped_pack_validates_against_the_tool_surface():
-    from iris.agent.tools import TOOL_NAMES
+    from iris_ai.agent.tools import TOOL_NAMES
 
     validate_roles(ROLES.values(), known_tools=TOOL_NAMES)
 

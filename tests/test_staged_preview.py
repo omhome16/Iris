@@ -1,12 +1,12 @@
-"""`iris.api._staged_preview` — staged dream signals for the /mind payload."""
+"""`iris_ai.api._staged_preview` — staged dream signals for the /mind payload."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from iris.api import _staged_preview
-from iris.memory.files import WorkspaceFiles
+from iris_ai.api import _staged_preview
+from iris_ai.memory.files import WorkspaceFiles
 
 
 def test_staged_preview_reads_staging_jsonl(tmp_path: Path):

@@ -1,14 +1,14 @@
 import json
 from pathlib import Path
 
-from iris.memory.chunking import (
+from iris_ai.memory.chunking import (
     chunk_text,
     contextualize_chunks,
     estimate_tokens,
     load_context_cache,
     store_context_cache,
 )
-from iris.memory.index import recency_weight
+from iris_ai.memory.index import recency_weight
 
 
 def test_estimate_tokens_counts_words():
@@ -91,7 +91,7 @@ def test_context_cache_stale_hash_is_ignored(tmp_path: Path):
 
 
 def test_context_headers_truncated_to_budget(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "context_header_tokens", 8)
     chunks = chunk_text(" ".join(f"word{i}" for i in range(250)), chunk_tokens=100, overlap_tokens=20)
@@ -122,7 +122,7 @@ def test_recency_decay_half_life():
 
 
 def test_provenance_promotable_only_trusted():
-    from iris.memory.provenance import Origin
+    from iris_ai.memory.provenance import Origin
 
     assert Origin.OWNER.promotable
     assert Origin.AGENT.promotable

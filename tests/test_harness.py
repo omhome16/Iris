@@ -1,4 +1,4 @@
-"""`iris.harness()` — the library boot path, and the degraded contract.
+"""`iris_ai.harness()` — the library boot path, and the degraded contract.
 
 No Postgres, no network, no keys: the DSN points at a closed port, the LLM is
 the suite's deterministic fake, and JEV is forced off so the deterministic
@@ -14,10 +14,10 @@ import json
 import pytest
 
 from fakes import WizardLLM
-from iris.config import settings
-from iris.engine import Harness, harness
-from iris.memory.index import MemoryUnavailable
-from iris.memory.null_index import NullIndex
+from iris_ai.config import settings
+from iris_ai.engine import Harness, harness
+from iris_ai.memory.index import MemoryUnavailable
+from iris_ai.memory.null_index import NullIndex
 
 # Port 1 is reserved and never listening, so `connect()` is a fast refusal.
 DEAD_DSN = "postgresql+psycopg://iris:iris@127.0.0.1:1/iris_test"
@@ -30,7 +30,7 @@ def dead_postgres(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     monkeypatch.setattr(settings, "sandbox_dir", str(tmp_path / "sandbox"))
     monkeypatch.setattr(settings, "typesafe_api_key", "")
-    monkeypatch.setattr("iris.engine.LLMClient", lambda ledger=None: WizardLLM())
+    monkeypatch.setattr("iris_ai.engine.LLMClient", lambda ledger=None: WizardLLM())
     return tmp_path
 
 
@@ -72,7 +72,7 @@ async def test_degraded_recall_says_what_is_missing(dead_postgres):
     the agent is told the truth in words rather than hallucinating around
     silence.
     """
-    from iris.agent.tools import run_memory_search
+    from iris_ai.agent.tools import run_memory_search
 
     async with harness(services=False) as brain:
         with pytest.raises(MemoryUnavailable) as exc:
@@ -97,14 +97,14 @@ async def test_require_mode_still_fails_at_boot(dead_postgres):
 
 
 def test_public_surface_works_without_a_harness_module():
-    """`iris.harness()` is a callable on the package, not a submodule."""
-    import iris
-    import iris.engine  # importing the implementation must not clobber the name
+    """`iris_ai.harness()` is a callable on the package, not a submodule."""
+    import iris_ai
+    import iris_ai.engine  # importing the implementation must not clobber the name
 
-    assert callable(iris.harness)
-    assert iris.Harness.__name__ == "Harness"
+    assert callable(iris_ai.harness)
+    assert iris_ai.Harness.__name__ == "Harness"
     with pytest.raises(AttributeError):
-        _ = iris.does_not_exist
+        _ = iris_ai.does_not_exist
 
 
 async def test_stream_payloads_are_json_serialisable(dead_postgres):

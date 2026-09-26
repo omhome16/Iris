@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from iris.approval import (
+from iris_ai.approval import (
     ApprovalGate,
     ApprovalPolicy,
     Envelope,

@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from iris.memory.files import WorkspaceFiles
-from iris.memory.skills import Skill, SkillLibrary
-from iris.skills.registry import SkillRegistry
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.skills import Skill, SkillLibrary
+from iris_ai.skills.registry import SkillRegistry
 
 SKILL_MD = """\
 ---
@@ -93,7 +93,7 @@ def test_discovers_package_entry_points(tmp_path):
 
 
 def test_the_default_entry_point_reader_is_safe(tmp_path):
-    """No installed distribution advertises `iris.skills` today; discovery must
+    """No installed distribution advertises `iris_ai.skills` today; discovery must
     simply find nothing rather than raise."""
     files = WorkspaceFiles(tmp_path)
     registry = SkillRegistry(files, builtin_dir=None)
@@ -232,8 +232,8 @@ def test_reinforce_refuses_a_hand_authored_directory_skill(tmp_path):
 def test_the_shipped_builtin_skill_is_discovered_and_valid(tmp_path):
     """The repo's own `skills/` directory is the proof the standard format works:
     if the format or the validator drifts, this is what notices."""
-    from iris.agent.tools import TOOL_NAMES
-    from iris.skills.registry import repo_root
+    from iris_ai.agent.tools import TOOL_NAMES
+    from iris_ai.skills.registry import repo_root
 
     files = WorkspaceFiles(tmp_path)
     registry = SkillRegistry(
@@ -252,8 +252,8 @@ def test_the_shipped_builtin_skill_is_discovered_and_valid(tmp_path):
 
 async def test_the_builtin_skills_script_actually_runs(tmp_path):
     """A shipped script that cannot run is documentation, not a capability."""
-    from iris.skills.registry import repo_root
-    from iris.skills.runner import run_script
+    from iris_ai.skills.registry import repo_root
+    from iris_ai.skills.runner import run_script
 
     files = WorkspaceFiles(tmp_path)
     registry = SkillRegistry(files, builtin_dir=repo_root() / "skills", entry_points=lambda: [])

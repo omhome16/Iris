@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from iris.computer import Action, ActionKind, NullProvider, PlaywrightProvider, provider_from_settings
-from iris.computer.audit import ActionLog
-from iris.computer.permissions import PermissionModel
-from iris.computer.provider import PLAYWRIGHT_MISSING
-from iris.computer.session import Computer
-from iris.config import settings
+from iris_ai.computer import Action, ActionKind, NullProvider, PlaywrightProvider, provider_from_settings
+from iris_ai.computer.audit import ActionLog
+from iris_ai.computer.permissions import PermissionModel
+from iris_ai.computer.provider import PLAYWRIGHT_MISSING
+from iris_ai.computer.session import Computer
+from iris_ai.config import settings
 
 
 def _computer(provider, tmp_path, **permissions) -> Computer:

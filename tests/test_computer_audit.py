@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from iris.computer import Action, ActionKind, Observation
-from iris.computer.audit import ActionLog
+from iris_ai.computer import Action, ActionKind, Observation
+from iris_ai.computer.audit import ActionLog
 
 
 def _entries(path):

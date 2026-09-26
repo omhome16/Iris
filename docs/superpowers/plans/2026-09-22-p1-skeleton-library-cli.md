@@ -4,18 +4,18 @@
 
 **Goal:** Delete the web dashboard, ship a real offline CLI (`iris --help|version|doctor`) on a library-first package, and leave tests/CI/docs honest — without changing agent, memory, JEV, or Telegram behavior.
 
-**Architecture:** Keep `src/iris` as the library (import path unchanged). Add a thin `src/iris/cli/` package: one `typer.Typer` app in `main.py`, rich help in `help_theme.py`, pure check logic in `doctor.py`, info printer in `version.py`. Dashboard tree, console docs/screenshots, compose dashboard service, and dashboard-only tests are hard-deleted; remaining tests keep full library assertions.
+**Architecture:** Keep `src/iris_ai` as the library (import path unchanged). Add a thin `src/iris_ai/cli/` package: one `typer.Typer` app in `main.py`, rich help in `help_theme.py`, pure check logic in `doctor.py`, info printer in `version.py`. Dashboard tree, console docs/screenshots, compose dashboard service, and dashboard-only tests are hard-deleted; remaining tests keep full library assertions.
 
 **Tech Stack:** Python ≥3.12, `typer>=0.12`, `rich>=13`, `uv`, `pytest` (+`pytest-asyncio`), `ruff`, hatchling.
 
 ## Global Constraints
 
-- Import path stays `iris` (`src/iris/…`); do not rename the package.
+- Import path stays `iris` (`src/iris_ai/…`); do not rename the package.
 - CLI surface is **only** `--help`, `version`, `doctor`, global `--version/-V`, `--debug`. No `chat` (or any other) stub.
 - No network in any P1 command; `doctor` is offline and CI-safe.
 - `doctor` never prints secret **values** — only key **names** and `set`/`missing`.
 - Exit codes: `doctor` returns `1` only if a **fail** check fires; warnings exit `0`.
-- No changes to agent graph, memory algorithms, JEV tools, Telegram bridge behavior, or `iris.api` routes (except keeping already-uncommitted `_staged_preview` library work from Task 0).
+- No changes to agent graph, memory algorithms, JEV tools, Telegram bridge behavior, or `iris_ai.api` routes (except keeping already-uncommitted `_staged_preview` library work from Task 0).
 - Do not weaken library test assertions to get green.
 - Do not commit unless the user explicitly asks (global repo rule). Commit steps below are for when the user has approved execution and wants commits.
 - Specs/docs under `docs/superpowers/specs/` are historical — do not rewrite them.
@@ -27,7 +27,7 @@
 ### Task 0: Triage uncommitted audit work
 
 **Files:**
-- Modify (keep): `src/iris/api.py` (uncommitted `_staged_preview` / `staged` work)
+- Modify (keep): `src/iris_ai/api.py` (uncommitted `_staged_preview` / `staged` work)
 - Modify (keep as base): `CHANGELOG.md`
 - Create: `tests/test_staged_preview.py` (the two library tests relocated out of `tests/test_console_fixes.py` — only surviving coverage of `_staged_preview`)
 - Discard: `dashboard/app.py`, `dashboard/static/app.js`, `dashboard/static/style.css`, `dashboard/templates/index.html` (deleted in Task 6 anyway)
@@ -40,11 +40,11 @@
 - [ ] **Step 1: Inspect status**
 
 Run: `git status --short`  
-Expected: modified `CHANGELOG.md`, `src/iris/api.py`, four `dashboard/*` files; untracked console PNGs and `tests/test_console_fixes.py`.
+Expected: modified `CHANGELOG.md`, `src/iris_ai/api.py`, four `dashboard/*` files; untracked console PNGs and `tests/test_console_fixes.py`.
 
 - [ ] **Step 2: Confirm library survivor**
 
-Run: `git diff src/iris/api.py`  
+Run: `git diff src/iris_ai/api.py`  
 Expected: `_staged_preview` + `staged` in `/mind` payload — keep this. If anything else appears, stop and ask the user.
 
 - [ ] **Step 3: Discard dashboard-side edits (purposeful loss)**
@@ -62,15 +62,15 @@ Expected: those four files no longer show as modified.
 Create `tests/test_staged_preview.py`:
 
 ```python
-"""`iris.api._staged_preview` — staged dream signals for the /mind payload."""
+"""`iris_ai.api._staged_preview` — staged dream signals for the /mind payload."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from iris.api import _staged_preview
-from iris.memory.files import WorkspaceFiles
+from iris_ai.api import _staged_preview
+from iris_ai.memory.files import WorkspaceFiles
 
 
 def test_staged_preview_reads_staging_jsonl(tmp_path: Path):
@@ -109,7 +109,7 @@ Remove-Item -LiteralPath console-live-dawn.png, console-live-mobile.png, console
 Remove-Item -LiteralPath docs/screenshots/console-audit-desktop.png, docs/screenshots/console-audit-mobile.png -Force
 ```
 
-Expected: `git status` shows only `CHANGELOG.md`, `src/iris/api.py`, new untracked `tests/test_staged_preview.py`, plus plan/spec docs if untracked.
+Expected: `git status` shows only `CHANGELOG.md`, `src/iris_ai/api.py`, new untracked `tests/test_staged_preview.py`, plus plan/spec docs if untracked.
 
 Sanity: `uv run pytest tests/test_staged_preview.py -q` → both PASS.
 
@@ -118,7 +118,7 @@ Sanity: `uv run pytest tests/test_staged_preview.py -q` → both PASS.
 `tests/test_staged_preview.py` is untracked — it must be added explicitly:
 
 ```bash
-git add src/iris/api.py CHANGELOG.md tests/test_staged_preview.py
+git add src/iris_ai/api.py CHANGELOG.md tests/test_staged_preview.py
 git commit -m "fix(api): expose staged dream signals in /mind"
 ```
 
@@ -130,24 +130,24 @@ Skip commit if the user has not requested it.
 
 **Files:**
 - Modify: `pyproject.toml` (deps, `[project.scripts]`, ruff `src`)
-- Create: `src/iris/cli/__init__.py`
-- Create: `src/iris/cli/main.py`
-- Create: `src/iris/cli/help_theme.py`
-- Create: `src/iris/cli/doctor.py`
-- Create: `src/iris/cli/version.py`
+- Create: `src/iris_ai/cli/__init__.py`
+- Create: `src/iris_ai/cli/main.py`
+- Create: `src/iris_ai/cli/help_theme.py`
+- Create: `src/iris_ai/cli/doctor.py`
+- Create: `src/iris_ai/cli/version.py`
 - Test: `tests/test_cli.py`
 - Modify: `uv.lock` (via `uv lock`)
 
 **Interfaces:**
-- Consumes: `iris.__version__` (`str`, currently `"0.1.0"`); `iris.config.settings` fields for key names (read-only presence checks — do not print values; `settings` fields with secrets already use `repr=False` where sensitive)
+- Consumes: `iris.__version__` (`str`, currently `"0.1.0"`); `iris_ai.config.settings` fields for key names (read-only presence checks — do not print values; `settings` fields with secrets already use `repr=False` where sensitive)
 - Produces (later tasks + DoD rely on these exact names):
-  - `iris.cli.main:app` — `typer.Typer` instance (entry point)
-  - `iris.cli.doctor.run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = None) -> list[Check]` (merges `.env` under process env for key-presence checks)
-  - `iris.cli.doctor._load_dotenv(env_path: Path) -> dict[str, str]` (internal; values never printed)
-  - `iris.cli.doctor.Check` — dataclass `name: str`, `level: Literal["ok", "warn", "fail"]`, `detail: str`
-  - `iris.cli.doctor.exit_code(checks: list[Check]) -> int` — `1` iff any `fail`, else `0`
-  - `iris.cli.version.version_lines() -> list[str]`
-  - Console scripts: `iris = "iris.cli.main:app"`
+  - `iris_ai.cli.main:app` — `typer.Typer` instance (entry point)
+  - `iris_ai.cli.doctor.run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = None) -> list[Check]` (merges `.env` under process env for key-presence checks)
+  - `iris_ai.cli.doctor._load_dotenv(env_path: Path) -> dict[str, str]` (internal; values never printed)
+  - `iris_ai.cli.doctor.Check` — dataclass `name: str`, `level: Literal["ok", "warn", "fail"]`, `detail: str`
+  - `iris_ai.cli.doctor.exit_code(checks: list[Check]) -> int` — `1` iff any `fail`, else `0`
+  - `iris_ai.cli.version.version_lines() -> list[str]`
+  - Console scripts: `iris = "iris_ai.cli.main:app"`
 
 - [ ] **Step 1: Write failing tests**
 
@@ -163,8 +163,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from iris import __version__
-from iris.cli.main import app
+from iris_ai import __version__
+from iris_ai.cli.main import app
 
 runner = CliRunner()
 
@@ -246,7 +246,7 @@ def test_doctor_sees_keys_only_in_dotenv(tmp_path: Path, monkeypatch: pytest.Mon
 
 def test_doctor_crash_without_debug_prints_hint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Default mode: friendly error + hint, exit 1, no traceback."""
-    import iris.cli.doctor as doctor_mod
+    import iris_ai.cli.doctor as doctor_mod
 
     def _boom():
         raise RuntimeError("simulated crash")
@@ -263,7 +263,7 @@ def test_doctor_crash_without_debug_prints_hint(tmp_path: Path, monkeypatch: pyt
 
 def test_doctor_crash_with_debug_flag_reraises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """--debug must re-raise the original exception so typer prints a traceback."""
-    import iris.cli.doctor as doctor_mod
+    import iris_ai.cli.doctor as doctor_mod
 
     def _boom():
         raise RuntimeError("simulated crash")
@@ -278,7 +278,7 @@ def test_doctor_crash_with_debug_flag_reraises(tmp_path: Path, monkeypatch: pyte
 
 
 def test_doctor_crash_with_iris_debug_env_reraises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    import iris.cli.doctor as doctor_mod
+    import iris_ai.cli.doctor as doctor_mod
 
     def _boom():
         raise RuntimeError("simulated crash")
@@ -300,7 +300,7 @@ def test_doctor_fail_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 
 @pytest.fixture
 def monkeypatch_import_fail(monkeypatch: pytest.MonkeyPatch):
     """Force the package-import check to fail by breaking version helper import path."""
-    import iris.cli.doctor as doctor_mod
+    import iris_ai.cli.doctor as doctor_mod
 
     def _boom():
         raise ImportError("simulated broken install")
@@ -309,7 +309,7 @@ def monkeypatch_import_fail(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_run_checks_levels_and_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from iris.cli.doctor import exit_code, run_checks
+    from iris_ai.cli.doctor import exit_code, run_checks
 
     (tmp_path / ".env").write_text("", encoding="utf-8")
     monkeypatch.setenv("GEMINI_API_KEY", "set-but-hidden")
@@ -330,7 +330,7 @@ def test_run_checks_levels_and_exit_code(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 def test_version_lines_shape():
-    from iris.cli.version import version_lines
+    from iris_ai.cli.version import version_lines
 
     lines = version_lines()
     assert lines[0].startswith("iris ")
@@ -341,7 +341,7 @@ def test_version_lines_shape():
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_cli.py -q`  
-Expected: FAIL — `ModuleNotFoundError: No module named 'iris.cli'` (or entry import error).
+Expected: FAIL — `ModuleNotFoundError: No module named 'iris_ai.cli'` (or entry import error).
 
 - [ ] **Step 3: Edit `pyproject.toml`**
 
@@ -349,7 +349,7 @@ Add `"typer>=0.12",` and `"rich>=13",` to `[project] dependencies`. Add:
 
 ```toml
 [project.scripts]
-iris = "iris.cli.main:app"
+iris = "iris_ai.cli.main:app"
 ```
 
 Change ruff src line to:
@@ -365,13 +365,13 @@ Expected: success; typer and rich importable.
 
 - [ ] **Step 5: Implement CLI package**
 
-`src/iris/cli/__init__.py`:
+`src/iris_ai/cli/__init__.py`:
 
 ```python
 """Iris command-line interface."""
 ```
 
-`src/iris/cli/help_theme.py`:
+`src/iris_ai/cli/help_theme.py`:
 
 ```python
 """Rich styling for the CLI. Plain output when piped or NO_COLOR is set."""
@@ -398,7 +398,7 @@ def console(stderr: bool = False) -> Console:
 LEVEL_STYLE = {"ok": "iris.ok", "warn": "iris.warn", "fail": "iris.fail"}
 ```
 
-`src/iris/cli/version.py`:
+`src/iris_ai/cli/version.py`:
 
 ```python
 """`iris version` — version, interpreter, install location."""
@@ -408,7 +408,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import iris
+import iris_ai
 
 
 def _package_location() -> Path:
@@ -428,7 +428,7 @@ def print_version() -> None:
         print(line)
 ```
 
-`src/iris/cli/doctor.py`:
+`src/iris_ai/cli/doctor.py`:
 
 ```python
 """`iris doctor` — offline environment checks. Never prints secret values."""
@@ -452,7 +452,7 @@ class Check:
 
 
 def _package_location() -> Path:
-    import iris
+    import iris_ai
 
     return Path(iris.__file__).resolve().parent
 
@@ -500,7 +500,7 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
         loc = _package_location()
         checks.append(Check("package", "ok", f"importable at {loc}"))
     except Exception:
-        checks.append(Check("package", "fail", "cannot import iris"))
+        checks.append(Check("package", "fail", "cannot import iris_ai"))
 
     present = [name for name in PROVIDER_KEY_NAMES if env.get(name, "").strip()]
     if present:
@@ -521,7 +521,7 @@ def exit_code(checks: list[Check]) -> int:
 
 
 def render(checks: list[Check]) -> None:
-    from iris.cli.help_theme import LEVEL_STYLE, console
+    from iris_ai.cli.help_theme import LEVEL_STYLE, console
 
     out = console()
     out.print("[iris.title]Iris doctor[/iris.title]")
@@ -533,7 +533,7 @@ def render(checks: list[Check]) -> None:
     out.print(f"{counts['ok']} ok · {counts['warn']} warn · {counts['fail']} fail")
 ```
 
-`src/iris/cli/main.py`:
+`src/iris_ai/cli/main.py`:
 
 ```python
 """Iris CLI root — typer app bound to [project.scripts] iris."""
@@ -544,9 +544,9 @@ import os
 
 import typer
 
-from iris.cli import doctor as doctor_mod
-from iris.cli import version as version_mod
-from iris.cli.help_theme import console
+from iris_ai.cli import doctor as doctor_mod
+from iris_ai.cli import version as version_mod
+from iris_ai.cli.help_theme import console
 
 app = typer.Typer(
     name="iris",
@@ -637,11 +637,11 @@ Expected: styled help with only `version` + `doctor`; version three lines; docto
 - [ ] **Step 8: Commit (only if user asked)**
 
 ```bash
-git add pyproject.toml uv.lock src/iris/cli tests/test_cli.py
+git add pyproject.toml uv.lock src/iris_ai/cli tests/test_cli.py
 git commit -m "feat(cli): iris help/version/doctor (typer + rich, offline)"
 ```
 
-(All paths above are tracked-or-intentionally-new under `src/`/`tests/`; `git add` of the new `src/iris/cli` directory stages the whole package.)
+(All paths above are tracked-or-intentionally-new under `src/`/`tests/`; `git add` of the new `src/iris_ai/cli` directory stages the whole package.)
 
 ---
 
@@ -785,7 +785,7 @@ git commit -m "chore: remove dashboard service, env vars, and console artifacts"
 ### Task 4: Full suite + leftover grep sweep
 
 **Files:**
-- Possibly fix: README (moved to Task 5 if large), stray comments in `src/iris/**` mentioning “dashboard”
+- Possibly fix: README (moved to Task 5 if large), stray comments in `src/iris_ai/**` mentioning “dashboard”
 - Modify: none required if Tasks 1–3 done
 
 **Interfaces:**
@@ -812,7 +812,7 @@ rg -ni "dashboard|docs/console|console-live|uvicorn dashboard" \
   --glob '!uv.lock'
 ```
 
-Allowed: `console.groq.com`, `console.typesafe.ai`. Fix other hits (README left for Task 5; cheap `src/iris` comment wording fixes OK here).
+Allowed: `console.groq.com`, `console.typesafe.ai`. Fix other hits (README left for Task 5; cheap `src/iris_ai` comment wording fixes OK here).
 
 - [ ] **Step 3: Commit (only if user asked)**
 

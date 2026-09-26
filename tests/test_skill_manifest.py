@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from iris.memory.skills import Skill
-from iris.skills.manifest import (
+from iris_ai.memory.skills import Skill
+from iris_ai.skills.manifest import (
     ManifestError,
     parse_sidecar,
     parse_skill_md,

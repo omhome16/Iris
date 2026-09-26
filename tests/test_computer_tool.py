@@ -5,16 +5,16 @@ from __future__ import annotations
 import json
 
 from fakes import skill_registry
-from iris.agent.runtime import Runtime
-from iris.agent.tools import get_tools
-from iris.computer import Action, ActionKind, Observation
-from iris.computer.audit import ActionLog
-from iris.computer.permissions import PermissionModel
-from iris.computer.session import Computer
-from iris.config import settings
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
-from iris.sandbox import Sandbox
+from iris_ai.agent.runtime import Runtime
+from iris_ai.agent.tools import get_tools
+from iris_ai.computer import Action, ActionKind, Observation
+from iris_ai.computer.audit import ActionLog
+from iris_ai.computer.permissions import PermissionModel
+from iris_ai.computer.session import Computer
+from iris_ai.config import settings
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
+from iris_ai.sandbox import Sandbox
 
 
 class RecordingProvider:

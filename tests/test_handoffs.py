@@ -19,7 +19,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from iris.agents.handoff import (
+from iris_ai.agents.handoff import (
     Claim,
     Handoff,
     Source,

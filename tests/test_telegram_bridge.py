@@ -11,7 +11,7 @@ import anyio
 import httpx
 import pytest
 
-from iris.channels.updates import UpdateLedger
+from iris_ai.channels.updates import UpdateLedger
 
 BRIDGE_DIR = Path(__file__).resolve().parents[1] / "mcp_servers" / "telegram"
 sys.path.insert(0, str(BRIDGE_DIR))

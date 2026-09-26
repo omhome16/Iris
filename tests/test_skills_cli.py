@@ -19,8 +19,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from iris.cli.main import app
-from iris.config import settings
+from iris_ai.cli.main import app
+from iris_ai.config import settings
 
 SKILL_MD = """\
 ---
@@ -155,7 +155,7 @@ def test_the_installed_command_reaches_a_shell_exit_code(workspace: Path):
         "PYTHONIOENCODING": "utf-8",
     }
     ok = subprocess.run(
-        [sys.executable, "-m", "iris.cli.main", "skills", "validate"],
+        [sys.executable, "-m", "iris_ai.cli.main", "skills", "validate"],
         capture_output=True,
         text=True,
         timeout=180,
@@ -168,7 +168,7 @@ def test_the_installed_command_reaches_a_shell_exit_code(workspace: Path):
         "---\nname: nope\n---\nbody\n", encoding="utf-8"
     )
     bad = subprocess.run(
-        [sys.executable, "-m", "iris.cli.main", "skills", "validate"],
+        [sys.executable, "-m", "iris_ai.cli.main", "skills", "validate"],
         capture_output=True,
         text=True,
         timeout=180,

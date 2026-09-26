@@ -33,9 +33,9 @@ A tool is four things: an implementation, a **class declaration**, a schema, and
 a test. The class is what derives its policy — `allow` / `ask` / `deny` — so it
 is not optional metadata.
 
-1. **Implement it** next to the others in `src/iris/agent/tools.py` (or in the
+1. **Implement it** next to the others in `src/iris_ai/agent/tools.py` (or in the
    module that owns the capability, as `iris/computer/` does).
-2. **Declare its class** in `src/iris/toolpolicy.py::TOOL_DECLARATIONS`:
+2. **Declare its class** in `src/iris_ai/toolpolicy.py::TOOL_DECLARATIONS`:
 
    ```python
    TOOL_DECLARATIONS["send_postcard"] = ToolDeclaration(
@@ -114,18 +114,18 @@ code.
 
 A channel is anything that can feed Iris a message and show the reply. Do not add
 a second turn pipeline: implement the contract in
-`src/iris/channels/brain.py::BrainClient` (`respond`, `resume`, `stream`,
+`src/iris_ai/channels/brain.py::BrainClient` (`respond`, `resume`, `stream`,
 `json_get`, `json_post`) or reuse `HttpBrainClient` and point it at the core.
 
 - `mcp_servers/telegram/` is the worked example over HTTP.
-- `src/iris/cli/chat.py` is the worked example in-process.
+- `src/iris_ai/cli/chat.py` is the worked example in-process.
 
 **Idempotency is the channel's job.** Telegram redelivers updates; the bridge
 keeps `UpdateLedger` for exactly that. If your transport can deliver a message
 twice, deduplicate before you call `respond`, or the owner's memory gets the same
 fact twice.
 
-The auth header comes from `iris.security.auth_headers(token)` — one definition,
+The auth header comes from `iris_ai.security.auth_headers(token)` — one definition,
 shared with the server-side check, so a client and a server cannot disagree about
 the scheme.
 
@@ -133,7 +133,7 @@ the scheme.
 
 ## Add a role (a specialist)
 
-Roles are declared, not prompt-pasted. Add one in `src/iris/agents/roles.py` with
+Roles are declared, not prompt-pasted. Add one in `src/iris_ai/agents/roles.py` with
 its bounds explicit: tier, recall lane, tool allowlist, round cap, output cap.
 Then:
 
@@ -157,7 +157,7 @@ A guard is a function that can only ever **refuse**, and it runs before dispatch
 budget → circuit → spiral/dedup → context → record
 ```
 
-1. Add the state to `src/iris/guards.py` (see `SpiralDetector` for the shape: a
+1. Add the state to `src/iris_ai/guards.py` (see `SpiralDetector` for the shape: a
    `note()` that returns a `Verdict`, and a `reset()` that clears turn-scoped
    state only).
 2. Call it from `GuardChain.before()` **in that order** and return
@@ -179,7 +179,7 @@ a model to decide whether to spend money can itself run away.
 ## Add an eval metric or a judgment
 
 **A metric for the lab** (`scripts/eval_lab.py`): add it to the per-query
-outcomes and report it through `iris.eval.stats` — a rate gets `wilson_interval`,
+outcomes and report it through `iris_ai.eval.stats` — a rate gets `wilson_interval`,
 a mean gets `bootstrap_mean_ci`, and a comparison gets `paired_difference_ci`, so
 query difficulty cancels. Then register it in the pre-registered `DecisionRule`
 before you run it. A point estimate with no interval is not a measurement, and a
@@ -188,7 +188,7 @@ rule chosen after seeing the numbers is how every ablation "wins".
 **A judgment with JEV** — the question to ask yourself is *"is this a decision
 about supplied text?"*. If it is, JEV should make it (see `docs/jev.md` §3.0 for
 the audit of every model call). Follow the shape of
-`src/iris/jev/recall.py`: build one `state` plus typed questions, send **one
+`src/iris_ai/jev/recall.py`: build one `state` plus typed questions, send **one
 batched request**, fall back to the existing deterministic path when `ask()`
 returns `None`, and record the probabilities in the turn trace.
 
@@ -200,7 +200,7 @@ with the LLM, and it should say so in the docstring the way
 
 ## Change a setting
 
-1. Add the field to `src/iris/config.py` with a comment explaining *why* it
+1. Add the field to `src/iris_ai/config.py` with a comment explaining *why* it
    exists, not what it is.
 2. Add it to `.env.example` (a test fails if you forget — every setting must be
    documented, and every key there must name a real setting).

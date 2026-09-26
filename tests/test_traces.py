@@ -7,13 +7,13 @@ from pathlib import Path
 from langgraph.checkpoint.memory import MemorySaver
 
 from fakes import skill_registry
-from iris.agent.chat import ChatGraph
-from iris.agent.runtime import Runtime
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
-from iris.onboarding import OnboardingWizard
-from iris.sandbox import Sandbox
-from iris.trace import TraceLogger
+from iris_ai.agent.chat import ChatGraph
+from iris_ai.agent.runtime import Runtime
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
+from iris_ai.onboarding import OnboardingWizard
+from iris_ai.sandbox import Sandbox
+from iris_ai.trace import TraceLogger
 
 
 def _logger(tmp_path: Path, max_bytes: int | None = None) -> TraceLogger:
@@ -119,7 +119,7 @@ async def test_the_trace_can_carry_content_when_the_owner_opts_in(tmp_path: Path
     """`trace_content = redacted` is the debugging mode: text is kept, secrets
     are not."""
     from fakes import WizardLLM
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "trace_content", "redacted")
     files = WorkspaceFiles(tmp_path)

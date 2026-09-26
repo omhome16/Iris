@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from iris.agents.handoff import (
+from iris_ai.agents.handoff import (
     REFUSED_BUDGET,
     REFUSED_DEADLINE,
     REFUSED_DISABLED,
@@ -29,10 +29,10 @@ from iris.agents.handoff import (
     Source,
     Spend,
 )
-from iris.agents.orchestrator import Orchestrator, TurnBudget
-from iris.agents.roles import CRITIC, RESEARCHER
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
+from iris_ai.agents.orchestrator import Orchestrator, TurnBudget
+from iris_ai.agents.roles import CRITIC, RESEARCHER
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
 from test_agent_graph import make_runtime
 
 
@@ -76,7 +76,7 @@ class FakeJev:
         self.states: list[dict] = []
 
     async def ask(self, state, questions):
-        from iris.jev.client import JevAnswers
+        from iris_ai.jev.client import JevAnswers
 
         self.calls += 1
         self.states.append(state)
@@ -114,7 +114,7 @@ async def test_no_delegation_means_no_subagent_calls(tmp_path: Path):
 
 
 async def test_the_master_switch_refuses_without_running_anything(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "multi_agent_enabled", False)
     llm = ReportingLLM()
@@ -153,7 +153,7 @@ async def test_a_blown_deadline_refuses(tmp_path: Path):
 
 
 async def test_a_refusal_is_recorded_in_the_trace(tmp_path: Path):
-    from iris import turnlog
+    from iris_ai import turnlog
 
     orch, _ = _orchestrator(tmp_path, ReportingLLM(), max_calls=1)
     with turnlog.collect() as log:
@@ -169,7 +169,7 @@ async def test_a_refusal_is_recorded_in_the_trace(tmp_path: Path):
 
 
 async def test_delegate_returns_a_sourced_report(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     # Recall feedback is a write to the workspace; this test is about provenance.
     monkeypatch.setattr(settings, "recall_feedback_enabled", False)
@@ -179,8 +179,8 @@ async def test_delegate_returns_a_sourced_report(tmp_path: Path, monkeypatch):
         async def escalate(self, *args, **kwargs):
             from datetime import date
 
-            from iris.memory.index import MemoryHit
-            from iris.memory.provenance import Origin
+            from iris_ai.memory.index import MemoryHit
+            from iris_ai.memory.provenance import Origin
 
             return [
                 MemoryHit(
@@ -234,7 +234,7 @@ async def test_fan_out_preserves_the_order_asked_for(tmp_path: Path):
 
 
 async def test_fan_out_is_capped(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "multi_agent_max_parallel", 2)
     orch, _ = _orchestrator(tmp_path, ReportingLLM(), jev=FakeJev(multi_part=0.9), max_calls=5)
@@ -295,7 +295,7 @@ async def test_only_one_revision_per_turn(tmp_path: Path):
 
 
 async def test_revision_can_be_switched_off(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "multi_agent_revise_once", False)
     orch, _ = _orchestrator(tmp_path, ReportingLLM(), jev=FakeJev(grounded=0.05))
@@ -325,7 +325,7 @@ async def test_verify_checks_the_draft_against_the_turns_findings(tmp_path: Path
 
 
 async def test_verify_is_refused_by_the_master_switch(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "multi_agent_enabled", False)
     orch, _ = _orchestrator(tmp_path, ReportingLLM(), jev=FakeJev())
@@ -408,7 +408,7 @@ def test_merge_of_nothing_says_so(tmp_path: Path):
 
 
 def test_merge_truncates_at_the_derived_cap(tmp_path: Path):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     orch, _ = _orchestrator(tmp_path, ReportingLLM())
     big = [_report("x" * 3000, (Source("a.md"),)) for _ in range(4)]

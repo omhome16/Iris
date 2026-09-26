@@ -14,9 +14,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from iris.cli import guards as guards_mod
-from iris.cli.main import app
-from iris.config import settings
+from iris_ai.cli import guards as guards_mod
+from iris_ai.cli.main import app
+from iris_ai.config import settings
 
 runner = CliRunner()
 

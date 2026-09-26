@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from iris.computer import Action, ActionKind
-from iris.computer.permissions import Grants, PermissionModel, host_of, matches_host, matches_title
+from iris_ai.computer import Action, ActionKind
+from iris_ai.computer.permissions import Grants, PermissionModel, host_of, matches_host, matches_title
 
 
 def test_host_of_handles_bare_and_full_urls():

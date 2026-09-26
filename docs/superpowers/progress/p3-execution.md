@@ -13,8 +13,8 @@ verifies this phase's DoD.
 |------|-------------|--------|----------|
 | 0 | Baseline (ruff + suite before touching anything) | done | `ruff` clean; 255 passed with the DB suite excluded (P2 exit state) |
 | 1 | `MemoryHit.chunk_index` + `/forget` route (TDD) | done | `tests/test_forget_route.py` (3) written failing first; field added, both search queries select it, `chunk_index < 0` skipped instead of crashing |
-| 2 | `iris.channels.brain` — one brain-client contract | done | `src/iris/channels/brain.py`; `tests/test_brain_client.py` (18) + `tests/test_brain_client_imports.py` (2, subprocess import guard) |
-| 3 | `iris.channels.updates` — normalization + idempotency ledger | done | `src/iris/channels/updates.py`; `tests/test_telegram_updates.py` (15); atomic `os.replace`, bounded seen-set, tolerant of a missing/corrupt file |
+| 2 | `iris_ai.channels.brain` — one brain-client contract | done | `src/iris_ai/channels/brain.py`; `tests/test_brain_client.py` (18) + `tests/test_brain_client_imports.py` (2, subprocess import guard) |
+| 3 | `iris_ai.channels.updates` — normalization + idempotency ledger | done | `src/iris_ai/channels/updates.py`; `tests/test_telegram_updates.py` (15); atomic `os.replace`, bounded seen-set, tolerant of a missing/corrupt file |
 | 4 | Bridge rewired onto the library | done | `mcp_servers/telegram/server.py`: `CommandDispatcher`, `_stream_chat_turn`, the poll loop and the owner gate now use `HttpBrainClient` / `normalize_update` / `UpdateLedger`; new `_handle_update()` split out of the loop; unchanged `tests/test_telegram_bridge.py` still green |
 | 4b | Bridge image installs the library | done | `mcp_servers/telegram/Dockerfile` rewritten (repo-root context, `pip install --no-deps .`); `docker-compose.yml` build context updated; wheel verified to contain `iris/channels/brain.py`, `iris/channels/updates.py` |
 | 5 | Docs: README, CHANGELOG, blueprint, progress | done | README status → P3 + bridge-as-client section + history entry; CHANGELOG P3 section (incl. the `/forget` fix and the live JEV evidence); blueprint P3 marked shipped |
@@ -39,7 +39,7 @@ All commands from the repo root, 2026-09-23.
 | Live JEV rerank (`JevReranker.relevance`, the recall integration) | `enabled: True`, `max_candidates: 20`, `blend: 0.15`; scores `[0.97, 0.02, 0.01]` for (real answer / same topic / unrelated) — the blended rerank has a live signal to work with |
 | Live JEV call with a deliberately corrupted key | `ask()` returned `None`, logged a 401 and the caller fell back — the degradable design works in both directions |
 | `uv build --wheel` + archive inspection | the wheel carries `iris/channels/brain.py` and `iris/channels/updates.py`, so the bridge image build (repo root, `--no-deps`) has what it imports |
-| Import guard, no-deps reasoning | `import iris.channels.brain` pulls in only `httpx`, `mcp` and their deps — no LangGraph, asyncpg, litellm, pgvector, fastapi, typer |
+| Import guard, no-deps reasoning | `import iris_ai.channels.brain` pulls in only `httpx`, `mcp` and their deps — no LangGraph, asyncpg, litellm, pgvector, fastapi, typer |
 
 ## DoD checklist (owner must tick)
 
@@ -88,7 +88,7 @@ All commands from the repo root, 2026-09-23.
 - **Deferred:** an in-process `LibBrainClient` (same-host deployments skip the
   HTTP hop) and Telegram webhook mode. Both are additive and neither changes the
   client contract.
-- **Still open from P2:** `hybrid_top_k` in `src/iris/config.py` is read by
+- **Still open from P2:** `hybrid_top_k` in `src/iris_ai/config.py` is read by
   nobody. A config-surface change, so it stays out of phase scope. **Resolved
   after P4** — `hybrid_top_k` and `mrr_top_k` deleted; see `p4-execution.md`.
 - **No commits made** — repo rule.

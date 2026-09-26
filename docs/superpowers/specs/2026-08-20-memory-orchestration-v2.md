@@ -22,14 +22,14 @@
 A full audit of the current codebase found three structural problems:
 
 1. **Three "remember" pipelines run on the same conversation.**
-   - `WritePath.extract_candidates` (`src/iris/memory/write.py`) calls the cheap model **every turn** to judge ADD/UPDATE/DELETE/NOOP against memory — the Mem0-v2 pattern that Mem0 v3 deleted because write-time reconciliation is the most expensive *and* most error-prone part (their own numbers: LoCoMo 71.4→91.6, LongMemEval 67.8→93.4 after dropping it).
-   - `compact_turn` (`src/iris/agent/compaction.py`) extracts facts again on long turns and writes them straight to the daily note.
+   - `WritePath.extract_candidates` (`src/iris_ai/memory/write.py`) calls the cheap model **every turn** to judge ADD/UPDATE/DELETE/NOOP against memory — the Mem0-v2 pattern that Mem0 v3 deleted because write-time reconciliation is the most expensive *and* most error-prone part (their own numbers: LoCoMo 71.4→91.6, LongMemEval 67.8→93.4 after dropping it).
+   - `compact_turn` (`src/iris_ai/agent/compaction.py`) extracts facts again on long turns and writes them straight to the daily note.
    - The agent's `remember` tool does a third path.
    - Net effect: the same fact can be staged, flushed, and remembered — then promoted and re-indexed as a duplicate. Two cheap-model calls on many turns, one of them pure waste on trivial turns ("ok", "thanks").
 
 2. **Two retrieval paths run on the same turn.**
-   - `ContextAssembler.assemble` (`src/iris/agent/context.py`) searches the index **every turn** (an embedding call even for "ok") and auto-runs the research subagent on regex matches.
-   - The agent is *also* instructed to call `memory_search` before answering anything about the owner's life (`src/iris/agent/tools.py`).
+   - `ContextAssembler.assemble` (`src/iris_ai/agent/context.py`) searches the index **every turn** (an embedding call even for "ok") and auto-runs the research subagent on regex matches.
+   - The agent is *also* instructed to call `memory_search` before answering anything about the owner's life (`src/iris_ai/agent/tools.py`).
    - Net effect: same facts injected twice, and an expensive subagent launch on every temporal-phrased question — regardless of whether the question needs it.
 
 3. **Brittle heuristics where the model should judge.**
@@ -107,7 +107,7 @@ Appends to today's daily note:
 
 **New tool `skill_apply(name, outcome: "success"|"failed")`** — the outcome is decided by the agent at call time; the tool updates the success score deterministically. Deletes the set-difference reinforcement heuristic in `_write_path`.
 
-**Deleted:** `src/iris/memory/write.py` (extraction + staging), `.dreams/staging-*.jsonl`, the `_write_path` graph node, the skill-reinforcement heuristic.
+**Deleted:** `src/iris_ai/memory/write.py` (extraction + staging), `.dreams/staging-*.jsonl`, the `_write_path` graph node, the skill-reinforcement heuristic.
 
 ### 4.3 Recall lanes (cost-split, no language heuristics)
 
@@ -161,7 +161,7 @@ A small dynamic block (today's date, owner timezone, index stats, skill count) i
 
 ### 4.7 Onboarding (LLM-driven + memory consultation)
 
-The wizard prompt already gathers name → personality → tone → timezone → sleep pref via structured JSON (`src/iris/onboarding.py`). Add:
+The wizard prompt already gathers name → personality → tone → timezone → sleep pref via structured JSON (`src/iris_ai/onboarding.py`). Add:
 
 - Inject current `USER.md` + the tail of `MEMORY.md` into the wizard's system prompt.
 - Instruct: *"If any field is already known from your memory, confirm it instead of asking."*
@@ -171,16 +171,16 @@ The wizard prompt already gathers name → personality → tone → timezone →
 
 | File | Change |
 |---|---|
-| `src/iris/memory/write.py` | **Deleted** (extraction + staging). |
-| `src/iris/memory/dreaming.py` | Light phase reads daily notes for `(note)`-marked lines (+ recall feedback) instead of staging files; parses importance/triggers from the line. |
-| `src/iris/agent/tools.py` | New `note` tool; `skill_apply` gains `outcome` param; `tool_schemas(runtime, origin)` gating; drop nothing else. |
-| `src/iris/agent/chat.py` | Delete `_write_path` node + reinforcement heuristic; add `journal` node (digest only, no LLM); route tasks with `origin="task"`; pass origin into tool schemas; build wizard once per turn. |
-| `src/iris/agent/context.py` | Shrink to static tiers + curated trigger injection + skills block; delete search/escalate/auto-deep-dive. |
-| `src/iris/agent/compaction.py` | Unchanged (flush stays; it's the OpenClaw pattern). |
-| `src/iris/agent/subagents.py` | Unchanged; now agent-invoked only. |
-| `src/iris/tasks.py` | `graph.respond(..., origin="task")` (or equivalent state field). |
-| `src/iris/onboarding.py` | Inject USER.md/MEMORY.md into wizard prompt; consult-before-ask instruction. |
-| `src/iris/api.py` | `/sleep` unchanged; wizard construction unchanged; no new endpoints (note is a tool, not an API). |
+| `src/iris_ai/memory/write.py` | **Deleted** (extraction + staging). |
+| `src/iris_ai/memory/dreaming.py` | Light phase reads daily notes for `(note)`-marked lines (+ recall feedback) instead of staging files; parses importance/triggers from the line. |
+| `src/iris_ai/agent/tools.py` | New `note` tool; `skill_apply` gains `outcome` param; `tool_schemas(runtime, origin)` gating; drop nothing else. |
+| `src/iris_ai/agent/chat.py` | Delete `_write_path` node + reinforcement heuristic; add `journal` node (digest only, no LLM); route tasks with `origin="task"`; pass origin into tool schemas; build wizard once per turn. |
+| `src/iris_ai/agent/context.py` | Shrink to static tiers + curated trigger injection + skills block; delete search/escalate/auto-deep-dive. |
+| `src/iris_ai/agent/compaction.py` | Unchanged (flush stays; it's the OpenClaw pattern). |
+| `src/iris_ai/agent/subagents.py` | Unchanged; now agent-invoked only. |
+| `src/iris_ai/tasks.py` | `graph.respond(..., origin="task")` (or equivalent state field). |
+| `src/iris_ai/onboarding.py` | Inject USER.md/MEMORY.md into wizard prompt; consult-before-ask instruction. |
+| `src/iris_ai/api.py` | `/sleep` unchanged; wizard construction unchanged; no new endpoints (note is a tool, not an API). |
 | Tests | Rewrite `tests/test_memory_units.py` write-path cases → daily-note note-line parsing; `tests/test_agent_graph.py` write-path/skill-reinforcement assertions → note tool + skill_apply outcome; add hygiene tests: task-session gating, recall-loop prompt rule is doc-only (structural gate covered by Light phase), escalate-no-autosubagent. |
 
 ## 6. Security & hygiene (unchanged or newly enforced)

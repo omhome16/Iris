@@ -10,11 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from fakes import FakeJev, skill_registry
-from iris.agent import tools as tools_module
-from iris.agent.runtime import Runtime
-from iris.agent.tools import dispatch, get_tools
-from iris.memory.files import WorkspaceFiles
-from iris.sandbox import Sandbox
+from iris_ai.agent import tools as tools_module
+from iris_ai.agent.runtime import Runtime
+from iris_ai.agent.tools import dispatch, get_tools
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.sandbox import Sandbox
 
 SKILL_MD = """\
 ---
@@ -162,7 +162,7 @@ async def test_a_failing_script_comes_back_as_data(tmp_path, monkeypatch):
 
 
 async def test_every_outcome_is_recorded_in_the_turn_trace(tmp_path, monkeypatch):
-    from iris import turnlog
+    from iris_ai import turnlog
 
     monkeypatch.setattr(tools_module, "interrupt", lambda payload: "approved")
     runtime = _runtime(tmp_path, body="print('done')\n")

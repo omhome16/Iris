@@ -13,10 +13,10 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from iris.cli.main import app
-from iris.cli.tools import run
-from iris.config import settings
-from iris.toolpolicy import TOOL_DECLARATIONS
+from iris_ai.cli.main import app
+from iris_ai.cli.tools import run
+from iris_ai.config import settings
+from iris_ai.toolpolicy import TOOL_DECLARATIONS
 
 runner = CliRunner()
 
@@ -104,7 +104,7 @@ def test_run_returns_exit_codes_rather_than_raising():
 
 
 async def test_tools_route_reports_the_same_policy():
-    from iris.api import tools as tools_route
+    from iris_ai.api import tools as tools_route
 
     data = await tools_route(_token=None)
     assert {t["tool"] for t in data["tools"]} == set(TOOL_DECLARATIONS)
@@ -115,7 +115,7 @@ async def test_tools_route_reports_the_same_policy():
 
 
 async def test_actions_route_reads_the_log(tmp_path: Path, monkeypatch):
-    from iris.api import actions as actions_route
+    from iris_ai.api import actions as actions_route
 
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     config = tmp_path / "config"

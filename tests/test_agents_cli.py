@@ -13,8 +13,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from iris.cli.agents import handoffs_from_traces, run
-from iris.cli.main import app
+from iris_ai.cli.agents import handoffs_from_traces, run
+from iris_ai.cli.main import app
 
 runner = CliRunner()
 
@@ -62,7 +62,7 @@ def test_an_unknown_action_is_a_usage_error():
 
 
 def test_handoffs_on_an_empty_workspace_says_so(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     result = runner.invoke(app, ["agents", "handoffs"])
@@ -71,7 +71,7 @@ def test_handoffs_on_an_empty_workspace_says_so(tmp_path: Path, monkeypatch):
 
 
 def test_handoffs_reads_delegations_out_of_the_traces(tmp_path: Path, monkeypatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     config = tmp_path / "config"
@@ -110,8 +110,8 @@ def test_run_returns_exit_codes_rather_than_raising():
 
 
 async def test_the_agents_route_reports_the_declared_pack(tmp_path: Path, monkeypatch):
-    from iris.api import agents_list
-    from iris.config import settings
+    from iris_ai.api import agents_list
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     data = await agents_list(limit=10, _token=None)
@@ -122,8 +122,8 @@ async def test_the_agents_route_reports_the_declared_pack(tmp_path: Path, monkey
 
 
 async def test_the_agents_route_surfaces_recent_decisions(tmp_path: Path, monkeypatch):
-    from iris.api import agents_list
-    from iris.config import settings
+    from iris_ai.api import agents_list
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     config = tmp_path / "config"

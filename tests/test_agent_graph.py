@@ -13,14 +13,14 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from fakes import skill_registry
-from iris.agent.chat import ApprovalRequired, ChatGraph, _to_llm_messages
-from iris.agent.runtime import Runtime
-from iris.agent.tools import dispatch, get_tools
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
-from iris.memory.provenance import Origin
-from iris.onboarding import OnboardingWizard
-from iris.sandbox import Sandbox
+from iris_ai.agent.chat import ApprovalRequired, ChatGraph, _to_llm_messages
+from iris_ai.agent.runtime import Runtime
+from iris_ai.agent.tools import dispatch, get_tools
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
+from iris_ai.memory.provenance import Origin
+from iris_ai.onboarding import OnboardingWizard
+from iris_ai.sandbox import Sandbox
 
 # ── onboarding wizard ───────────────────────────────────────────────────────
 
@@ -197,7 +197,7 @@ async def test_tool_loop_hits_recursion_cap_gracefully(
     """An agent that never stops calling tools must get the graceful message,
     not a GraphRecursionError exploding out of respond()."""
     from fakes import WizardLLM
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "graph_recursion_limit", 8)  # ~3 tool rounds
     files = WorkspaceFiles(tmp_path)
@@ -211,7 +211,7 @@ async def test_tool_loop_hits_recursion_cap_gracefully(
 
 async def test_skill_use_reinforces_success_score(tmp_path: Path):
     from fakes import WizardLLM
-    from iris.memory.skills import Skill
+    from iris_ai.memory.skills import Skill
 
     files = WorkspaceFiles(tmp_path)
     w = OnboardingWizard(files, WizardLLM())
@@ -230,8 +230,8 @@ async def test_skill_use_reinforces_success_score(tmp_path: Path):
 async def test_skill_apply_context_injection(tmp_path: Path):
     """A message matching a skill's trigger must inject the compact skill
     block into the assembled context (name + description, not the procedure)."""
-    from iris.agent.context import ContextAssembler
-    from iris.memory.skills import Skill
+    from iris_ai.agent.context import ContextAssembler
+    from iris_ai.memory.skills import Skill
 
     files = WorkspaceFiles(tmp_path)
     runtime = make_runtime(files, FakeLLM())
@@ -251,8 +251,8 @@ async def test_skill_apply_context_injection(tmp_path: Path):
 
 
 async def test_skill_apply_context_no_match_no_block(tmp_path: Path):
-    from iris.agent.context import ContextAssembler
-    from iris.memory.skills import Skill
+    from iris_ai.agent.context import ContextAssembler
+    from iris_ai.memory.skills import Skill
 
     files = WorkspaceFiles(tmp_path)
     runtime = make_runtime(files, FakeLLM())

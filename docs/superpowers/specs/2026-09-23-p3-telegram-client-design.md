@@ -10,7 +10,7 @@
 
 ## 1. Context
 
-`iris chat` and the HTTP API already share one brain (`iris.harness()`). The
+`iris chat` and the HTTP API already share one brain (`iris_ai.harness()`). The
 Telegram bridge does not: `mcp_servers/telegram/server.py` (638 lines) hand-rolls
 its own brain client — it builds `/chat/stream` requests, parses SSE lines by
 hand, re-derives the event kinds, keeps its own copy of every command's HTTP
@@ -70,7 +70,7 @@ Also found while reading for this phase (live bug, P3 fixes it):
 ### 3.1 `iris/channels/brain.py` — the client contract
 
 **Dependency rule:** this module may import **stdlib + httpx only**. It must not
-pull LangGraph, asyncpg, or anything from `iris.agent` / `iris.memory`, so the
+pull LangGraph, asyncpg, or anything from `iris_ai.agent` / `iris_ai.memory`, so the
 bridge image can install the package with `pip install --no-deps .` and stay
 small. (Enforced by a test that imports the module in a subprocess without the
 engine present — see §5.)
@@ -169,7 +169,7 @@ class UpdateLedger:
 | File | Covers |
 |---|---|
 | `tests/test_brain_client.py` | `parse_sse_line` (all kinds, malformed input, non-data lines); `HttpBrainClient` against `httpx.MockTransport`: a streamed turn yields the right event kinds in order, `respond`/`resume` post the right payloads + bearer header, `json_get`/`json_post` round-trip |
-| `tests/test_brain_client_imports.py` | the dependency rule: importing `iris.channels.brain` in a fresh subprocess must not import `langgraph`, `asyncpg`, `iris.agent` or `iris.memory` |
+| `tests/test_brain_client_imports.py` | the dependency rule: importing `iris_ai.channels.brain` in a fresh subprocess must not import `langgraph`, `asyncpg`, `iris_ai.agent` or `iris_ai.memory` |
 | `tests/test_telegram_updates.py` | `normalize_update` for text/command/photo/voice/unsupported/edited; `UpdateLedger` watermark + seen-set + persistence + a restart replay scenario (the exact bug) |
 | `tests/test_forget_route.py` | `/forget` returns a usable `chunk_index` for a `MemoryHit`; a hit without one is skipped rather than crashing |
 
@@ -181,7 +181,7 @@ pass — it is the regression net for the bridge refactor.
 ```text
 [ ] uv run ruff check .                 → clean
 [ ] uv run pytest tests -q              → green (count recorded in CHANGELOG)
-[ ] bridge imports the library client   → rg "iris.channels.brain" mcp_servers/telegram/server.py
+[ ] bridge imports the library client   → rg "iris_ai.channels.brain" mcp_servers/telegram/server.py
 [ ] idempotency is real                 → test proves a replayed update_id is dropped
 [ ] /forget returns candidates with chunk_index (regression test)
 [ ] README + CHANGELOG + blueprint + progress/p3-execution.md updated

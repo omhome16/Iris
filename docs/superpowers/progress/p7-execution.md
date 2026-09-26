@@ -22,8 +22,8 @@ permission model that is the boundary) rather than around a browser driver.
 
 ## What already existed (and was therefore not rebuilt)
 
-`src/iris/agent/tools.py` owned a hand-written `NON_OWNER_BLOCKED` set and
-`src/iris/agents/roles.py` a second `READ_ONLY_TOOLS` set. Both were allowlists
+`src/iris_ai/agent/tools.py` owned a hand-written `NON_OWNER_BLOCKED` set and
+`src/iris_ai/agents/roles.py` a second `READ_ONLY_TOOLS` set. Both were allowlists
 with no default: adding a tool kept it classified only if someone remembered to
 edit them. The audit named this shape, and P7 replaced it with declarations plus a
 coverage test rather than adding a third list.
@@ -33,14 +33,14 @@ coverage test rather than adding a third list.
 | Task | Description | Status | Evidence |
 |------|-------------|--------|----------|
 | 0 | Baseline | done | P6 exit state: ruff clean, 639 passed at P7 start |
-| 1 | `src/iris/toolpolicy.py` — classes, class→policy, most-specific-wins, **deny wins**, overrides (TDD) | done | `TOOL_DECLARATIONS`, `CLASS_DEFAULTS`, `resolve`, `policy_snapshot`; `tests/test_tool_policy.py` |
+| 1 | `src/iris_ai/toolpolicy.py` — classes, class→policy, most-specific-wins, **deny wins**, overrides (TDD) | done | `TOOL_DECLARATIONS`, `CLASS_DEFAULTS`, `resolve`, `policy_snapshot`; `tests/test_tool_policy.py` |
 | 2 | Wire the policy into `tool_schemas` (hide deny) and `dispatch` (refuse deny, record ask) | done | `_apply_tool_policy`, dispatch's class check; turn-trace events `tool_denied` / `tool_needs_approval` |
-| 3 | `src/iris/computer/` — vocabulary + provider boundary (TDD) | done | `actions.py`, `provider.py`; `tests/test_computer_provider.py` |
+| 3 | `src/iris_ai/computer/` — vocabulary + provider boundary (TDD) | done | `actions.py`, `provider.py`; `tests/test_computer_provider.py` |
 | 4 | Permission model — suffix allowlists, destructive confirmation, grant + budget (TDD) | done | `permissions.py`; `tests/test_computer_permissions.py` |
 | 5 | Action audit log — append-only, redacted, typed text as length+digest (TDD) | done | `audit.py`; `tests/test_computer_audit.py` |
 | 6 | The `computer` tool (one tool, `action` enum) + class declaration + approval envelope (TDD) | done | `session.py` `Computer.execute`, tool in `agent/tools.py`, wiring in `engine.py`; `tests/test_computer_tool.py` |
 | 7 | Surface budget + `find_tools` (TDD) | done | `surface_order`, `find_tools`; `tests/test_tool_policy.py` |
-| 8 | Observability — `iris tools`, `GET /tools`, `GET /actions` (TDD) | done | `src/iris/cli/tools.py`, routes in `api.py`; `tests/test_tools_cli.py` |
+| 8 | Observability — `iris tools`, `GET /tools`, `GET /actions` (TDD) | done | `src/iris_ai/cli/tools.py`, routes in `api.py`; `tests/test_tools_cli.py` |
 | 9 | Docs, progress, DoD | done | README / CHANGELOG / blueprint updated; this log |
 
 ## Verification log

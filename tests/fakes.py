@@ -23,10 +23,10 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from iris.jev.client import JevAnswers
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
-from iris.skills.registry import SkillRegistry
+from iris_ai.jev.client import JevAnswers
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
+from iris_ai.skills.registry import SkillRegistry
 
 
 def skill_registry(files: WorkspaceFiles) -> SkillRegistry:

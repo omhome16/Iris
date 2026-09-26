@@ -14,9 +14,9 @@ import httpx
 import pytest
 from fastapi.routing import APIRoute
 
-from iris.api import app
-from iris.config import settings
-from iris.security import require_token
+from iris_ai.api import app
+from iris_ai.config import settings
+from iris_ai.security import require_token
 
 BRIDGE_DIR = Path(__file__).resolve().parents[1] / "mcp_servers" / "telegram"
 sys.path.insert(0, str(BRIDGE_DIR))

@@ -82,7 +82,7 @@ That is the whole pack. The roles deliberately **not** added:
 
 ## Data model
 
-`src/iris/agents/roles.py` declares roles as data; `src/iris/agents/handoff.py`
+`src/iris_ai/agents/roles.py` declares roles as data; `src/iris_ai/agents/handoff.py`
 defines the wire format between them.
 
 ### `Role`

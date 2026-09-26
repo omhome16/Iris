@@ -40,12 +40,12 @@ interstitial phase.
 | Task | Description | Status | Evidence |
 |------|-------------|--------|----------|
 | 0 | Baseline | done | P7 exit: ruff clean, **684 passed** |
-| 1 | `src/iris/guards.py` — spiral/dedup + cascade breaker + the ordered chain (TDD) | done | `arg_tokens` / `arg_similarity` / `SpiralDetector` / `CircuitBreaker` / `GuardChain`; `tests/test_guards.py` (19) |
-| 2 | `src/iris/budget.py` — scoped counters split by kind, versioned policy (TDD) | done | `CounterKind`, `BudgetPolicy`, `Budget`; `tests/test_budget.py` (11) |
+| 1 | `src/iris_ai/guards.py` — spiral/dedup + cascade breaker + the ordered chain (TDD) | done | `arg_tokens` / `arg_similarity` / `SpiralDetector` / `CircuitBreaker` / `GuardChain`; `tests/test_guards.py` (19) |
+| 2 | `src/iris_ai/budget.py` — scoped counters split by kind, versioned policy (TDD) | done | `CounterKind`, `BudgetPolicy`, `Budget`; `tests/test_budget.py` (11) |
 | 3 | Wire the chain into `ChatGraph` pre-dispatch | done | `self.guards.before/record/after`, `reset_turn()`; `tests/test_guard_wiring.py` (6) |
-| 4 | `src/iris/approval.py` — digest binding, replay guard, terminal-state guard, fail-closed (TDD) | done | `effective_digest`, `Envelope`, `ReplayGuard`, `ApprovalGate.verify`; `tests/test_approval.py` (13) |
+| 4 | `src/iris_ai/approval.py` — digest binding, replay guard, terminal-state guard, fail-closed (TDD) | done | `effective_digest`, `Envelope`, `ReplayGuard`, `ApprovalGate.verify`; `tests/test_approval.py` (13) |
 | 5 | Wire digest + `call_id` into the interrupt payloads and `resume` | done | `forget` / `skill_run` / `computer` envelopes + `resume` refusal; `tests/test_approval_wiring.py` (5) |
-| 6 | `src/iris/eval/stats.py` — CI, noise floor, sample sizing, κ, decision rule (TDD) | done | `wilson_interval`, `bootstrap_mean_ci`, `paired_difference_ci`, `noise_floor`, `samples_needed`, `cohens_kappa`, `DecisionRule` / `decide`; `tests/test_eval_stats.py` (25) |
+| 6 | `src/iris_ai/eval/stats.py` — CI, noise floor, sample sizing, κ, decision rule (TDD) | done | `wilson_interval`, `bootstrap_mean_ci`, `paired_difference_ci`, `noise_floor`, `samples_needed`, `cohens_kappa`, `DecisionRule` / `decide`; `tests/test_eval_stats.py` (25) |
 | 7 | Wire statistics into `scripts/eval_lab.py` | done | `render_report(...)` is a pure function; the report carries intervals + the noise floor; `tests/test_eval_stats.py::test_the_report_carries_intervals_not_points` |
 | 8 | Ship polish — `uv build` in CI, console entry smoke, support matrix, sample config, version discipline | done | CI `package` job (`uv build` → install → `iris version` / `iris --help`), `docs/support.md`, `.env.example`, `tests/test_packaging.py` (6) |
 | 9 | Docs + this log + DoD | done | README / CHANGELOG / blueprint; this file |

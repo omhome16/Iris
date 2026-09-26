@@ -13,13 +13,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from fakes import skill_registry
-from iris.agent.chat import ChatGraph
-from iris.agent.compaction import messages_tokens, trim_messages
-from iris.agent.runtime import Runtime
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
-from iris.onboarding import OnboardingWizard
-from iris.sandbox import Sandbox
+from iris_ai.agent.chat import ChatGraph
+from iris_ai.agent.compaction import messages_tokens, trim_messages
+from iris_ai.agent.runtime import Runtime
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
+from iris_ai.onboarding import OnboardingWizard
+from iris_ai.sandbox import Sandbox
 
 # ── trim_messages: pair integrity ─────────────────────────────────────────
 
@@ -111,7 +111,7 @@ async def _onboard(files: WorkspaceFiles) -> None:
 
 
 async def test_compaction_triggers_and_flushes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "compaction_trigger_tokens", 10)
     monkeypatch.setattr(settings, "compaction_keep_tokens", 8)
@@ -130,7 +130,7 @@ async def test_compaction_triggers_and_flushes(tmp_path: Path, monkeypatch: pyte
 
 
 async def test_compaction_summary_injected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "compaction_trigger_tokens", 10)
     monkeypatch.setattr(settings, "compaction_keep_tokens", 8)
@@ -152,7 +152,7 @@ async def test_compaction_summary_injected(tmp_path: Path, monkeypatch: pytest.M
 async def test_compaction_survives_llm_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """If the flush call fails, the turn still completes and trims happen."""
 
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "compaction_trigger_tokens", 10)
     monkeypatch.setattr(settings, "compaction_keep_tokens", 8)

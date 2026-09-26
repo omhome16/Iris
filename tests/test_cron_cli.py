@@ -14,15 +14,15 @@ from zoneinfo import ZoneInfo
 
 from typer.testing import CliRunner
 
-from iris.cli.main import app
-from iris.tasks import CALENDAR, INTERVAL, TaskStore, next_run_at
+from iris_ai.cli.main import app
+from iris_ai.tasks import CALENDAR, INTERVAL, TaskStore, next_run_at
 
 runner = CliRunner()
 
 
 def _workspace(tmp_path: Path, monkeypatch) -> TaskStore:
     """Point the CLI at a throwaway workspace, like a fresh install."""
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     return TaskStore(tmp_path / "config" / "tasks.json")
@@ -203,7 +203,7 @@ async def test_a_live_engine_can_be_told_to_reload(tmp_path: Path, monkeypatch):
     engine needs a way to pick the change up without a restart."""
     from types import SimpleNamespace
 
-    from iris.api import app, cron_reload
+    from iris_ai.api import app, cron_reload
 
     class Live:
         def __init__(self) -> None:
@@ -225,7 +225,7 @@ async def test_a_live_engine_can_be_told_to_reload(tmp_path: Path, monkeypatch):
 async def test_reload_says_so_when_there_is_no_scheduler(monkeypatch):
     from types import SimpleNamespace
 
-    from iris.api import app, cron_reload
+    from iris_ai.api import app, cron_reload
 
     monkeypatch.setattr(app.state, "runtime", SimpleNamespace(tasks=None), raising=False)
     data = await cron_reload(_token=None)

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from iris.agent.chat import ApprovalRequired, ChatGraph
+from iris_ai.agent.chat import ApprovalRequired, ChatGraph
 from test_agent_graph import ForgetLLM, _forget_runtime
 
 

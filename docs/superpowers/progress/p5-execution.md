@@ -57,11 +57,11 @@ taxonomy for why fan-out needs a gate rather than a default.
 | Task | Description | Status | Evidence |
 |------|-------------|--------|----------|
 | 0 | Baseline | done | P4 exit state: ruff clean, 410 passed (DB suite excluded) |
-| 1 | Roles as declared data (TDD) | done | `src/iris/agents/roles.py`; `tests/test_agent_roles.py` (18) |
+| 1 | Roles as declared data (TDD) | done | `src/iris_ai/agents/roles.py`; `tests/test_agent_roles.py` (18) |
 | 2 | The handoff protocol (TDD) | done | `handoff.py`; `tests/test_handoffs.py` (15) |
 | 3 | The role runner (TDD) | done | `runner.py` generalizes `ResearchSubagent`, which survives as a thin adapter — `tests/test_subagents.py` passes **unchanged** |
 | 4 | Orchestrator policy (TDD) | done | `orchestrator.py`; `tests/test_orchestrator.py` (33) |
-| 5 | The two JEV judgments (TDD) | done | `src/iris/jev/agents.py`; `tests/test_jev_agents.py` (18) |
+| 5 | The two JEV judgments (TDD) | done | `src/iris_ai/jev/agents.py`; `tests/test_jev_agents.py` (18) |
 | 6 | Turn-scoped usage accumulator (TDD) | done | `turnlog.add_usage` ← `LLMClient._record`; `tests/test_turn_usage.py` (9) |
 | 7 | Observability + wiring (TDD) | done | `iris agents`, `GET /agents`, `verify_answer`, `deep_dive` through the orchestrator; `tests/test_agents_cli.py` (12) |
 | 8 | Docs, progress, DoD | done | README / CHANGELOG / blueprint / `docs/jev.md` (§3.4) updated; this log |
@@ -108,7 +108,7 @@ makes them safe to act on.
    free text is a fragile interface, and the project's rule is that the judgment
    layer supplies judgments. The critic's prose rides back as the report's claim
    for the lead and the trace; the *verdict* comes from `judge_sufficiency`.
-2. **`ResearchSubagent` was kept as a thin adapter** at `iris.agent.subagents`
+2. **`ResearchSubagent` was kept as a thin adapter** at `iris_ai.agent.subagents`
    rather than deleted. The generic `RoleRunner` is the single implementation; the
    class is a name for one configuration of it. Deleting it would have forced
    edits to `engine.py` and to a passing test file for no behavioural gain.

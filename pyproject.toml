@@ -1,6 +1,6 @@
 [project]
-name = "iris"
-# Single-sourced: the version lives in `src/iris/__init__.py` (what `iris version`
+name = "iris-personal-ai"
+# Single-sourced: the version lives in `src/iris_ai/__init__.py` (what `iris version`
 # prints) and hatch reads it from there, so the two cannot drift. See
 # docs/support.md for the release discipline.
 dynamic = ["version"]
@@ -21,7 +21,7 @@ dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
     "python-dotenv>=1.0",
-    # Read directly by iris.skills.manifest for SKILL.md frontmatter. It was
+    # Read directly by iris_ai.skills.manifest for SKILL.md frontmatter. It was
     # already in the lock as a transitive dependency of litellm; iris now uses
     # it, so it is declared rather than relied on by accident.
     "pyyaml>=6.0",
@@ -33,17 +33,17 @@ dependencies = [
 ]
 
 [project.scripts]
-iris = "iris.cli.main:app"
+iris = "iris_ai.cli.main:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "src/iris/__init__.py"
+path = "src/iris_ai/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/iris"]
+packages = ["src/iris_ai"]
 
 [tool.uv]
 package = true

@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 
 from fakes import skill_registry
-from iris.agent.runtime import Runtime
-from iris.config import settings
-from iris.memory.files import WorkspaceFiles
-from iris.memory.forgetting import RotEntry
-from iris.memory.llm import LLMClient
-from iris.sandbox import Sandbox
-from iris.scheduler import (
+from iris_ai.agent.runtime import Runtime
+from iris_ai.config import settings
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.forgetting import RotEntry
+from iris_ai.memory.llm import LLMClient
+from iris_ai.sandbox import Sandbox
+from iris_ai.scheduler import (
     _morning_brief,
     build_scheduler,
     format_morning_brief,

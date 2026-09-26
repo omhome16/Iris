@@ -38,12 +38,12 @@ test asserts no CLI literal can regress it.
   engine running (the route adds live circuit state). A limit nobody can read is a
   limit nobody can trust.
 - **The start screen.** `iris` with no arguments draws a generated iris-at-dawn
-  mark (`src/iris/cli/art.py`) instead of dropping straight into help. It is
+  mark (`src/iris_ai/cli/art.py`) instead of dropping straight into help. It is
   computed from a polar pattern rather than pasted, so it fits the terminal, is
   symmetric by construction, and is tested by property instead of a golden file —
   and it never draws into a pipe, under `NO_COLOR`, or with `IRIS_NO_BANNER=1`.
   `iris chat` gets the same mark (skippable with `--no-banner`).
-- **JEV now decides the reflection pass** (`src/iris/memory/reflection.py`). The
+- **JEV now decides the reflection pass** (`src/iris_ai/memory/reflection.py`). The
   hallucination triage was the last LLM-driven *decision* on the turn path: one
   cheap-tier completion per retrieval-backed turn, whose output was an opaque
   list. It is now one batched request that returns a **support probability per
@@ -78,7 +78,7 @@ also gone stale; the list is now complete.)
   after the P4 manifest refactor.
 - **`Grants.revoke`** — unused, and unused code in a security boundary is a
   liability rather than an API.
-- **Three copies of the auth header.** `iris.security` now owns
+- **Three copies of the auth header.** `iris_ai.security` now owns
   `bearer()`/`auth_headers(token=None)`; `HttpBrainClient` and the Telegram bridge
   call it instead of rebuilding the string. The dead copy declared the header and
   documented clients that had stopped using it.
@@ -105,7 +105,7 @@ log: [`progress/p8-execution.md`](docs/superpowers/progress/p8-execution.md).
 
 ### Added
 
-- **`src/iris/guards.py` — a pre-tool guard chain that runs *before* dispatch.**
+- **`src/iris_ai/guards.py` — a pre-tool guard chain that runs *before* dispatch.**
   Fixed order: `budget → circuit → spiral/dedup → context → record`. Each guard
   can only ever **refuse**; none can re-open what another closed. Every verdict is
   deterministic and model-free — no JEV call, no LLM call, no network — because a
@@ -123,21 +123,21 @@ log: [`progress/p8-execution.md`](docs/superpowers/progress/p8-execution.md).
   that failed once and then worked is not punished for a flake. The circuit fires
   **before** the spiral guard, so a retry storm is attributed to the tool that is
   failing rather than counted as repetition.
-- **`src/iris/budget.py` — scoped ceilings with counters split by kind (audit
+- **`src/iris_ai/budget.py` — scoped ceilings with counters split by kind (audit
   G3).** Input / output / cached / embedding / tool-schema tokens are counted
   separately, because they fail differently; a per-turn ceiling joins the existing
   per-turn work and a **per-day** ceiling survives a new turn *and a restart*
   (`config/budget.json`). `0` means no ceiling everywhere. The policy carries a
   version, recorded with the numbers it produced, so a measurement can name its
   policy instead of "the budget".
-- **`src/iris/approval.py` — approval integrity (audit G4).** The interrupt
+- **`src/iris_ai/approval.py` — approval integrity (audit G4).** The interrupt
   envelope now carries the **effective digest of the arguments after edits**, so
   an edited resume cannot pass as the original; one `tool_call_id` grants **once
   per thread**; resuming a thread with nothing waiting is refused; and a
   side-effecting action whose envelope carries no digest **fails closed** whether
   the owner said yes or no. The graph wiring stays thin enough to review, because
   the invariants are unit-testable without a graph.
-- **`src/iris/eval/` — eval gates with statistics (audit G6).** Wilson intervals
+- **`src/iris_ai/eval/` — eval gates with statistics (audit G6).** Wilson intervals
   for rates, a seeded bootstrap for means, a **paired** interval for "candidate vs
   baseline", a measured noise floor, `samples_needed(Δ, σ)` that *derives* the
   ~63-samples-per-arm figure for Δ=0.02 at σ=0.04, Cohen's κ for judge–human
@@ -205,7 +205,7 @@ log: [`progress/p7-execution.md`](docs/superpowers/progress/p7-execution.md).
 
 ### Added
 
-- **`src/iris/toolpolicy.py` — tools declare a class, and the class derives
+- **`src/iris_ai/toolpolicy.py` — tools declare a class, and the class derives
   policy.** Every tool declares one of `read` / `filesystem` / `memory_write` /
   `network` / `credentialed` / `delivery` / `control`; the class yields a default
   (`allow` / `ask` / `deny`). Resolution is **most-specific-wins** (per-tool →
@@ -221,7 +221,7 @@ log: [`progress/p7-execution.md`](docs/superpowers/progress/p7-execution.md).
   **presentation, not permission** — a deferred tool is still callable, core
   tools are never hidden at any budget, and a connected channel's own tools are
   promoted past the budget.
-- **`src/iris/computer/` — a screen action, fenced.** A closed vocabulary
+- **`src/iris_ai/computer/` — a screen action, fenced.** A closed vocabulary
   (`screenshot` / `navigate` / `click` / `type`), a provider protocol with a
   `NullProvider` default and a lazily-imported `PlaywrightProvider`, a permission
   model (suffix-matched host/title allowlists on label boundaries,
@@ -268,7 +268,7 @@ log: [`progress/p6-execution.md`](docs/superpowers/progress/p6-execution.md).
 
 ### Added
 
-- **Two new job kinds** (`src/iris/tasks.py`) — `every <interval>` (anchored to
+- **Two new job kinds** (`src/iris_ai/tasks.py`) — `every <interval>` (anchored to
   the last run) and calendar recurrence (`daily at 09:00`, `mon,wed,fri at
   18:30`, in your timezone), beside the existing `once`. Recurrence is parsed by
   the same grammar the agent's `schedule_task` tool already used, so there is one
@@ -280,16 +280,16 @@ log: [`progress/p6-execution.md`](docs/superpowers/progress/p6-execution.md).
   job that keeps failing disables itself past a threshold instead of retrying
   forever. Every job now carries `runs`, `misses`, `failures`, `last_outcome`,
   `last_run` and `last_error`.
-- **`iris cron list | add | rm`** (`src/iris/cli/cron.py`, `iris cron`) — `list`
+- **`iris cron list | add | rm`** (`src/iris_ai/cli/cron.py`, `iris cron`) — `list`
   is read-only, needs no engine and no broker, and prints schedule, next run,
   outcome counters and last result. `add` writes the same store the agent writes
   (so there is no second configuration surface) and `--at` / `--every` / `--once`
   force an explicit form; `rm` takes a prefix and **refuses an ambiguous one**
   rather than guessing.
-- **`POST /cron/reload`** (`src/iris/api.py`) — lets a live engine pick up CLI
+- **`POST /cron/reload`** (`src/iris_ai/api.py`) — lets a live engine pick up CLI
   changes without a restart. The CLI tells you when this is needed instead of
   implying the job is already live.
-- **`src/iris/redact.py`** — pattern-based redaction for bearer tokens, `key=value`
+- **`src/iris_ai/redact.py`** — pattern-based redaction for bearer tokens, `key=value`
   credentials, provider key shapes and URL userinfo. It is the backstop, not the
   whole policy, and its docstring says so rather than overselling completeness.
 - **Trace content policy** (`IRIS_TRACE_CONTENT`) — `metadata` (default),
@@ -307,7 +307,7 @@ log: [`progress/p6-execution.md`](docs/superpowers/progress/p6-execution.md).
 - **A stale one-off task vanished silently.** `register_all()` dropped past tasks
   with only a log line, so "why didn't my reminder fire?" had no answer. It is now
   counted and its outcome recorded.
-- **Nothing in `src/` redacted anything**: `grep -riE "redact|scrub" src/iris`
+- **Nothing in `src/` redacted anything**: `grep -riE "redact|scrub" src/iris_ai`
   returned zero hits before this phase.
 
 ### Tests
@@ -330,30 +330,30 @@ always ends up holding the pen.
 
 ### Added
 
-- **Roles as declared data** (`src/iris/agents/roles.py`) — a frozen `Role` with
+- **Roles as declared data** (`src/iris_ai/agents/roles.py`) — a frozen `Role` with
   `tier`, `search_lane`, `tools`, `max_tool_rounds` and `max_output_chars`. The
   researcher is cheap-tier and read-only on the escalation lane; the critic is
   the *opposite* tier on the default lane. A role's allowlist **intersects** with
   what the session grants (`narrow`), an undeclared tool name is a startup error,
   and no role may call `deep_dive` — a subagent that can spawn subagents is a
   recursion with no bottom.
-- **The handoff protocol** (`src/iris/agents/handoff.py`) — `Claim` + `Source` +
+- **The handoff protocol** (`src/iris_ai/agents/handoff.py`) — `Claim` + `Source` +
   `Spend` + `Handoff`. `unsourced` is *derived* from the sources, so it cannot
   disagree with them, and `render_findings` flattens a finding onto one line so a
   retrieved page cannot forge a header or open a code fence while impersonating
   the prompt.
-- **`RoleRunner`** (`src/iris/agents/runner.py`) — the shipped research subgraph,
+- **`RoleRunner`** (`src/iris_ai/agents/runner.py`) — the shipped research subgraph,
   generalized over a role. A run records every source it consulted, so **a report
   produced without consulting anything is marked unsourced** — the
   anti-fabrication rule made mechanical rather than aspirational.
-- **`Orchestrator`** (`src/iris/agents/orchestrator.py`) — code-owned policy:
+- **`Orchestrator`** (`src/iris_ai/agents/orchestrator.py`) — code-owned policy:
   2 calls per turn, a 20 s deadline, fan-out capped at 3 and gated by the effort
   judgment, one revision gated by the sufficiency judgment, and refusals that
   carry a stable reason (`budget_exhausted`, `deadline_exceeded`, …).
   Deterministic merge: refusals are dropped (a refusal is not a finding),
   unsourced claims keep their marker, and the cap is derived from the per-role
   cap times the call cap so the two cannot disagree.
-- **Two JEV judgments** (`src/iris/jev/agents.py`) — *effort* (fan out?) and
+- **Two JEV judgments** (`src/iris_ai/jev/agents.py`) — *effort* (fan out?) and
   *sufficiency* (is this draft grounded?). Both fail open; code keeps every
   threshold. The sufficiency judgment runs first and alone, so a draft it is
   confident about costs one request instead of a whole critic invocation.
@@ -409,7 +409,7 @@ Owner-selected cleanup while Docker was unavailable, not a phase deliverable.
 ### Removed
 
 - **`hybrid_top_k` and `mrr_top_k`** from the "Recall scoring" block in
-  `src/iris/config.py` (now `recency_half_life_days` alone, renamed "Recall
+  `src/iris_ai/config.py` (now `recency_half_life_days` alone, renamed "Recall
   decay"). Neither was read by any code path: shortlist size and MMR diversity
   are explicit per-call arguments (`MemoryIndex.search` / `escalate`), and every
   caller passes its own (`agent/tools.py:93,95,464`, `api.py:488`). A single
@@ -440,25 +440,25 @@ untouched, and pre-P4 skills load unchanged.
   `references`, `metadata`. Every field is defaulted, so the sidecars already on
   disk (`svg-pro`, `create_svg_art`) still load; only the *name* convention
   produces a warning, because the agent invents prose names mid-conversation.
-- **The open Agent Skills encoding** (`src/iris/skills/manifest.py`) — a
+- **The open Agent Skills encoding** (`src/iris_ai/skills/manifest.py`) — a
   directory with `SKILL.md` (YAML frontmatter: `name`, `description`, `license`,
   `compatibility`, `metadata`, `allowed-tools`) plus optional `scripts/`,
   `references/` and `assets/`, per <https://agentskills.io/specification>. Iris
   keeps `triggers`/`success_score` and carries them in `metadata.iris-triggers`,
   so JEV selection and the trigger matcher work for both encodings.
-- **`SkillRegistry`** (`src/iris/skills/registry.py`) — four sources in
+- **`SkillRegistry`** (`src/iris_ai/skills/registry.py`) — four sources in
   precedence order (workspace learned → workspace directories → `SKILLS_EXTRA_DIRS`
   → entry-point packages → repo builtins). A name clash is a `RegistryConflict`
   naming winner, loser and path; malformed skills are excluded **and reported**;
   ordering is deterministic; nothing is cached (dreaming rewrites skills while
   the process runs). Reads are registry-wide, writes stay in `SkillLibrary` and
   refuse shipped/hand-authored skills rather than creating shadow copies.
-- **Skill policy** (`src/iris/skills/policy.py`) — an active skill's
+- **Skill policy** (`src/iris_ai/skills/policy.py`) — an active skill's
   `allowed-tools` narrows the turn at the single choke point (`dispatch`, plus
   the schemas offered to the model). Empty means unrestricted; an unknown tool
   name is a validation error; the policy intersects with the session rules and
   can never widen them. Refusals are recorded in the turn trace.
-- **The script boundary** (`src/iris/skills/runner.py`, `guard.py`) and the
+- **The script boundary** (`src/iris_ai/skills/runner.py`, `guard.py`) and the
   `skill_run` tool — resolve inside the skill's own `scripts/`, a deterministic
   AST pre-screen (code, not prose), a **binding** JEV judgment gate, owner
   approval carrying the findings and arguments, then a subprocess with a
@@ -487,7 +487,7 @@ untouched, and pre-P4 skills load unchanged.
 
 - **A skill script now runs in the API process.** Found by the full suite: the
   first implementation used `asyncio.create_subprocess_exec`, which is
-  unimplemented on the Windows Selector loop that `iris.api` selects for psycopg.
+  unimplemented on the Windows Selector loop that `iris_ai.api` selects for psycopg.
   Execution goes through a worker thread around `subprocess.run` instead, and a
   test pins it.
 - **The pre-screen no longer reads prose as evidence.** The first version scanned
@@ -519,14 +519,14 @@ from the bug fix below.
 
 ### Added
 
-- **`iris.channels.brain`** — the one definition of the brain-client contract:
+- **`iris_ai.channels.brain`** — the one definition of the brain-client contract:
   `BrainClient` (protocol), `HttpBrainClient`, `BrainEvent` and
   `parse_sse_line()`. The CLI and the bridge now share it, so a change to the
   HTTP/SSE shape is a one-file change instead of two. It imports nothing heavy:
   `tests/test_brain_client_imports.py` runs it in a subprocess and asserts
-  `langgraph`, `asyncpg`, `iris.agent` and `iris.memory` stay out of
+  `langgraph`, `asyncpg`, `iris_ai.agent` and `iris_ai.memory` stay out of
   `sys.modules` — that is what keeps the bridge image small.
-- **`iris.channels.updates`** — `normalize_update()` (text / command / photo /
+- **`iris_ai.channels.updates`** — `normalize_update()` (text / command / photo /
   voice / other, plus `edited_message`, returning `None` only for updates with
   nothing to answer) and `UpdateLedger`, a bounded JSON ledger persisted beside
   `owner.json` (atomic `os.replace`, tolerant of a missing or corrupt file).
@@ -584,8 +584,8 @@ bridge were **not** changed.
 
 ### Added
 
-- **`iris.harness()` / `iris.Harness`** — the public turn API, re-exported
-  lazily by `iris/__init__.py` so `import iris` stays cheap: `respond()`,
+- **`iris_ai.harness()` / `iris.Harness`** — the public turn API, re-exported
+  lazily by `iris/__init__.py` so `import iris_ai` stays cheap: `respond()`,
   `resume()`, `stream()` plus the wired engine (`files`, `index`, `runtime`,
   `graph`, `jev`). The HTTP API, the CLI and (P3) the bridge now share this one
   hot path.
@@ -611,20 +611,20 @@ bridge were **not** changed.
 ### Changed
 
 - **`api.py`'s lifespan is now a client** — it opens
-  `iris.harness(postgres="require")` and hands the routes
+  `iris_ai.harness(postgres="require")` and hands the routes
   `app.state.runtime` / `app.state.graph`. The previous wiring (ledger → LLM →
   JEV → index → reindex → checkpointer → Runtime → graph → scheduler → tasks →
-  Telegram) moved verbatim into `src/iris/engine.py`; shutdown ordering
+  Telegram) moved verbatim into `src/iris_ai/engine.py`; shutdown ordering
   (cancel retry, `background.drain()`, scheduler, telegram, index, JEV) moved
   into `Harness.aclose()`. **No route behavior changed** — the full suite,
   including the API-auth introspection tests, passes unmodified.
 - **`_sync_owner_chat_id`** moved from `api.py` to `iris/engine.py` (it is boot
   logic, not HTTP).
-- **Why the module is `iris.engine`, not `iris.harness`:** a submodule and a
-  package attribute cannot share a name — importing `iris.harness` would set the
+- **Why the module is `iris_ai.engine`, not `iris_ai.harness`:** a submodule and a
+  package attribute cannot share a name — importing `iris_ai.harness` would set the
   attribute to the *module* and silently clobber the `harness()` callable the
-  public API promises. The implementation lives in `iris.engine`; the public
-  name is `iris.harness()`.
+  public API promises. The implementation lives in `iris_ai.engine`; the public
+  name is `iris_ai.harness()`.
 - **`tests/test_cli.py`** — `test_help_lists_only_real_commands` no longer
   forbids `chat` (it is real now) and asserts the registry is exact instead.
 - **`iris/__init__.py`** freezes exactly `__version__`, `harness`, `Harness` as
@@ -650,9 +650,9 @@ JEV integrations, HTTP API and Telegram bridge were **not** changed.
 
 ### Added
 
-- **The CLI** (`src/iris/cli/`) — `iris --help` / `-h`, `iris version` /
+- **The CLI** (`src/iris_ai/cli/`) — `iris --help` / `-h`, `iris version` /
   `--version` / `-V`, `iris doctor`, and a global `--debug`. Entry point
-  `[project.scripts] iris = "iris.cli.main:app"`; new deps `typer>=0.12`,
+  `[project.scripts] iris = "iris_ai.cli.main:app"`; new deps `typer>=0.12`,
   `rich>=13`. Help lists only commands that exist — there is deliberately **no**
   `chat` stub.
 - **`iris doctor`** — offline checks for `.env` presence (file merged under the
@@ -677,7 +677,7 @@ JEV integrations, HTTP API and Telegram bridge were **not** changed.
   `.env.example` and CI. There is no longer a web surface to log into.
 - **`tests/test_console_fixes.py`** — three of its tests pinned deleted
   dashboard HTML/JS/proxy routes. The two tests that covered the *library*
-  helper `iris.api._staged_preview` were relocated to
+  helper `iris_ai.api._staged_preview` were relocated to
   `tests/test_staged_preview.py` first, so no library coverage was lost.
 
 ### Changed
@@ -715,15 +715,15 @@ dashboard they described. What survives is the library-side work.*
 
 ### Added
 
-- **A judgment log, and the data behind it.** `src/iris/turnlog.py` records
+- **A judgment log, and the data behind it.** `src/iris_ai/turnlog.py` records
   per-turn what the judgment layer decided and how long each stage took;
-  `src/iris/agent/chat.py` writes both into `config/traces.jsonl` (`events`,
+  `src/iris_ai/agent/chat.py` writes both into `config/traces.jsonl` (`events`,
   `counts`, `stages_ms`). "Not checked" is recorded as explicitly as "checked
   and clean".
 - **`GET /jev`** (authenticated) — judgment-layer health: enabled or not, why
   not, request/failure counters, last latency and last error. `/health` exposes
   the same block as `judgment`, alongside `background.pending`.
-- **`src/iris/background.py`** — tracked fire-and-forget tasks with `drain()`,
+- **`src/iris_ai/background.py`** — tracked fire-and-forget tasks with `drain()`,
   because a bare `asyncio.create_task` can be garbage-collected mid-flight.
 - **`/mind` returns `agents` (AGENTS.md), `daily` and `today`** — the persona
   file and the episodic tier were missing from the snapshot, so the API could
@@ -747,7 +747,7 @@ dashboard they described. What survives is the library-side work.*
 
 ### Added
 
-- **JEV (TypeSafe System One) as a typed-judgment layer** — `src/iris/jev/`,
+- **JEV (TypeSafe System One) as a typed-judgment layer** — `src/iris_ai/jev/`,
   three integrations, each behind an adapter with a deterministic fallback:
   recall reranking (`recall.py`, composed as `relevance × decay × importance`,
   never overriding the forgetting policy), skill selection (`skills.py`), and
@@ -757,7 +757,7 @@ dashboard they described. What survives is the library-side work.*
 - **Capture shows up in the turn trace** — `config/traces.jsonl` records what
   the capture node wrote (`capture`, empty when the prefilter or the judgment
   declined), returned by `GET /traces` as `💭 [importance] fact`.
-- **Capture node** (`src/iris/memory/capture.py`) — the write-path safety net.
+- **Capture node** (`src/iris_ai/memory/capture.py`) — the write-path safety net.
   A deterministic prefilter keeps trivial turns free; one judgment (JEV, else
   the cheap tier) decides whether a turn holds a durable fact; the result is an
   ADD-only `(note)` line that still has to pass dreaming's Light-phase gate.

@@ -12,8 +12,8 @@ import re
 import tomllib
 from pathlib import Path
 
-import iris
-from iris.config import Settings
+import iris_ai
+from iris_ai.config import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = ROOT / "pyproject.toml"
@@ -43,15 +43,15 @@ def test_there_is_exactly_one_version_and_hatch_reads_that_one():
     project = _pyproject()["project"]
     assert "version" not in project  # no second copy to drift
     assert project["dynamic"] == ["version"]
-    assert _pyproject()["tool"]["hatch"]["version"]["path"] == "src/iris/__init__.py"
+    assert _pyproject()["tool"]["hatch"]["version"]["path"] == "src/iris_ai/__init__.py"
 
-    source = (ROOT / "src" / "iris" / "__init__.py").read_text(encoding="utf-8")
+    source = (ROOT / "src" / "iris_ai" / "__init__.py").read_text(encoding="utf-8")
     declared = re.search(r'__version__\s*=\s*"([^"]+)"', source).group(1)
-    assert declared == iris.__version__
+    assert declared == iris_ai.__version__
 
 
 def test_the_console_entry_point_is_declared():
-    assert _pyproject()["project"]["scripts"]["iris"] == "iris.cli.main:app"
+    assert _pyproject()["project"]["scripts"]["iris"] == "iris_ai.cli.main:app"
 
 
 def test_the_support_doc_exists_and_names_the_python_floor():

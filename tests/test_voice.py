@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from iris.config import settings
-from iris.voice import transcribe
+from iris_ai.config import settings
+from iris_ai.voice import transcribe
 
 
 async def test_transcribe_without_groq_key_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -42,7 +42,7 @@ async def test_transcribe_passes_through_model_text(tmp_path: Path, monkeypatch:
         assert kwargs["api_key"] == "sk-test"
         return FakeResp()
 
-    monkeypatch.setattr("iris.voice.litellm.atranscription", fake_transcription)
+    monkeypatch.setattr("iris_ai.voice.litellm.atranscription", fake_transcription)
     audio = tmp_path / "voice.ogg"
     audio.write_bytes(b"fake audio bytes")
 
@@ -58,7 +58,7 @@ async def test_transcribe_empty_transcript_raises(tmp_path: Path, monkeypatch: p
     async def fake_transcription(**kwargs):
         return FakeResp()
 
-    monkeypatch.setattr("iris.voice.litellm.atranscription", fake_transcription)
+    monkeypatch.setattr("iris_ai.voice.litellm.atranscription", fake_transcription)
     audio = tmp_path / "voice.ogg"
     audio.write_bytes(b"fake audio bytes")
     with pytest.raises(RuntimeError, match="empty"):

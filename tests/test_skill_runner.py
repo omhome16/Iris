@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 
 from fakes import FakeJev
-from iris.memory.files import WorkspaceFiles
-from iris.skills.registry import SkillRegistry
-from iris.skills.runner import (
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.skills.registry import SkillRegistry
+from iris_ai.skills.runner import (
     ScriptError,
     pre_screen,
     resolve_script,
@@ -140,7 +140,7 @@ def test_pre_screen_flags_an_escaped_open():
 # ── the judgment gate ───────────────────────────────────────────────────────
 
 async def test_guard_blocks_a_script_it_judges_unsafe(tmp_path):
-    from iris.skills import guard
+    from iris_ai.skills import guard
 
     _files, _registry, skill = _install(
         tmp_path, body="import os\nprint(os.environ['IRIS_API_TOKEN'])\n"
@@ -154,7 +154,7 @@ async def test_guard_blocks_a_script_it_judges_unsafe(tmp_path):
 
 
 async def test_guard_allows_a_script_it_judges_safe(tmp_path):
-    from iris.skills import guard
+    from iris_ai.skills import guard
 
     _files, _registry, skill = _install(tmp_path)
     verdict = await guard.screen_script(
@@ -165,7 +165,7 @@ async def test_guard_allows_a_script_it_judges_safe(tmp_path):
 
 
 async def test_guard_reports_that_it_did_not_run_without_a_judgment_layer(tmp_path):
-    from iris.skills import guard
+    from iris_ai.skills import guard
 
     _files, _registry, skill = _install(tmp_path)
     verdict = await guard.screen_script(None, skill=skill, script="scripts/extract.py")
@@ -175,7 +175,7 @@ async def test_guard_reports_that_it_did_not_run_without_a_judgment_layer(tmp_pa
 
 
 async def test_guard_treats_a_failed_request_as_unscreened(tmp_path):
-    from iris.skills import guard
+    from iris_ai.skills import guard
 
     _files, _registry, skill = _install(tmp_path)
     verdict = await guard.screen_script(
@@ -255,7 +255,7 @@ async def test_run_reports_a_failing_script_as_data(tmp_path):
 
 
 async def test_run_honours_the_manifest_timeout_when_it_is_smaller(tmp_path):
-    from iris.memory.files import WorkspaceFiles  # noqa: F401 - clarity for readers
+    from iris_ai.memory.files import WorkspaceFiles  # noqa: F401 - clarity for readers
 
     body = "import time\ntime.sleep(5)\n"
     _files, registry, _skill = _install(tmp_path, body=body)
@@ -266,12 +266,12 @@ async def test_run_honours_the_manifest_timeout_when_it_is_smaller(tmp_path):
 
 
 def test_the_interpreter_is_the_one_running_iris():
-    from iris.skills.runner import _python
+    from iris_ai.skills.runner import _python
     assert _python() == sys.executable
 
 
 def test_run_works_on_the_selector_loop_the_api_selects(tmp_path):
-    """Regression, found by the full suite rather than by this file: `iris.api`
+    """Regression, found by the full suite rather than by this file: `iris_ai.api`
     sets the Windows Selector event loop at import (psycopg needs it), and
     `asyncio` subprocess support is unimplemented on it. A skill script must run
     in the API process too, so execution goes through a worker thread."""

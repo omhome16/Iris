@@ -41,11 +41,11 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from iris.config import settings
-from iris.eval.stats import DecisionRule, decide, samples_needed, wilson_interval
-from iris.memory.index import ChunkRecord, MemoryIndex
-from iris.memory.llm import LLMClient
-from iris.memory.provenance import Origin, Provenance
+from iris_ai.config import settings
+from iris_ai.eval.stats import DecisionRule, decide, samples_needed, wilson_interval
+from iris_ai.memory.index import ChunkRecord, MemoryIndex
+from iris_ai.memory.llm import LLMClient
+from iris_ai.memory.provenance import Origin, Provenance
 
 DSN = os.getenv(
     "IRIS_EVAL_POSTGRES_DSN",

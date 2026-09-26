@@ -12,9 +12,9 @@ The bridge learns the owner's chat id from the first /start and persists
 it to data/owner.json so Iris can message the owner proactively later.
 
 **This is a client of the library, not a second brain.** Turn streaming and
-command calls go through `iris.channels.brain.HttpBrainClient` — the one
+command calls go through `iris_ai.channels.brain.HttpBrainClient` — the one
 definition of the brain-client contract — and update handling uses
-`iris.channels.updates` (normalization + an idempotency ledger on disk, so a
+`iris_ai.channels.updates` (normalization + an idempotency ledger on disk, so a
 restart cannot replay updates into fresh turns). What stays here is transport:
 polling, sending, progressive edits, typing, file downloads, the owner gate.
 
@@ -36,9 +36,9 @@ from pathlib import Path
 import httpx
 from mcp.server.mcpserver.server import MCPServer
 
-from iris.channels.brain import HttpBrainClient
-from iris.channels.updates import InboundUpdate, UpdateLedger, normalize_update
-from iris.security import auth_headers
+from iris_ai.channels.brain import HttpBrainClient
+from iris_ai.channels.updates import InboundUpdate, UpdateLedger, normalize_update
+from iris_ai.security import auth_headers
 
 log = logging.getLogger("telegram-mcp")
 
@@ -73,7 +73,7 @@ ENV_OWNER_IDS = _parse_chat_ids(os.environ.get("OWNER_CHAT_ID", ""))
 
 def _core_headers() -> dict[str, str]:
     # The bridge resolves its own token (it runs as a separate process) but the
-    # *shape* of the header comes from iris.security, so it cannot drift from the
+    # *shape* of the header comes from iris_ai.security, so it cannot drift from the
     # check iris-core applies.
     return auth_headers(IRIS_API_TOKEN)
 

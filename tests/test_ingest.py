@@ -12,10 +12,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from iris.ingest import SSRFError, fetch_text, html_to_text, import_path, ingest_url, validate_url
-from iris.memory.files import WorkspaceFiles
-from iris.memory.indexer import Reindexer
-from iris.memory.provenance import Origin
+from iris_ai.ingest import SSRFError, fetch_text, html_to_text, import_path, ingest_url, validate_url
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.indexer import Reindexer
+from iris_ai.memory.provenance import Origin
 
 
 def test_html_to_text_strips_markup_and_keeps_content():
@@ -48,7 +48,7 @@ async def test_ingest_url_writes_untrusted_note(tmp_path: Path, monkeypatch: pyt
         assert url == "https://example.com/notes"
         return "The moon is made of green cheese. (A test fact.)"
 
-    monkeypatch.setattr("iris.ingest.fetch_text", fake_fetch)
+    monkeypatch.setattr("iris_ai.ingest.fetch_text", fake_fetch)
     files = WorkspaceFiles(tmp_path)
 
     result = await ingest_url(files.root, "https://example.com/notes")
@@ -69,7 +69,7 @@ async def test_ingest_url_rejects_empty_pages(tmp_path: Path, monkeypatch: pytes
     async def fake_fetch(url: str) -> str:
         return "   \n  "
 
-    monkeypatch.setattr("iris.ingest.fetch_text", fake_fetch)
+    monkeypatch.setattr("iris_ai.ingest.fetch_text", fake_fetch)
     files = WorkspaceFiles(tmp_path)
     with pytest.raises(RuntimeError, match="no readable text"):
         await ingest_url(files.root, "https://example.com/empty")
@@ -145,7 +145,7 @@ async def test_fetch_text_regates_redirect_hops(monkeypatch: pytest.MonkeyPatch)
 
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
-        "iris.ingest.httpx.AsyncClient",
+        "iris_ai.ingest.httpx.AsyncClient",
         lambda *a, **k: real_client(transport=httpx.MockTransport(handler), **k),
     )
     with pytest.raises(SSRFError, match="not reachable"):
@@ -162,7 +162,7 @@ async def test_fetch_text_returns_public_page(monkeypatch: pytest.MonkeyPatch):
 
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
-        "iris.ingest.httpx.AsyncClient",
+        "iris_ai.ingest.httpx.AsyncClient",
         lambda *a, **k: real_client(transport=httpx.MockTransport(handler), **k),
     )
     assert "Hello world" in await fetch_text("https://example.com/start")

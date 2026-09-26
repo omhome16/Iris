@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from iris.jev.agents import judge_effort, judge_sufficiency
-from iris.jev.client import JevAnswers
+from iris_ai.jev.agents import judge_effort, judge_sufficiency
+from iris_ai.jev.client import JevAnswers
 
 
 class FakeJev:
@@ -60,7 +60,7 @@ async def test_effort_below_the_gate_blocks_fan_out():
 
 async def test_effort_is_calibrated_by_config(monkeypatch):
     """The gate is code, not the model: the same score flips on the threshold."""
-    from iris.config import settings
+    from iris_ai.config import settings
 
     jev = FakeJev(_answers(nouls={"multi_part": 0.62}))
     assert (await judge_effort(jev, question="q")).fan_out  # default gate 0.60
@@ -91,7 +91,7 @@ async def test_effort_survives_a_failed_request():
 
 
 async def test_effort_is_recorded_in_the_trace():
-    from iris import turnlog
+    from iris_ai import turnlog
 
     jev = FakeJev(_answers(nouls={"multi_part": 0.88}))
     with turnlog.collect() as log:
@@ -170,7 +170,7 @@ async def test_sufficiency_survives_a_failed_request():
 
 
 async def test_sufficiency_is_recorded_in_the_trace():
-    from iris import turnlog
+    from iris_ai import turnlog
 
     jev = FakeJev(_answers(nouls={"grounded": 0.22}, choices={"verdict": "partial"}))
     with turnlog.collect() as log:

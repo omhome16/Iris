@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from iris.agent.runtime import Runtime
-from iris.agent.tools import dispatch, tool_schemas
-from iris.memory.files import WorkspaceFiles
-from iris.memory.skills import Skill
-from iris.sandbox import Sandbox
-from iris.skills.policy import SkillPolicy
-from iris.skills.registry import SkillRegistry
+from iris_ai.agent.runtime import Runtime
+from iris_ai.agent.tools import dispatch, tool_schemas
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.skills import Skill
+from iris_ai.sandbox import Sandbox
+from iris_ai.skills.policy import SkillPolicy
+from iris_ai.skills.registry import SkillRegistry
 
 
 def _skill(name: str, allowed: list[str] | None = None) -> Skill:
@@ -154,7 +154,7 @@ async def test_a_skill_cannot_grant_a_non_owner_blocked_tool(tmp_path):
 
 async def test_a_denial_is_recorded_in_the_turn_trace(tmp_path):
     """A refusal nobody can see is indistinguishable from a tool that failed."""
-    from iris import turnlog
+    from iris_ai import turnlog
 
     runtime = _runtime_with(tmp_path, _skill("reader", ["inspect_mind"]))
     with turnlog.collect() as log:

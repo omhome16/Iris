@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from iris import __version__
-from iris.cli.main import app
+from iris_ai import __version__
+from iris_ai.cli.main import app
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -96,7 +96,7 @@ def test_cli_text_avoids_characters_a_windows_console_cannot_encode():
     """
     offenders: list[str] = []
     seen = 0
-    for path in sorted((ROOT / "src" / "iris" / "cli").glob("*.py")):
+    for path in sorted((ROOT / "src" / "iris_ai" / "cli").glob("*.py")):
         for lineno, value in _runtime_strings(path):
             seen += 1
             for char in value:
@@ -146,7 +146,7 @@ def test_doctor_sees_keys_only_in_dotenv(tmp_path: Path, monkeypatch: pytest.Mon
 
 def test_doctor_crash_without_debug_prints_hint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Default mode: friendly error + hint, exit 1, no traceback."""
-    import iris.cli.doctor as doctor_mod
+    import iris_ai.cli.doctor as doctor_mod
 
     def _boom():
         raise RuntimeError("simulated crash")
@@ -163,7 +163,7 @@ def test_doctor_crash_without_debug_prints_hint(tmp_path: Path, monkeypatch: pyt
 
 def test_doctor_crash_with_debug_flag_reraises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """--debug must re-raise the original exception so typer prints a traceback."""
-    import iris.cli.doctor as doctor_mod
+    import iris_ai.cli.doctor as doctor_mod
 
     def _boom():
         raise RuntimeError("simulated crash")
@@ -178,7 +178,7 @@ def test_doctor_crash_with_debug_flag_reraises(tmp_path: Path, monkeypatch: pyte
 
 
 def test_doctor_crash_with_iris_debug_env_reraises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    import iris.cli.doctor as doctor_mod
+    import iris_ai.cli.doctor as doctor_mod
 
     def _boom():
         raise RuntimeError("simulated crash")
@@ -200,7 +200,7 @@ def test_doctor_fail_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 
 @pytest.fixture
 def monkeypatch_import_fail(monkeypatch: pytest.MonkeyPatch):
     """Force the package-import check to fail by breaking version helper import path."""
-    import iris.cli.doctor as doctor_mod
+    import iris_ai.cli.doctor as doctor_mod
 
     def _boom():
         raise ImportError("simulated broken install")
@@ -209,7 +209,7 @@ def monkeypatch_import_fail(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_run_checks_levels_and_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from iris.cli.doctor import exit_code, run_checks
+    from iris_ai.cli.doctor import exit_code, run_checks
 
     (tmp_path / ".env").write_text("", encoding="utf-8")
     monkeypatch.setenv("GEMINI_API_KEY", "set-but-hidden")
@@ -230,7 +230,7 @@ def test_run_checks_levels_and_exit_code(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 def test_version_lines_shape():
-    from iris.cli.version import version_lines
+    from iris_ai.cli.version import version_lines
 
     lines = version_lines()
     assert lines[0].startswith("iris ")

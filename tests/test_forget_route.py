@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from iris.api import ForgetRequest, app, forget_search
-from iris.memory.index import MemoryHit
-from iris.memory.provenance import Origin
+from iris_ai.api import ForgetRequest, app, forget_search
+from iris_ai.memory.index import MemoryHit
+from iris_ai.memory.provenance import Origin
 
 
 def _hit(*, chunk_index: int, content: str = "owner prefers green tea") -> MemoryHit:

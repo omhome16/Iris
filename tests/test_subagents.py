@@ -8,12 +8,12 @@ from pathlib import Path
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from iris.agent.chat import ChatGraph
-from iris.agent.subagents import ResearchSubagent
-from iris.agent.tools import get_tools
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
-from iris.onboarding import OnboardingWizard
+from iris_ai.agent.chat import ChatGraph
+from iris_ai.agent.subagents import ResearchSubagent
+from iris_ai.agent.tools import get_tools
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
+from iris_ai.onboarding import OnboardingWizard
 from test_agent_graph import make_runtime
 
 

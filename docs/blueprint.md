@@ -2,7 +2,7 @@
 
 > Source of truth for what Iris is becoming. Specs live under `docs/superpowers/specs/`; task plans under `docs/superpowers/plans/`. Execution status: one log per phase under `docs/superpowers/progress/` (`p1`–`p8-execution.md`).
 
-**Shape:** Library (`import iris`) + thin CLI (`iris …`). In-place rebirth (no fork). Import path never changes.
+**Shape:** Library (`import iris_ai`) + thin CLI (`iris …`). In-place rebirth (no fork). Import path never changes.
 
 **Best-practice basis:** audited against the owner's AI-Mastery vault on
 2026-09-24 — see `docs/superpowers/specs/2026-09-24-principles-conformance-audit.md`
@@ -25,7 +25,7 @@ landed in the phases below.
 | Phase | Name | Deliverable | Gate to next |
 |-------|------|-------------|--------------|
 | **P1** | Skeleton + CLI | Dashboard deleted; `iris --help\|version\|doctor`; honest tests/CI/docs | User ticks DoD checklist |
-| **P2** | Core brain ✅ | Library boot path (`iris.harness()`) + turn API + `iris chat`, with an honest degraded mode | P1 DoD green; P2 DoD verified |
+| **P2** | Core brain ✅ | Library boot path (`iris_ai.harness()`) + turn API + `iris chat`, with an honest degraded mode | P1 DoD green; P2 DoD verified |
 | **P3** | Telegram ✅ | Bridge as first-class client on the library | P2 DoD green; P3 DoD verified |
 | **P4** | Skills ✅ | Registry across 4 sources, Agent Skills manifests, `allowed-tools` policy, JEV-gated script boundary | P3 DoD green; P4 DoD checklist green except owner confirmation |
 | **P5** | Multi-agent ✅ | Lead + researcher + critic, typed handoffs with provenance, code-owned budgets, 2 JEV judgments, `iris agents` + `GET /agents` | P4 DoD still open — **owner waived the gate** on 2026-09-24 |
@@ -43,18 +43,18 @@ landed in the phases below.
 - `iris --help` / `-h` — rich-styled help; only real commands (`version`, `doctor`); no fake `chat` stub.
 - `iris version` / `--version` / `-V` — version, Python, package path.
 - `iris doctor` — offline checks: `.env` presence, package import, provider key names, `TYPESAFE_API_KEY`; exit `1` only on fail; `--debug` / `IRIS_DEBUG=1` re-raises for traceback.
-- `[project.scripts] iris = "iris.cli.main:app"`; deps `typer>=0.12`, `rich>=13`.
+- `[project.scripts] iris = "iris_ai.cli.main:app"`; deps `typer>=0.12`, `rich>=13`.
 
 **Removed:**
 - `dashboard/` tree, `docs/console.md`, console screenshots/logs.
 - compose `dashboard` service; `DASHBOARD_USER` / `DASHBOARD_PASSWORD` from `.env.example` + CI.
 - Dashboard-only tests; `_staged_preview` library tests preserved in `tests/test_staged_preview.py`.
 
-**Unchanged:** agent graph, memory algorithms, JEV tools, Telegram bridge behavior, `iris.api` routes (except staged-preview library work).
+**Unchanged:** agent graph, memory algorithms, JEV tools, Telegram bridge behavior, `iris_ai.api` routes (except staged-preview library work).
 
 **Layout:**
 ```
-src/iris/
+src/iris_ai/
   cli/
     __init__.py
     main.py          # typer root, --debug, -h/--help
@@ -84,9 +84,9 @@ src/iris/
 **Shipped** (spec: `docs/superpowers/specs/2026-09-23-p2-core-brain-chat-design.md`,
 plan: `docs/superpowers/plans/2026-09-23-p2-core-brain-chat.md`, log:
 `docs/superpowers/progress/p2-execution.md`):
-- `src/iris/engine.py` — `harness()` / `Harness`, the single boot path; `api.py`
+- `src/iris_ai/engine.py` — `harness()` / `Harness`, the single boot path; `api.py`
   is now a thin client of it (`postgres="require"`, behavior unchanged).
-- Public turn API: `respond()` / `resume()` / `stream()`; `iris.harness()` and
+- Public turn API: `respond()` / `resume()` / `stream()`; `iris_ai.harness()` and
   `iris.Harness` are the only new public names.
 - `iris chat` — streaming REPL, `--once`, `--session`, terminal HITL approval.
 - Degraded mode: `postgres="auto"` keeps a session alive without a database
@@ -112,9 +112,9 @@ plan: `docs/superpowers/plans/2026-09-23-p2-core-brain-chat.md`, log:
 **Shipped** (spec: `docs/superpowers/specs/2026-09-23-p3-telegram-client-design.md`,
 plan: `docs/superpowers/plans/2026-09-23-p3-telegram-client.md`, log:
 `docs/superpowers/progress/p3-execution.md`):
-- `src/iris/channels/brain.py` — `BrainClient` protocol, `HttpBrainClient`,
+- `src/iris_ai/channels/brain.py` — `BrainClient` protocol, `HttpBrainClient`,
   `BrainEvent`, `parse_sse_line()`: one HTTP/SSE contract for every client.
-- `src/iris/channels/updates.py` — `normalize_update()` + `UpdateLedger`
+- `src/iris_ai/channels/updates.py` — `normalize_update()` + `UpdateLedger`
   (persisted, bounded, atomic), so a restart cannot replay updates into turns.
 - The bridge keeps only transport (polling, sending, progressive edits, typing,
   downloads, owner gate) and calls the library for everything else.
@@ -166,7 +166,7 @@ marketplace/signing.
 
 **Goal:** Orchestrator + specialist agents with explicit handoffs.
 
-**What shipped:** `src/iris/agents/` — roles as declared data (a read-only
+**What shipped:** `src/iris_ai/agents/` — roles as declared data (a read-only
 **researcher**, a heterogeneous **critic**), a typed `Handoff` that carries
 provenance (an unsourced claim is marked, never asserted), a `RoleRunner` that
 generalized the shipped research subgraph, and an `Orchestrator` whose policy is
@@ -196,8 +196,8 @@ behaviour.
 hardening pass** alongside the eval gates — all four items are guard/limit work
 with no user-visible surface, so they were cheaper to land together with the eval
 work than as an interstitial phase. Recorded in `progress/p6-execution.md`, and
-now implemented: `progress/p8-execution.md` (`src/iris/guards.py`,
-`src/iris/budget.py`, `src/iris/approval.py`).
+now implemented: `progress/p8-execution.md` (`src/iris_ai/guards.py`,
+`src/iris_ai/budget.py`, `src/iris_ai/approval.py`).
 
 **Features (all shipped in P8):**
 - **A pre-tool guard chain in the documented order** — budget → circuit →
@@ -323,7 +323,7 @@ isolation tier.
 **Shipped** (plan: `docs/superpowers/plans/2026-09-25-p8-ship.md`, log:
 `docs/superpowers/progress/p8-execution.md`, final count: **769 passed**):
 - **A pre-tool guard chain (audit G1–G3), in a fixed order.**
-  `src/iris/guards.py` evaluates **budget → circuit → spiral/dedup → context →
+  `src/iris_ai/guards.py` evaluates **budget → circuit → spiral/dedup → context →
   record** *before dispatch*, outside the tool and outside the graph, so a refusal
   costs nothing and never reaches a provider. Spiral detection uses the vault's
   thresholds (same tool + normalised args ≥3×, argument **Jaccard > 0.72**,
@@ -335,26 +335,26 @@ isolation tier.
   that tool's circuit for the rest of the run (`unavailable — do not retry`); three
   distinct failing tools escalate the turn. A success resets the streak, so a tool
   that failed once and then worked is not punished for a flake.
-- **Scoped budgets with split counters (audit G3).** `src/iris/budget.py` counts
+- **Scoped budgets with split counters (audit G3).** `src/iris_ai/budget.py` counts
   input / output / cached / embedding / tool-schema tokens separately rather than
   as one total (they fail differently), enforces a per-turn ceiling and a per-day
   ceiling that **survives a restart** (`config/budget.json`), and carries a
   versioned policy so a number can be attributed to the policy that produced it.
   `0` means no ceiling, everywhere.
-- **Approval integrity (audit G4).** `src/iris/approval.py`: the interrupt
+- **Approval integrity (audit G4).** `src/iris_ai/approval.py`: the interrupt
   envelope carries the **effective digest of the arguments after edits**, so an
   approval is bound to a specific action rather than a slot in a conversation; one
   `tool_call_id` grants **once per thread**; resuming a thread with nothing waiting
   is refused rather than handed to the graph; and a side-effecting action with no
   digest **fails closed** whether the owner said yes or no.
-- **Eval gates with statistics (audit G6).** `src/iris/eval/stats.py` — Wilson
+- **Eval gates with statistics (audit G6).** `src/iris_ai/eval/stats.py` — Wilson
   intervals for rates, a seeded bootstrap for means, a paired interval for
   "candidate vs baseline", a measured noise floor, sample sizing that **derives**
   the ~63-samples-per-arm figure for Δ=0.02 at σ=0.04, Cohen's κ for
   judge–human agreement, and a **pre-registered decision rule** that reports
   `inconclusive` rather than a pass when it cannot pass. `scripts/eval_lab.py`
   renders intervals and the noise floor instead of point estimates.
-- **Ship polish.** One version source (`src/iris/__init__.py`, read by hatchling),
+- **Ship polish.** One version source (`src/iris_ai/__init__.py`, read by hatchling),
   a CI **`package` job** that builds the wheel, installs it and runs the console
   entry, a sample config whose every key names a real setting (asserted), and
   `docs/support.md` — the support matrix, verified axes, and how a release is cut.

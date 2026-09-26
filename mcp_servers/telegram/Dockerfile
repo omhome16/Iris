@@ -1,5 +1,5 @@
 # The bridge is a *client of the library*, not a second brain: it imports
-# `iris.channels.brain` and `iris.channels.updates`, so `iris` has to be
+# `iris_ai.channels.brain` and `iris_ai.channels.updates`, so `iris_ai` has to be
 # importable inside this image.
 #
 # Built from the repository root (see docker-compose.yml for the context), then

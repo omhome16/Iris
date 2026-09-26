@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from iris.eval.stats import (
+from iris_ai.eval.stats import (
     DecisionRule,
     bootstrap_mean_ci,
     cohens_kappa,

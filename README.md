@@ -1,7 +1,7 @@
 # Iris — a personal AI assistant with a visible mind
 
 Iris is a production-grade personal AI assistant whose **memory is the product**,
-packaged as a **library** (`import iris`) with a thin **CLI** (`iris …`) as its
+packaged as a **library** (`import iris_ai`) with a thin **CLI** (`iris …`) as its
 face.
 
 Built to demonstrate four AI-engineering disciplines end to end:
@@ -36,7 +36,7 @@ full **ablation study** in `reports/eval_lab.md`.
 
 The repo was reborn in place: same package, same import path (`iris`), same
 memory, agent graph and JEV behavior — but the **web dashboard is deleted**, the
-engine's boot path lives in the library (`iris.harness()`), both clients of it
+engine's boot path lives in the library (`iris_ai.harness()`), both clients of it
 (the CLI and the Telegram bridge) go through one shared client contract, skills
 are a discovered, validated, policed registry whose code runs only through one
 bounded gate, delegation is a **bounded, observable** part of the agent rather
@@ -46,8 +46,8 @@ rather than merely observed afterwards.
 | Phase | Deliverable | Gate to the next |
 |---|---|---|
 | **P1 — skeleton + CLI** ✅ | Dashboard deleted; `iris --help \| version \| doctor`; honest tests/CI/docs | user ticks the DoD checklist |
-| **P2 — core brain** ✅ | `iris.harness()` turn pipeline as a library API; `iris chat` (streaming REPL, degraded mode) | P1 verified |
-| **P3 — Telegram** ✅ | Bridge as a first-class client on the library brain (`iris.channels.*`), idempotent updates, `/forget` fixed | P2 verified |
+| **P2 — core brain** ✅ | `iris_ai.harness()` turn pipeline as a library API; `iris chat` (streaming REPL, degraded mode) | P1 verified |
+| **P3 — Telegram** ✅ | Bridge as a first-class client on the library brain (`iris_ai.channels.*`), idempotent updates, `/forget` fixed | P2 verified |
 | **P4 — skills** ✅ | Registry across sources, Agent Skills manifests, `allowed-tools` policy, JEV-gated script boundary, `iris skills` | P3 verified |
 | **P5 — multi-agent** ✅ | Lead + two specialists, typed handoffs with provenance, code-owned budgets, two JEV judgments, `iris agents` | P4 DoD still open — the owner waived the gate to run P5 early (recorded in the P5 log) |
 | **P6 — cron** ✅ | Interval + calendar + one-off jobs in one store, a declared misfire policy, `iris cron list \| add \| rm`, trace content policy with redaction | owner waived the gate on 2026-09-24 (recorded in the P6 log) |
@@ -113,7 +113,7 @@ The conformance audit that drove P6 and the P7/P8 scope lives in
 $ iris doctor
 Iris doctor
   ok   .env: present
-  ok   package: importable at …/src/iris
+  ok   package: importable at …/src/iris_ai
   ok   provider keys: GEMINI_API_KEY, OPENROUTER_API_KEY
   warn TYPESAFE_API_KEY: missing — JEV disabled (deterministic fallback)
 3 ok · 1 warn · 0 fail
@@ -126,11 +126,11 @@ clients of it. Booting it is one call:
 
 ```python
 import asyncio
-import iris
+import iris_ai
 
 
 async def main() -> None:
-    async with iris.harness() as brain:          # postgres="require" for the API's contract
+    async with iris_ai.harness() as brain:          # postgres="require" for the API's contract
         reply = await brain.respond("what do you remember about tea?", session_id="notes")
         print(reply)
 
@@ -141,7 +141,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`iris.harness()` returns a `Harness` with `respond()`, `resume()`, `stream()`
+`iris_ai.harness()` returns a `Harness` with `respond()`, `resume()`, `stream()`
 and the wired engine (`files`, `index`, `runtime`, `graph`, `jev`).
 
 ### Degraded mode (what happens without Postgres)
@@ -433,7 +433,7 @@ answered.
 ### Eval gates: intervals, not points
 
 An eval that reports a point estimate on a small set is a coin flip with a chart.
-`iris.eval.stats` (stdlib only, so the arithmetic is unit-tested without a database
+`iris_ai.eval.stats` (stdlib only, so the arithmetic is unit-tested without a database
 or a model) supplies Wilson intervals for rates, a seeded bootstrap for means, a
 **paired** interval for "candidate vs baseline", a measured noise floor, sample
 sizing that *derives* the ~63-samples-per-arm figure for Δ=0.02 at σ=0.04,
@@ -448,7 +448,7 @@ registry, and the registry has three rules that matter more than its features:
 
 | Rule | What it means in practice |
 |---|---|
-| **Nothing is silently dropped** | Four sources are merged — `workspace/skills/` (learned `*.json`+`*.md` pairs *and* hand-written `SKILL.md` directories), `SKILLS_EXTRA_DIRS`, installed packages advertising the `iris.skills` entry point, and the repo's shipped `skills/`. A name clash is a reported conflict with a winner and a loser, never a coin flip |
+| **Nothing is silently dropped** | Four sources are merged — `workspace/skills/` (learned `*.json`+`*.md` pairs *and* hand-written `SKILL.md` directories), `SKILLS_EXTRA_DIRS`, installed packages advertising the `iris_ai.skills` entry point, and the repo's shipped `skills/`. A name clash is a reported conflict with a winner and a loser, never a coin flip |
 | **A skill can only narrow** | `allowed-tools` in the manifest restricts the turn to those tools while that skill is active. An empty list means no restriction (every pre-P4 skill), a tool the runtime does not have is a validation *error*, and a skill can never re-open what the session already closed |
 | **Safe loading holds by construction** | Discovery reads data. The only way a skill's code runs is the `skill_run` tool, and that tool refuses more than it allows |
 
@@ -647,11 +647,11 @@ that memory") and the thread is kept unblocked automatically.
 Since P3 the bridge is **a client of the library, not a second brain**:
 
 - Turn streaming and every command call go through
-  `iris.channels.brain.HttpBrainClient` — one definition of the HTTP/SSE
+  `iris_ai.channels.brain.HttpBrainClient` — one definition of the HTTP/SSE
   contract, shared with the CLI. The bridge keeps only transport concerns
   (long-polling, sending, progressive edits, typing, file downloads, the owner
   gate), so a change to the API shape is a one-file change.
-- Updates are normalized by `iris.channels.updates.normalize_update()` and
+- Updates are normalized by `iris_ai.channels.updates.normalize_update()` and
   de-duplicated by an `UpdateLedger` persisted beside `owner.json`. A restart
   resumes from the stored offset instead of replaying already-handled updates
   into fresh turns — and in-memory memory writes are no longer repeated either.
@@ -674,7 +674,7 @@ in `.env` — `auto` uses the first key it finds:
 | web search (optional) | `TAVILY_API_KEY` | — | — | free tier at tavily.com |
 | **JEV (optional)** | `TYPESAFE_API_KEY` | — | — | `jev-latest` (TypeSafe System One) for recall reranking, skill selection and injection screening. No key = deterministic fallbacks. See [`docs/jev.md`](docs/jev.md) |
 
-The table above mirrors the defaults in `src/iris/config.py` — that file is the
+The table above mirrors the defaults in `src/iris_ai/config.py` — that file is the
 single source of truth. Model names drift, so treat it as the contract and these
 docs as a snapshot.
 
@@ -689,7 +689,7 @@ jitter, `Retry-After` parsing, and graceful fallback. Keys are read from
 
 ### The HTTP API
 
-`iris.api:app` is the engine's HTTP surface (unchanged in P1). It is what the
+`iris_ai.api:app` is the engine's HTTP surface (unchanged in P1). It is what the
 Telegram bridge calls today, and what the CLI will call in P2.
 
 | Route | What it does |
@@ -904,11 +904,11 @@ flowchart LR
     CI + lint + non-root image; per-turn judgment events and stage timings;
     reflection moved off the reply path
 11. **P1 rebirth** — library-first skeleton + CLI shell; dashboard removed
-12. **P2 core brain** — the boot path moved into the library (`iris.harness()`),
+12. **P2 core brain** — the boot path moved into the library (`iris_ai.harness()`),
     a public turn API (`respond`/`resume`/`stream`), and `iris chat` with an
     honest degraded mode when Postgres is absent
 13. **P3 Telegram client** — the bridge became a client of the library
-    (`iris.channels.brain` / `iris.channels.updates`), updates are idempotent
+    (`iris_ai.channels.brain` / `iris_ai.channels.updates`), updates are idempotent
     across restarts, and the `/forget` confirm path stopped crashing on a
     missing `chunk_index`
 14. **P4 skill registry** — one `Skill` with a manifest, discovery across four

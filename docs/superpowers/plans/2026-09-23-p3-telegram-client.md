@@ -21,7 +21,7 @@
 
 ### Task 1: Fix the two-phase `/forget` (TDD)
 
-**Files:** `src/iris/memory/index.py` (hit field + both SELECTs + both constructions), `src/iris/api.py` (harden `/forget`), `tests/test_forget_route.py` (new).
+**Files:** `src/iris_ai/memory/index.py` (hit field + both SELECTs + both constructions), `src/iris_ai/api.py` (harden `/forget`), `tests/test_forget_route.py` (new).
 
 - [ ] **Step 1:** Write the failing test: stub a runtime whose index returns a `MemoryHit` **with** `chunk_index=3`, call the `/forget` endpoint function directly, assert the candidate payload carries `chunk_index == 3`; and a hit with the default (`-1`) is skipped instead of crashing.
 - [ ] **Step 2:** `uv run pytest tests/test_forget_route.py -q` → FAIL (`AttributeError` / missing field).
@@ -30,17 +30,17 @@
 
 ### Task 2: `iris/channels/brain.py` — one client contract (TDD)
 
-**Files:** `src/iris/channels/brain.py` (new), `tests/test_brain_client.py` (new), `tests/test_brain_client_imports.py` (new).
+**Files:** `src/iris_ai/channels/brain.py` (new), `tests/test_brain_client.py` (new), `tests/test_brain_client_imports.py` (new).
 
 - [ ] **Step 1:** `tests/test_brain_client.py`: `parse_sse_line` handles `text`/`reply`/`tool_call`/`approval`/`thinking`/`error`/`thinking_done`, ignores non-`data:` lines and malformed JSON without raising. `HttpBrainClient` with `httpx.MockTransport`: `stream()` yields the ordered event kinds for a scripted SSE body; `respond()` and `resume()` POST the right JSON to `/chat` and `/chat/resume`; `json_get("/mind")` returns the decoded dict; the bearer header is attached when a token is configured.
 - [ ] **Step 2:** FAIL (no module).
 - [ ] **Step 3:** Implement `BrainEvent`, `parse_sse_line`, the `BrainClient` protocol and `HttpBrainClient` (injected client or owned client, `core_url` normalised like the bridge did).
-- [ ] **Step 4:** `tests/test_brain_client_imports.py`: run `python -c "import iris.channels.brain"` in a subprocess and assert none of `langgraph`, `asyncpg`, `iris.agent`, `iris.memory` appear in `sys.modules`. This is what keeps the bridge image small.
+- [ ] **Step 4:** `tests/test_brain_client_imports.py`: run `python -c "import iris_ai.channels.brain"` in a subprocess and assert none of `langgraph`, `asyncpg`, `iris_ai.agent`, `iris_ai.memory` appear in `sys.modules`. This is what keeps the bridge image small.
 - [ ] **Step 5:** Green + ruff.
 
 ### Task 3: `iris/channels/updates.py` — idempotent delivery (TDD)
 
-**Files:** `src/iris/channels/updates.py` (new), `tests/test_telegram_updates.py` (new).
+**Files:** `src/iris_ai/channels/updates.py` (new), `tests/test_telegram_updates.py` (new).
 
 - [ ] **Step 1:** Tests: `normalize_update` classifies text / command / photo (with caption) / voice / unsupported (returns None) / `edited_message`; `UpdateLedger` starts empty; `is_duplicate` is False for a new id and True after `mark_processed`; `next_offset()` is `watermark + 1`; state survives a reload (the restart-replay case) and the seen-set stays bounded (`capacity`).
 - [ ] **Step 2:** FAIL.

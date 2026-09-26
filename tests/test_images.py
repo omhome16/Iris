@@ -8,10 +8,10 @@ from pathlib import Path
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from iris.agent.chat import ChatGraph, _to_llm_messages
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
-from iris.onboarding import OnboardingWizard
+from iris_ai.agent.chat import ChatGraph, _to_llm_messages
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
+from iris_ai.onboarding import OnboardingWizard
 from test_agent_graph import make_runtime
 
 DATA_URI = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from iris.channels.updates import InboundUpdate, UpdateLedger, normalize_update
+from iris_ai.channels.updates import InboundUpdate, UpdateLedger, normalize_update
 
 
 def _update(update_id: int, *, text: str | None = None, **message_extra) -> dict:

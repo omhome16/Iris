@@ -12,9 +12,9 @@ verifies this phase's DoD.
 | Task | Description | Status | Evidence |
 |------|-------------|--------|----------|
 | 0 | Baseline (ruff + suite before touching anything) | done | `ruff` clean; 234 passed with the DB suite excluded |
-| 1 | `NullIndex` + `MemoryUnavailable` (TDD) | done | `src/iris/memory/null_index.py`, exception in `memory/index.py`; `tests/test_null_index.py` (3) — written failing first |
-| 2 | `iris.harness()` — one boot path | done | `src/iris/engine.py` + `tests/test_harness.py` (7); `api.py` lifespan now delegates with `postgres="require"`; whole existing suite unchanged and green |
-| 3 | `iris chat` (REPL, `--once`, sessions, HITL, degraded banner) | done | `src/iris/cli/chat.py`, command in `cli/main.py`; `tests/test_chat_cli.py` (11); `tests/test_cli.py` updated to assert the registry is exactly `{chat, doctor, version}` |
+| 1 | `NullIndex` + `MemoryUnavailable` (TDD) | done | `src/iris_ai/memory/null_index.py`, exception in `memory/index.py`; `tests/test_null_index.py` (3) — written failing first |
+| 2 | `iris_ai.harness()` — one boot path | done | `src/iris_ai/engine.py` + `tests/test_harness.py` (7); `api.py` lifespan now delegates with `postgres="require"`; whole existing suite unchanged and green |
+| 3 | `iris chat` (REPL, `--once`, sessions, HITL, degraded banner) | done | `src/iris_ai/cli/chat.py`, command in `cli/main.py`; `tests/test_chat_cli.py` (11); `tests/test_cli.py` updated to assert the registry is exactly `{chat, doctor, version}` |
 | 4 | Docs: README, CHANGELOG, blueprint, learning vault | done | README status + CLI table + quickstart + degraded-mode table; CHANGELOG P2 section; blueprint P2 marked shipped; learning vault gained `Part X` and Parts I–II were corrected |
 | 5 | DoD verification (hand to owner) | **awaiting owner ticks** | evidence below |
 
@@ -31,7 +31,7 @@ All commands from the repo root, 2026-09-23.
 | `uv run iris chat --help` | `--session` (default `cli`), `--once` documented |
 | `uv run iris chat --once "Reply with exactly the word: PONG"` | **real provider call**, exit `0`, output `iris> PONG`; degraded banner on stderr (no Postgres in this environment) |
 | Degraded evidence check | the same turn appended a digest line to `workspace/memory/2026-09-23.md` and a trace row with `"session_id": "cli"` to `config/traces.jsonl` — a degraded session still leaves the evidence a full one does |
-| `python -c "import iris; iris.harness; iris.Harness"` | lazy re-export works; `import iris` stays free of LangGraph/asyncpg |
+| `python -c "import iris_ai; iris_ai.harness; iris.Harness"` | lazy re-export works; `import iris_ai` stays free of LangGraph/asyncpg |
 | `uv run pytest tests -q` | 255 passed + the 5 DB tests failing loudly (by design) without Postgres; they run in CI |
 
 ## DoD checklist (owner must tick)
@@ -40,7 +40,7 @@ All commands from the repo root, 2026-09-23.
 - [x] `uv run iris chat --help` documents `--session` / `--once`
 - [x] `uv run iris chat --once "…"` runs a turn and prints a reply
 - [x] `uv run iris chat` REPL: streams, `/help`, `/exit`, Ctrl+C/EOF are clean
-- [x] `async with iris.harness() as brain: await brain.respond(…)` works (library example in the README)
+- [x] `async with iris_ai.harness() as brain: await brain.respond(…)` works (library example in the README)
 - [x] Degraded mode is announced and recall says why it is unavailable
 - [x] `uv run ruff check .` clean
 - [x] `uv run pytest -q` green apart from the 5 pgvector tests (CI runs all 260)
@@ -49,10 +49,10 @@ All commands from the repo root, 2026-09-23.
 ## Deviations from the plan (with reasons)
 
 1. **The module is `iris/engine.py`, not `iris/harness.py`.** A submodule and a
-   package attribute share one namespace: `import iris.harness` would set the
+   package attribute share one namespace: `import iris_ai.harness` would set the
    package attribute to the *module* and silently clobber the `harness()`
    callable the public API promises. The implementation lives in `engine.py`;
-   `iris.harness()` / `iris.Harness` are the public names, re-exported lazily.
+   `iris_ai.harness()` / `iris.Harness` are the public names, re-exported lazily.
 2. **The degraded banner writes to stderr**, not stdout, so
    `iris chat --once "…" > out.txt` captures only the reply.
 3. **`--session` defaults to `cli`**, deliberately distinct from the API's
@@ -66,7 +66,7 @@ All commands from the repo root, 2026-09-23.
   Postgres; Docker's daemon was unresponsive on this machine during the pass
   (`docker ps` hung), so they remain CI-verified. This is the same gap as P1.
 - **Found while refreshing the learning vault:** `hybrid_top_k` in
-  `src/iris/config.py` was defined and referenced by nothing (the last survivor
+  `src/iris_ai/config.py` was defined and referenced by nothing (the last survivor
   of the v1 trigger-injection knobs the modernization pass deleted). Not fixed
   here — it is a config-surface change, not P2 scope. Flagged for the owner.
   **Resolved after P4:** `hybrid_top_k` *and* the equally dead sibling

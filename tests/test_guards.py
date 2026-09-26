@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from iris.budget import Budget, BudgetPolicy, CounterKind
-from iris.guards import (
+from iris_ai.budget import Budget, BudgetPolicy, CounterKind
+from iris_ai.guards import (
     ALLOW,
     GuardChain,
     SpiralDetector,
@@ -11,7 +11,7 @@ from iris.guards import (
     arg_tokens,
     normalised_args,
 )
-from iris.guards import (
+from iris_ai.guards import (
     CircuitBreaker as Breaker,
 )
 

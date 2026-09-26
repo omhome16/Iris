@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from iris.agent.chat import ChatGraph
-from iris.memory.llm import LLMClient
+from iris_ai.agent.chat import ChatGraph
+from iris_ai.memory.llm import LLMClient
 from test_agent_graph import make_runtime
 
 
@@ -42,7 +42,7 @@ class StreamLLM(LLMClient):
 
 async def _onboard(files) -> None:
     from fakes import WizardLLM
-    from iris.onboarding import OnboardingWizard
+    from iris_ai.onboarding import OnboardingWizard
 
     w = OnboardingWizard(files, WizardLLM())
     for a in ["Omar", "warm", "short", "UTC", "4"]:
@@ -50,7 +50,7 @@ async def _onboard(files) -> None:
 
 
 async def test_respond_stream_emits_thinking_text_tool_call(tmp_path: Path):
-    from iris.memory.files import WorkspaceFiles
+    from iris_ai.memory.files import WorkspaceFiles
 
     files = WorkspaceFiles(tmp_path)
     await _onboard(files)
@@ -74,7 +74,7 @@ async def test_respond_stream_emits_thinking_text_tool_call(tmp_path: Path):
 
 
 async def test_respond_stream_final_reply_in_updates(tmp_path: Path):
-    from iris.memory.files import WorkspaceFiles
+    from iris_ai.memory.files import WorkspaceFiles
 
     files = WorkspaceFiles(tmp_path)
     await _onboard(files)
@@ -96,7 +96,7 @@ async def test_respond_stream_final_reply_in_updates(tmp_path: Path):
 
 async def test_complete_with_tools_returns_thinking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Non-streamed path surfaces reasoning_content as the third tuple item."""
-    import iris.memory.llm as llm_mod
+    import iris_ai.memory.llm as llm_mod
 
     class Resp:
         def __init__(self):

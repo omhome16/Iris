@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from iris.budget import BUDGET_POLICY_VERSION, Budget, BudgetPolicy, CounterKind
+from iris_ai.budget import BUDGET_POLICY_VERSION, Budget, BudgetPolicy, CounterKind
 
 
 def test_counters_are_split_by_kind_not_one_total():

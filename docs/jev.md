@@ -85,14 +85,14 @@ call.
 
 | # | Integration | Code | JEV primitives | Deterministic fallback |
 |---|---|---|---|---|
-| 1 | **Recall reranking** | `src/iris/jev/recall.py`, called from `MemoryIndex._rerank` | one **Noul** per candidate, all in one request | the `0.6·vector + 0.4·FTS` score |
-| 2 | **Skill suggestion** | `src/iris/jev/skills.py`, called from `ContextAssembler._skills_block` | **Choice** over the roster + a "needs a skill at all?" **Noul**, in one request | `SkillLibrary.match_triggers` |
-| 3 | **Injection screening** | `src/iris/jev/guard.py`, called from the `web_search` and `ingest_url` tools | 2 **Nouls** (injection, exfiltration) + 1 **Score** (severity) per item, batched into one request | plain `[UNTRUSTED]` tagging only |
-| 4 | **Skill script gate** | `src/iris/skills/guard.py`, called from the `skill_run` tool | 1 **Noul** (does this script do only what its skill describes?) against the skill's description, the script source and the deterministic pre-screen findings | no judgment → approval-only, and the trace records that the gate did not run |
-| 5 | **Delegation effort** | `src/iris/jev/agents.py`, called from `Orchestrator.fan_out` | 1 **Noul** (does this ask for several independent things?) | no fan-out: one bounded researcher call |
-| 6 | **Answer sufficiency** | `src/iris/jev/agents.py`, called from `Orchestrator.verify` and the `verify_answer` tool | 1 **Noul** (is every factual claim supported?) + 1 **Choice** (supported / partial / unsupported), one request | no forced revision; the critic still runs and reports |
-| 7 | **Capture gate** | `src/iris/memory/capture.py`, called from the `capture` node | 1 **Noul** (does the owner's turn state a durable fact?) + 1 **Noul** (is it already in context?) + 1 **Score** (importance 1-10), one request | the cheap-tier extraction prompt, and a deterministic prefilter before either runs |
-| 8 | **Reflection** (P8) | `src/iris/memory/reflection.py`, called from the `journal` node | 1 **Noul per claim sentence** (is this supported by the excerpts?), one request | the cheap-tier fact-checking completion |
+| 1 | **Recall reranking** | `src/iris_ai/jev/recall.py`, called from `MemoryIndex._rerank` | one **Noul** per candidate, all in one request | the `0.6·vector + 0.4·FTS` score |
+| 2 | **Skill suggestion** | `src/iris_ai/jev/skills.py`, called from `ContextAssembler._skills_block` | **Choice** over the roster + a "needs a skill at all?" **Noul**, in one request | `SkillLibrary.match_triggers` |
+| 3 | **Injection screening** | `src/iris_ai/jev/guard.py`, called from the `web_search` and `ingest_url` tools | 2 **Nouls** (injection, exfiltration) + 1 **Score** (severity) per item, batched into one request | plain `[UNTRUSTED]` tagging only |
+| 4 | **Skill script gate** | `src/iris_ai/skills/guard.py`, called from the `skill_run` tool | 1 **Noul** (does this script do only what its skill describes?) against the skill's description, the script source and the deterministic pre-screen findings | no judgment → approval-only, and the trace records that the gate did not run |
+| 5 | **Delegation effort** | `src/iris_ai/jev/agents.py`, called from `Orchestrator.fan_out` | 1 **Noul** (does this ask for several independent things?) | no fan-out: one bounded researcher call |
+| 6 | **Answer sufficiency** | `src/iris_ai/jev/agents.py`, called from `Orchestrator.verify` and the `verify_answer` tool | 1 **Noul** (is every factual claim supported?) + 1 **Choice** (supported / partial / unsupported), one request | no forced revision; the critic still runs and reports |
+| 7 | **Capture gate** | `src/iris_ai/memory/capture.py`, called from the `capture` node | 1 **Noul** (does the owner's turn state a durable fact?) + 1 **Noul** (is it already in context?) + 1 **Score** (importance 1-10), one request | the cheap-tier extraction prompt, and a deterministic prefilter before either runs |
+| 8 | **Reflection** (P8) | `src/iris_ai/memory/reflection.py`, called from the `journal` node | 1 **Noul per claim sentence** (is this supported by the excerpts?), one request | the cheap-tier fact-checking completion |
 
 ### 3.0 The audit behind that table
 
@@ -283,7 +283,7 @@ deterministic path without unsetting the key.
 One recall rerank (20 candidates, one request, ~8k input tokens ≈ $0.0003):
 
 ```python
-from iris.jev import JevClient, JevReranker
+from iris_ai.jev import JevClient, JevReranker
 
 jev = JevClient(ledger=ledger)
 scores = await JevReranker(jev).relevance(
@@ -296,7 +296,7 @@ scores = await JevReranker(jev).relevance(
 Screening a fetched page:
 
 ```python
-from iris.jev import screen_untrusted
+from iris_ai.jev import screen_untrusted
 
 verdict = await screen_untrusted(jev, page_text, source=url)
 if verdict.action is GuardAction.BLOCK:
@@ -319,7 +319,7 @@ stored_banner = verdict.banner()
 Verify the integration is live:
 
 ```bash
-uv run python -c "from iris.jev import JevClient; c=JevClient(); print(c.enabled, c.unavailable_reason())"
+uv run python -c "from iris_ai.jev import JevClient; c=JevClient(); print(c.enabled, c.unavailable_reason())"
 uv run pytest tests/test_jev.py -q      # 22 tests, no key, no network
 curl -s localhost:8000/jev -H "Authorization: Bearer $IRIS_API_TOKEN"   # health, counters, last error
 ```
@@ -339,7 +339,7 @@ Three things make the layer checkable rather than assumed:
   injection/exfiltration/severity scores — **including the items that passed,
   and including `screened: false` when nothing was checked** — and each skill
   decision records its gate inputs. Recording is bounded per turn and cannot
-  raise; see `src/iris/turnlog.py`.
+  raise; see `src/iris_ai/turnlog.py`.
 - **One `asyncio.Lock` guards client construction.** A single turn can issue a
   rerank (inside a recall tool), a guard screen (inside `web_search`) and a
   capture judgment, and reflection now runs in the background — without the

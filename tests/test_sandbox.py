@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from iris.sandbox import Sandbox, SandboxError
+from iris_ai.sandbox import Sandbox, SandboxError
 
 
 @pytest.fixture

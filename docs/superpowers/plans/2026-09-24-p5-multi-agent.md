@@ -27,7 +27,7 @@ Expected P5 entry state: **410 passed**, ruff clean (P4 exit state).
 
 ## Task 1 — Roles as declared data (TDD)
 
-`src/iris/agents/roles.py`: a frozen `Role` dataclass and the `researcher` /
+`src/iris_ai/agents/roles.py`: a frozen `Role` dataclass and the `researcher` /
 `critic` declarations. Reuse the P4 precedent for allowlists rather than
 inventing a second mechanism (`SkillPolicy` already intersects with the session
 rules) — the role's `tools` is validated against the same `TOOL_NAMES` set that
@@ -39,7 +39,7 @@ toolset is exactly read-only and contains no mutating tool.
 
 ## Task 2 — The handoff protocol (TDD)
 
-`src/iris/agents/handoff.py`: the `Handoff` dataclass, claim provenance, and a
+`src/iris_ai/agents/handoff.py`: the `Handoff` dataclass, claim provenance, and a
 `render_findings()` that formats claims for the lead as **data**.
 
 Tests (`tests/test_handoffs.py`): round-trip; a claim with no source is marked
@@ -60,7 +60,7 @@ output is capped and marked.
 
 ## Task 4 — Orchestrator policy: route, budget, merge, fallback (TDD)
 
-`src/iris/agents/orchestrator.py`: the code-owned policy — call cap, deadline,
+`src/iris_ai/agents/orchestrator.py`: the code-owned policy — call cap, deadline,
 stable merge order, the one-revision rule, and every degradation path.
 
 Tests (`tests/test_orchestrator.py`, part 2): routing remains tool-initiated
@@ -92,7 +92,7 @@ rewrite accounting).
 ## Task 7 — Observability: turnlog, CLI, API (TDD)
 
 `record("handoff", ...)` / `record("agent_verdict", ...)`; `iris agents
-roles|show|handoffs` (`src/iris/cli/agents.py` + a command in `cli/main.py`);
+roles|show|handoffs` (`src/iris_ai/cli/agents.py` + a command in `cli/main.py`);
 `GET /agents`.
 
 Tests: the judgment block carries handoffs and verdicts; `iris agents` renders
