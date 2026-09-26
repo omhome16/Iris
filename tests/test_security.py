@@ -1,4 +1,4 @@
-"""Bearer-token auth tests: iris-core enforcement + dashboard/bridge forwarding.
+"""Bearer-token auth tests: iris-core enforcement + bridge forwarding.
 
 iris-core routes are tested by introspection (no lifespan, no Postgres):
 every APIRoute except /health must declare the require_token dependency.
@@ -112,17 +112,3 @@ async def test_bridge_voice_post_forwards_token(monkeypatch: pytest.MonkeyPatch)
         (u, h) for u, h in probe.seen if str(u).endswith("/voice")
     )
     assert headers.get("authorization") == "Bearer voice-token-7"
-
-
-async def test_dashboard_proxy_forwards_token(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("dashboard.app.IRIS_API_TOKEN", "dash-token-3")
-    from dashboard.app import _proxy
-
-    probe = HeaderProbeTransport()
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(
-        "dashboard.app.httpx.AsyncClient", lambda *a, **k: real_client(transport=probe)
-    )
-    await _proxy("/mind")
-    _, headers = probe.seen[0]
-    assert headers.get("authorization") == "Bearer dash-token-3"

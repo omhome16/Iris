@@ -12,13 +12,13 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
+from fakes import skill_registry
 from iris.agent.chat import ApprovalRequired, ChatGraph, _to_llm_messages
 from iris.agent.runtime import Runtime
 from iris.agent.tools import dispatch, get_tools
 from iris.memory.files import WorkspaceFiles
 from iris.memory.llm import LLMClient
 from iris.memory.provenance import Origin
-from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
 
@@ -139,7 +139,7 @@ def make_runtime(files: WorkspaceFiles, llm: LLMClient) -> Runtime:
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(files.root / "sandbox"),
     )
 
@@ -286,7 +286,7 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(tmp_path / "sandbox"),
     )
     schemas = [t.schema() for t in get_tools(runtime)]
@@ -297,10 +297,12 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "note",
         "inspect_mind",
         "forget",
+        "find_tools",
         "skill_write",
         "skill_list",
         "skill_apply",
         "skill_revise",
+        "skill_run",
         "schedule_task",
         "dream_now",
         "file_create",
@@ -310,6 +312,7 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "web_search",
         "ingest_url",
         "deep_dive",
+        "verify_answer",
     }
     for s in schemas:
         assert s["function"]["parameters"]["type"] == "object"
@@ -326,7 +329,7 @@ def test_telegram_tools_appear_after_late_connect(tmp_path: Path):
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(tmp_path / "sandbox"),
     )
 

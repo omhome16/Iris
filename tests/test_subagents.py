@@ -76,12 +76,9 @@ def test_deep_dive_tool_is_registered(tmp_path: Path):
     assert "deep_dive" in names
 
 
-async def test_deep_dive_runs_only_when_agent_invokes_it(tmp_path: Path, monkeypatch):
+async def test_deep_dive_runs_only_when_agent_invokes_it(tmp_path: Path):
     """v2: the research subagent never auto-runs. The agent calls the
     deep_dive tool, gets the report as the tool result, and replies."""
-    from iris.config import settings
-
-    monkeypatch.setattr(settings, "mrr_top_k", 3)
     files = WorkspaceFiles(tmp_path)
     await _onboard(files)
 
@@ -102,6 +99,13 @@ async def test_deep_dive_runs_only_when_agent_invokes_it(tmp_path: Path, monkeyp
                 return "Report: the beach trip was in August.", [], ""
             return "ok", [], ""
 
+        async def complete(self, messages, **kwargs):
+            # The deep_dive result is retrieval evidence, so the journal's
+            # reflection pass calls `complete` on this same double. Inheriting
+            # `LLMClient.complete` would make a unit test attempt a real
+            # provider call.
+            return '{"flagged": []}'
+
     llm = MainLLM()
     runtime = make_runtime(files, llm)
     runtime.index = StubIndex()  # type: ignore[assignment]
@@ -116,18 +120,18 @@ async def test_deep_dive_runs_only_when_agent_invokes_it(tmp_path: Path, monkeyp
     )
 
 
-async def test_no_auto_research_without_agent_invocation(tmp_path: Path, monkeypatch):
+async def test_no_auto_research_without_agent_invocation(tmp_path: Path):
     """A temporal question alone must not launch the subagent (v2: the
     agent decides; retrieval is a tool call, not a regex)."""
-    from iris.config import settings
-
-    monkeypatch.setattr(settings, "mrr_top_k", 3)
     files = WorkspaceFiles(tmp_path)
     await _onboard(files)
 
     class QuietLLM(LLMClient):
         async def complete_with_tools(self, messages, tools=None, **kwargs):
             return "I don't remember that yet.", [], ""
+
+        async def complete(self, messages, **kwargs):
+            return '{"flagged": []}'
 
     llm = QuietLLM()
     runtime = make_runtime(files, llm)

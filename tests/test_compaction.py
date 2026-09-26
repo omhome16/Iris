@@ -12,12 +12,12 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
+from fakes import skill_registry
 from iris.agent.chat import ChatGraph
 from iris.agent.compaction import messages_tokens, trim_messages
 from iris.agent.runtime import Runtime
 from iris.memory.files import WorkspaceFiles
 from iris.memory.llm import LLMClient
-from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
 
@@ -97,7 +97,7 @@ def make_runtime(files: WorkspaceFiles, llm: LLMClient) -> Runtime:
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(files.root / "sandbox"),
     )
 

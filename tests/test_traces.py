@@ -6,11 +6,11 @@ from pathlib import Path
 
 from langgraph.checkpoint.memory import MemorySaver
 
+from fakes import skill_registry
 from iris.agent.chat import ChatGraph
 from iris.agent.runtime import Runtime
 from iris.memory.files import WorkspaceFiles
 from iris.memory.llm import LLMClient
-from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
 from iris.sandbox import Sandbox
 from iris.trace import TraceLogger
@@ -83,7 +83,7 @@ def make_runtime(files: WorkspaceFiles, llm: LLMClient) -> Runtime:
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(files.root / "sandbox"),
         traces=TraceLogger(files.root / "config" / "traces.jsonl"),
     )
@@ -102,8 +102,32 @@ async def test_chat_turn_records_trace(tmp_path: Path):
     assert len(traces) == 1
     t = traces[0]
     assert t["session_id"] == "t-trace"
-    assert t["user"] == "hello there"
-    assert t["reply"] == "ok"
+    # P6: metadata is the default trace content policy, so free text is replaced
+    # by a length and a hash. The turn is still reconstructable (which session,
+    # how long, which tools, what happened) without storing what was said.
+    assert "user" not in t
+    assert t["user_chars"] == len("hello there")
+    assert t["user_hash"]
+    assert "reply" not in t
+    assert t["reply_chars"] == len("ok")
     assert t["tools"] == []
     assert t["latency_ms"] >= 0
     assert t["pending"] is None
+
+
+async def test_the_trace_can_carry_content_when_the_owner_opts_in(tmp_path: Path, monkeypatch):
+    """`trace_content = redacted` is the debugging mode: text is kept, secrets
+    are not."""
+    from fakes import WizardLLM
+    from iris.config import settings
+
+    monkeypatch.setattr(settings, "trace_content", "redacted")
+    files = WorkspaceFiles(tmp_path)
+    w = OnboardingWizard(files, WizardLLM())
+    for a in ["Omar", "warm", "short", "UTC", "4"]:
+        await w.apply_answer(a)
+    graph = ChatGraph(make_runtime(files, FakeLLM()), MemorySaver())
+    await graph.respond("hello there", session_id="t-content")
+    (t,) = TraceLogger(files.root / "config" / "traces.jsonl").recent()
+    assert t["user"] == "hello there"
+    assert t["reply"] == "ok"

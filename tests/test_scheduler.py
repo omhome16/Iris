@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from fakes import skill_registry
 from iris.agent.runtime import Runtime
 from iris.config import settings
 from iris.memory.files import WorkspaceFiles
 from iris.memory.forgetting import RotEntry
 from iris.memory.llm import LLMClient
-from iris.memory.skills import SkillLibrary
 from iris.sandbox import Sandbox
 from iris.scheduler import (
     _morning_brief,
@@ -49,7 +49,7 @@ def test_scheduler_registers_two_jobs(tmp_path: Path):
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(tmp_path / "sandbox"),
     )
     scheduler = build_scheduler(runtime)
@@ -74,7 +74,7 @@ def test_build_scheduler_uses_onboarding_sleep_hour(
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(tmp_path / "sandbox"),
     )
     assert owner_sleep_hour(files.root) == 2
@@ -125,7 +125,7 @@ async def test_morning_brief_handles_real_list_types(
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=FakeForgetting(),  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(tmp_path / "sandbox"),
         telegram=telegram,  # type: ignore[arg-type]
     )

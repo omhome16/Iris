@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 
 import anyio
 import httpx
 import pytest
+
+from iris.channels.updates import UpdateLedger
 
 BRIDGE_DIR = Path(__file__).resolve().parents[1] / "mcp_servers" / "telegram"
 sys.path.insert(0, str(BRIDGE_DIR))
@@ -265,3 +268,43 @@ async def test_sleep_reports_dream_record(dispatcher: CommandDispatcher):
     )
     reply = await dispatcher.dispatch(1, "/sleep")
     assert "staged=3" in reply and "promoted=2" in reply and "added=1" in reply
+
+
+@pytest.mark.anyio
+async def test_poll_loop_does_not_replay_a_handled_update(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Telegram redelivers an update until the offset advances, and a restart
+    that forgot its offset ran the same message into a second turn — which for
+    an assistant whose turns write memory means the same fact captured twice.
+    Two boots against one ledger file must handle the update exactly once."""
+    update = {"update_id": 42, "message": {"chat": {"id": 7}, "text": "remember this"}}
+    handled: list[int] = []
+
+    async def fake_tg(method: str, **params):
+        await asyncio.sleep(0)  # a real suspension point; the loop must yield
+        if method != "getUpdates":
+            return {}
+        # Telegram's contract: everything at or after `offset`. A loop that
+        # never advances the offset would see this update forever.
+        return [update] if int(params.get("offset", 0)) <= 42 else []
+
+    async def fake_handle(inbound):
+        handled.append(inbound.update_id)
+
+    monkeypatch.setattr(server, "_tg", fake_tg)
+    monkeypatch.setattr(server, "_handle_update", fake_handle)
+    monkeypatch.setattr(server, "ledger", UpdateLedger(tmp_path / "updates.json"))
+
+    for _ in range(2):  # two boots, one ledger file
+        task = asyncio.create_task(server._poll_loop())
+        for _ in range(20):
+            await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert handled == [42]
+    # …and the offset really is on disk, so the second boot resumes past it.
+    reloaded = UpdateLedger(tmp_path / "updates.json")
+    reloaded.load()
+    assert reloaded.next_offset() == 43
+    assert reloaded.is_duplicate(42) is True

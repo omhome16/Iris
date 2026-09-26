@@ -9,6 +9,12 @@ reply so the same fake works for ordinary chat turns after onboarding.
 FakeJev stands in for the TypeSafe client: scripted answers, no network, and a
 record of every request so tests can assert the *batching* contract (one
 request carrying many questions) rather than one call per candidate.
+
+**Rule for LLM doubles:** override `complete` as well as `complete_with_tools`.
+`LLMClient` is a real client, and the journal's reflection pass calls
+`complete` on any turn that retrieved memory — a double that overrides only the
+tool-calling method therefore attempts a real provider call from a unit test
+(and leaves a LiteLLM coroutine the closed loop drops as a `RuntimeWarning`).
 """
 
 from __future__ import annotations
@@ -18,7 +24,19 @@ from collections.abc import Callable
 from typing import Any
 
 from iris.jev.client import JevAnswers
+from iris.memory.files import WorkspaceFiles
 from iris.memory.llm import LLMClient
+from iris.skills.registry import SkillRegistry
+
+
+def skill_registry(files: WorkspaceFiles) -> SkillRegistry:
+    """The registry a `Runtime` uses in tests: the workspace only.
+
+    Builtins and installed packages are switched off so a test's roster is
+    exactly what the test wrote — the shipped `skills/` directory is covered by
+    the registry's own tests rather than by every graph fixture.
+    """
+    return SkillRegistry(files, builtin_dir=None, entry_points=lambda: [])
 
 
 class WizardLLM(LLMClient):
@@ -71,6 +89,7 @@ class FakeJev:
         default_score: float = 0.0,
         default_confidence: float = 1.0,
         fail: bool = False,
+        errors: bool = False,
     ) -> None:
         self.nouls = nouls or {}
         self.choices = choices or {}
@@ -81,15 +100,22 @@ class FakeJev:
         self.default_score = default_score
         self.default_confidence = default_confidence
         self.fail = fail
+        #: `fail` means "JEV is off" (no key); `errors` means "JEV is on and the
+        #: request failed". They are different paths: the first never issues a
+        #: request, the second is the degradation every call site has to survive.
+        self.errors = errors
         self.calls: list[dict] = []
 
     @property
     def enabled(self) -> bool:
         return not self.fail
 
-    async def ask(self, state, questions):
-        self.calls.append({"state": state, "questions": dict(questions)})
-        if self.fail:
+    async def ask(self, state, questions, *, timeout=None):
+        # `timeout` is recorded rather than applied: a fake that slept would only
+        # make the suite slower, and the contract under test is that the call
+        # site *declares* a budget (`JevClient.ask` enforces it).
+        self.calls.append({"state": state, "questions": dict(questions), "timeout": timeout})
+        if self.fail or self.errors:
             return None
 
         def _resolve(mapping, key, default):

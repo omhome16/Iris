@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 import iris.jev.client as jev_mod
-from fakes import FakeJev
+from fakes import FakeJev, skill_registry
 from iris.agent.context import ContextAssembler
 from iris.agent.runtime import Runtime
 from iris.agent.tools import get_tools
@@ -87,6 +87,37 @@ async def test_client_normalizes_sdk_response(monkeypatch: pytest.MonkeyPatch):
     await client.close()
 
 
+async def test_client_gives_up_at_the_budget_and_counts_it(monkeypatch: pytest.MonkeyPatch):
+    """A per-call budget is enforced, not advisory, and it is visible in
+    `status()` — a judgment layer that silently times out on every turn looks
+    identical to one that is switched off."""
+    import asyncio
+
+    class _Slow:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def system_one(self, state, questions):
+            await asyncio.sleep(5)
+            raise AssertionError("the budget should have fired first")
+
+    monkeypatch.setattr(settings, "typesafe_api_key", "test-key")
+    monkeypatch.setattr(jev_mod, "AsyncTypeSafeClient", lambda **kw: _Slow())
+    monkeypatch.setattr(jev_mod, "RetryPolicy", lambda **kw: None)
+
+    client = JevClient()
+    answers = await client.ask("state", {"q": noul("?")}, timeout=0.01)
+
+    assert answers is None
+    assert client.failures == 1
+    assert "budget exceeded" in client.last_error
+    assert client.status()["failures"] == 1
+    await client.close()
+
+
 async def test_client_returns_none_instead_of_raising(monkeypatch: pytest.MonkeyPatch):
     class _Boom:
         async def __aenter__(self):
@@ -135,6 +166,7 @@ def _row(content: str, *, vscore: float, observed: date = date(2026, 8, 1), embe
         "observed_at": observed,
         "evergreen": False,
         "embedding": _Vec(embedding if embedding is not None else [1.0, 0.0]),
+        "chunk_index": 0,  # the search SQL always selects this (NOT NULL column)
         "vscore": vscore,
         "fscore": 0.0,
     }
@@ -165,6 +197,23 @@ def _hit(content: str, *, relevance: float, decay: float = 1.0, imp_mult: float 
         decay=decay,
         imp_mult=imp_mult,
     )
+
+
+async def test_a_reply_path_judgment_carries_a_latency_budget():
+    """The rerank blocks the agent's next call, so it gets a budget shorter than
+    the client timeout: past it the deterministic shortlist wins and the turn
+    keeps moving. Without one, a slow judgment layer costs the full 12s timeout
+    on *every* recall."""
+    jev = FakeJev()
+    reranker = JevReranker(jev, timeout_seconds=1.25)
+    await reranker.relevance("q", ["a", "b"])
+    assert jev.calls[0]["timeout"] == 1.25
+
+
+def test_the_default_budget_is_shorter_than_the_client_timeout():
+    """A budget at or above the client timeout buys nothing — the request would
+    already have failed on its own."""
+    assert 0 < settings.jev_rerank_timeout_seconds < settings.jev_timeout_seconds
 
 
 async def test_reranker_asks_every_candidate_in_one_request():
@@ -328,7 +377,7 @@ def _runtime(files: WorkspaceFiles, jev=None) -> Runtime:
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(files.root / "sandbox"),
         jev=jev,
     )

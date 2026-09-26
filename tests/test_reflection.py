@@ -7,10 +7,11 @@ from pathlib import Path
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from iris import background
+from fakes import FakeJev
+from iris import background, turnlog
 from iris.agent.chat import ChatGraph
 from iris.memory.llm import LLMClient
-from iris.memory.reflection import ReflectionPass, retrieved_excerpts
+from iris.memory.reflection import ReflectionPass, _claims, retrieved_excerpts
 from test_agent_graph import make_runtime
 
 
@@ -118,6 +119,124 @@ async def test_graph_turn_with_retrieval_writes_flag(tmp_path: Path):
     flags = files.root / "config" / "hallucination_flags.jsonl"
     assert flags.exists()
     assert "lease ends Sept 1" in flags.read_text(encoding="utf-8")
+
+
+# ── the JEV path (P8): a decision, not a completion ──────────────────────
+
+
+async def test_a_claim_sentence_carries_a_support_probability(tmp_path: Path):
+    """One batched judgment replaces the fact-checking completion: every
+    sentence gets a probability, and a low one becomes a flag."""
+    path = tmp_path / "config" / "hallucination_flags.jsonl"
+    jev = FakeJev(nouls={"c0": 0.02, "c1": 0.94})
+    pass_ = ReflectionPass(RetrieveThenReflectLLM([]), path, jev=jev)
+
+    await pass_.check(
+        user_message="when does my lease end and what do I pay?",
+        ai_reply=(
+            "Your lease renews on September 1st 2026. "
+            "You pay rent on the first of each month."
+        ),
+        retrieved=["the owner pays rent on the 1st"],
+    )
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1  # only the unsupported sentence
+    data = json.loads(lines[0])
+    assert "September 1st 2026" in data["claim"]
+    assert "p=0.02" in data["why"]
+    assert len(jev.calls) == 1  # one request for the whole reply
+    assert set(jev.question_ids()) == {"c0", "c1"}
+
+
+async def test_every_claim_probability_is_recorded_in_the_trace(tmp_path: Path):
+    """A judgment nobody can inspect is indistinguishable from one that silently
+    failed — and this pass can flag *nothing* and still have run."""
+    path = tmp_path / "config" / "hallucination_flags.jsonl"
+    jev = FakeJev(nouls={"c0": 0.91, "c1": 0.88})
+    pass_ = ReflectionPass(RetrieveThenReflectLLM([]), path, jev=jev)
+
+    with turnlog.collect() as log:
+        await pass_.check(
+            user_message="q",
+            ai_reply="Your lease renews on September 1st 2026. You pay rent on the first.",
+            retrieved=["excerpt"],
+        )
+
+    assert not path.exists()  # nothing flagged
+    events = [e for e in log.judgments if e["kind"] == "reflection_claims"]
+    assert len(events) == 1
+    assert [c["support"] for c in events[0]["probabilities"]] == [0.91, 0.88]
+    mode = next(e for e in log.judgments if e["kind"] == "reflection_decision")
+    assert mode["mode"] == "jev"
+    assert mode["claims"] == 2 and mode["flagged"] == 0
+
+
+async def test_a_jev_failure_falls_back_to_the_model(tmp_path: Path):
+    """JEV is an accelerator, not a dependency: a broken judgment layer must
+    leave the pass working exactly as it did before."""
+    path = tmp_path / "config" / "hallucination_flags.jsonl"
+    jev = FakeJev(errors=True)  # enabled, but every request fails
+    llm = RetrieveThenReflectLLM([{"claim": "lease ends Sept 1", "why": "unsupported"}])
+    pass_ = ReflectionPass(llm, path, jev=jev)
+
+    await pass_.check(
+        user_message="q", ai_reply="Your lease renews on September 1st 2026.", retrieved=["e"]
+    )
+
+    assert "lease ends Sept 1" in path.read_text(encoding="utf-8")
+    assert jev.calls  # it was tried first
+
+
+async def test_jev_absent_still_uses_the_model(tmp_path: Path):
+    path = tmp_path / "config" / "hallucination_flags.jsonl"
+    llm = RetrieveThenReflectLLM([{"claim": "lease ends Sept 1", "why": "y"}])
+    pass_ = ReflectionPass(llm, path, jev=None)
+    assert not pass_.jev_enabled
+    await pass_.check(user_message="q", ai_reply="Your lease renews on September 1st 2026.", retrieved=["e"])
+    assert "lease ends Sept 1" in path.read_text(encoding="utf-8")
+
+
+def test_claims_are_sentences_and_fragments_are_dropped():
+    """The claim list has to be deterministic — probabilities are recorded
+    against positions, so the same reply must always split the same way."""
+    reply = "Yes. Your lease renews on September 1st 2026. You pay rent on the first of each month."
+    claims = _claims(reply)
+    assert claims == [
+        "Your lease renews on September 1st 2026.",
+        "You pay rent on the first of each month.",
+    ]
+    assert _claims("Sure!") == []
+    # Bounded: a long reply cannot grow the JEV state without limit.
+    assert len(_claims("A sentence that is long enough to count. " * 40)) <= 12
+
+
+async def test_the_graph_hands_the_jev_client_to_the_reflection_pass(tmp_path: Path):
+    """The wiring, not just the unit: a real turn with a JEV client attached
+    must flag through JEV and never reach the model path."""
+    from fakes import WizardLLM
+    from iris.memory.files import WorkspaceFiles
+    from iris.onboarding import OnboardingWizard
+
+    files = WorkspaceFiles(tmp_path)
+    w = OnboardingWizard(files, WizardLLM())
+    for a in ["Omar", "warm", "short", "UTC", "4"]:
+        await w.apply_answer(a)
+
+    llm = RetrieveThenReflectLLM([{"claim": "SHOULD NOT BE USED", "why": "model path"}])
+    runtime = make_runtime(files, llm)
+    jev = FakeJev(default_noul=0.01)  # nothing is supported, per JEV
+    runtime.jev = jev
+    graph = ChatGraph(runtime, MemorySaver())
+
+    await graph.respond("when does my lease end?", session_id="t-jev")
+    assert await background.drain() == 0
+
+    flags = files.root / "config" / "hallucination_flags.jsonl"
+    body = flags.read_text(encoding="utf-8")
+    assert "JEV support p=" in body
+    assert "SHOULD NOT BE USED" not in body
+    assert jev.calls
 
 
 async def test_graph_turn_without_retrieval_no_flag(tmp_path: Path):
