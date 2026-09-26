@@ -63,7 +63,7 @@ def _forget(task: asyncio.Task) -> None:
 
 
 def pending() -> int:
-    """Number of in-flight background tasks (dashboard + tests)."""
+    """Number of in-flight background tasks (shutdown + tests)."""
     return len(_tasks)
 
 

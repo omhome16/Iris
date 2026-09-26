@@ -1,16 +1,14 @@
 """Iris API — FastAPI entrypoint.
 
-Boot sequence (lifespan):
-1. Connect the memory index (Postgres + pgvector, schema ensured)
-2. Reindex the workspace files (files are the source of truth)
-3. Build the Runtime + PostgresSaver checkpointer + chat graph
-4. (Chapters 5+) start the scheduler + Telegram MCP channel
+The boot sequence lives in `iris.engine` (public as `iris.harness()`); this
+module is one client of it.
+The lifespan below opens a harness and hands the route handlers
+`app.state.runtime` / `app.state.graph`.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import os
@@ -26,187 +24,43 @@ if sys.platform == "win32":
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
 
 from iris import background
 from iris.agent.chat import ApprovalRequired, ChatGraph
 from iris.agent.runtime import Runtime
-from iris.channels.telegram_mcp import TelegramMCPClient
 from iris.config import settings
-from iris.jev.client import JevClient
-from iris.jev.recall import JevReranker
-from iris.memory.dreaming import DreamEngine
+from iris.engine import harness
 from iris.memory.files import ConcurrencyError, WorkspaceFiles
 from iris.memory.forgetting import ForgettingEngine, decay_curve, supersede_in_text
 from iris.memory.index import MemoryIndex
-from iris.memory.indexer import Reindexer
-from iris.memory.llm import LLMClient
 from iris.memory.provenance import Origin
-from iris.memory.skills import SkillLibrary
 from iris.onboarding import OnboardingWizard
-from iris.sandbox import Sandbox
-from iris.scheduler import build_scheduler
 from iris.security import require_token, warn_if_unset
 from iris.text import text_of
-from iris.trace import TraceLogger
 from iris.voice import transcribe
 
 log = logging.getLogger("iris")
 
 
-def _checkpointer_dsn(dsn: str) -> str:
-    return dsn.replace("postgresql+psycopg://", "postgresql://")
-
-
-def _sync_owner_chat_id() -> bool:
-    """The Telegram bridge learns the owner's chat id at the first /start and
-    persists it to data/owner.json. The core previously relied on a copy in
-    .env (OWNER_CHAT_ID) that nothing ever updated — so morning briefs and
-    scheduled deliveries stayed silent after the bridge discovered the owner.
-    Sync the bridge's answer into settings when the env value is unset."""
-    if settings.owner_chat_id:
-        return True
-    env_file = os.environ.get("OWNER_FILE", "")
-    candidates: list[Path] = [Path(env_file)] if env_file else []
-    candidates += [
-        Path(settings.workspace_dir).parent / "mcp_servers" / "telegram" / "data" / "owner.json",
-        Path("mcp_servers") / "telegram" / "data" / "owner.json",
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            chat_id = int(json.loads(path.read_text(encoding="utf-8")).get("chat_id"))
-        except Exception:  # noqa: BLE001 - best-effort sync
-            continue
-        if chat_id:
-            settings.owner_chat_id = chat_id
-            log.info("owner chat id synced from bridge (%s): %s", path, chat_id)
-            return True
-    return False
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    files = WorkspaceFiles(Path(settings.workspace_dir))
-    _sync_owner_chat_id()
+    """Boot the engine through the library (`iris.harness`), then serve.
 
-    from iris.ledger import CostLedger
+    The API is a *client* of the library, exactly like `iris chat`: it opens the
+    same harness and hands the route handlers `app.state.runtime` /
+    `app.state.graph`. `postgres="require"` is the API's contract — a missing
+    database is a boot failure here, whereas the CLI degrades instead.
 
-    ledger = CostLedger(files.root / "config" / "llm_calls.jsonl")
-    llm = LLMClient(ledger=ledger)
-
-    # JEV (TypeSafe System One): typed judgments for recall reranking, skill
-    # selection and untrusted-content screening. Optional by design — when the
-    # key is absent every integration falls back to the deterministic path.
-    jev = JevClient(ledger=ledger)
-    if jev.enabled:
-        log.info("jev enabled (model=%s)", settings.jev_model)
-    else:
-        log.info("jev disabled (%s): using deterministic paths", jev.unavailable_reason())
-
-    index = MemoryIndex(settings.postgres_dsn, llm, reranker=JevReranker(jev))
-    await index.connect()
-
-    reindexer = Reindexer(files, index, llm)
-    try:
-        n = await reindexer.reindex_all()
-        log.info("memory index ready: %d chunks reindexed", n)
-    except Exception as exc:  # noqa: BLE001 - boot must not die on missing credentials
-        log.warning("reindex skipped at boot: %s", exc)
-
-    checkpointer = AsyncPostgresSaver.from_conn_string(
-        _checkpointer_dsn(settings.postgres_dsn)
-    )
-    async with checkpointer as saver:
-        await saver.setup()
-
-        runtime = Runtime(
-            files=files,
-            llm=llm,
-            index=index,
-            reindexer=reindexer,
-            dreams=DreamEngine(llm, files, index),
-            forgetting=ForgettingEngine(index),
-            skills=SkillLibrary(files),
-            sandbox=Sandbox(Path(settings.sandbox_dir)),
-            jev=jev,
-            traces=TraceLogger(files.root / "config" / "traces.jsonl"),
-        )
-
-        from iris.agent.subagents import ResearchSubagent
-
-        runtime.research = ResearchSubagent(runtime)
-
-        telegram = TelegramMCPClient(settings.telegram_mcp_url)
-        if await telegram.connect():
-            runtime.telegram = telegram
-        else:
-            # Bridge may still be starting; retry in the background so the
-            # channel appears as soon as it is reachable (no boot dependency).
-            # Previously the retry gave up after 10x5s and the channel stayed
-            # dead until restart — matching the repeated "telegram MCP
-            # unavailable" errors in the logs.
-            log.warning("telegram channel not connected; retrying in background")
-
-            async def _retry_telegram() -> None:
-                delay = 5.0
-                while True:
-                    await asyncio.sleep(delay)
-                    if await telegram.connect():
-                        runtime.telegram = telegram
-                        log.info("telegram channel connected on retry")
-                        return
-                    delay = min(delay * 1.5, 120.0)
-
-            # Keep a reference: an unreferenced task can be garbage-collected
-            # mid-flight, which for a retry loop means the Telegram channel
-            # silently never reconnects after a bridge restart.
-            retry_task = asyncio.create_task(_retry_telegram())
-            app.state.telegram_retry_task = retry_task
-
-        graph = ChatGraph(runtime, saver)
-
-        scheduler = build_scheduler(runtime)
-        scheduler.start()
-        log.info("scheduler started: %s", [j.id for j in scheduler.get_jobs()])
-
-        from iris.tasks import TaskScheduler, TaskStore
-
-        task_scheduler = TaskScheduler(
-            TaskStore(files.root / "config" / "tasks.json"),
-            runtime,
-            graph,
-            scheduler,
-        )
-        task_scheduler.register_all()
-        runtime.tasks = task_scheduler
-
-        def _on_onboarded() -> None:
-            from iris.scheduler import owner_sleep_hour, reschedule_nightly
-
-            reschedule_nightly(scheduler, owner_sleep_hour(files.root))
-
-        runtime.on_onboarded = _on_onboarded
-
-        app.state.runtime = runtime
-        app.state.graph = graph
-        try:
-            yield
-        finally:
-            if (retry := getattr(app.state, "telegram_retry_task", None)) is not None and not retry.done():
-                retry.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await retry
-            # Let post-reply passes finish before the loop goes away. They are
-            # deliberately off the reply path, so without this a shutdown could
-            # drop a reflection write that was already in flight.
-            await background.drain()
-            scheduler.shutdown(wait=False)
-            await telegram.close()
-            await index.close()
-            await jev.close()
+    Shutdown ordering (stop taking work, drain the fire-and-forget passes,
+    release connections) lives in `Harness.aclose`, which is where it ran
+    before this module delegated — there is nothing left to do here.
+    """
+    async with harness(postgres="require") as brain:
+        app.state.brain = brain
+        app.state.runtime = brain.runtime
+        app.state.graph = brain.graph
+        yield
 
 
 app = FastAPI(title="Iris", version="0.1.0", lifespan=lifespan)
@@ -489,7 +343,7 @@ async def rot(_token: None = Depends(require_token)) -> dict:
 
 @app.get("/retention")
 async def retention(_token: None = Depends(require_token)) -> dict:
-    """Per-chunk retention stats + decay curve — dashboard feed."""
+    """Per-chunk retention stats + decay curve — API feed."""
     forgetting: ForgettingEngine = app.state.runtime.forgetting
     rows = await forgetting.retention_report()
     curve = decay_curve()
@@ -514,7 +368,7 @@ async def mind(_token: None = Depends(require_token)) -> dict:
         "memory": files.read(files.memory),
         "user": files.read(files.user),
         "agents": files.read(files.instructions),
-        # The episodic tier was missing from the snapshot, so the dashboard
+        # The episodic tier was missing from the snapshot, so clients
         # could show what Iris believes but never what she was told today.
         "daily": files.read(daily) if daily.exists() else "",
         "today": today.isoformat(),
@@ -522,7 +376,45 @@ async def mind(_token: None = Depends(require_token)) -> dict:
         "skills": skills,
         "stats": stats,
         "hallucination_flags": flags,
+        # What is waiting for the next dream cycle — the staged
+        # list. Without this the dream diary could only show what dreaming
+        # already wrote, never what it is about to promote.
+        "staged": _staged_preview(files),
     }
+
+
+def _staged_preview(files: WorkspaceFiles, limit: int = 8) -> list[dict]:
+    """Newest staged signals from `.dreams/staging-*.jsonl` (best-effort)."""
+    out: list[dict] = []
+    try:
+        paths = sorted(files.staging_dir().glob("staging-*.jsonl"), reverse=True)
+    except OSError:
+        return out
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            content = str(raw.get("content", "")).strip()
+            if not content:
+                continue
+            out.append(
+                {
+                    "content": content,
+                    "importance": float(raw.get("importance", 0.0) or 0.0),
+                    "target": str(raw.get("target", "") or ""),
+                }
+            )
+            if len(out) >= limit:
+                return out
+    return out
 
 
 @app.get("/skills")
@@ -541,12 +433,59 @@ async def skills_list(_token: None = Depends(require_token)) -> dict:
     }
 
 
+@app.get("/agents")
+async def agents_list(limit: int = 10, _token: None = Depends(require_token)) -> dict:
+    """The declared roles plus recent delegations — which agent decided what."""
+    from iris.agents.roles import ROLES
+    from iris.cli.agents import handoffs_from_traces
+
+    return {
+        "enabled": settings.multi_agent_enabled,
+        "roles": [
+            {
+                "name": role.name,
+                "description": role.description,
+                "tier": role.tier,
+                "lane": role.search_lane,
+                "tools": sorted(role.tools),
+                "max_tool_rounds": role.max_tool_rounds,
+                "max_output_chars": role.max_output_chars,
+            }
+            for role in ROLES.values()
+        ],
+        "decisions": [
+            {"kind": kind, **event}
+            for kind, event in handoffs_from_traces(max(1, min(limit, 100)))
+        ],
+    }
+
+
+@app.post("/cron/reload")
+async def cron_reload(_token: None = Depends(require_token)) -> dict:
+    """Re-read stored jobs into the live scheduler.
+
+    `iris cron add|rm` edits the store from another process, so a running engine
+    needs to be told. This is that telling — one call, no restart.
+    """
+    runtime: Runtime = app.state.runtime
+    if runtime.tasks is None:
+        return {"reloaded": False, "reason": "this runtime has no task scheduler"}
+    runtime.tasks.register_all()
+    jobs = [t.to_dict() for t in runtime.tasks.pending()]
+    return {"reloaded": True, "jobs": jobs}
+
+
 @app.get("/tasks")
 async def tasks_list(_token: None = Depends(require_token)) -> dict:
-    """Pending one-off scheduled tasks (dashboard + /tasks feed)."""
+    """Pending scheduled jobs (/tasks feed): one-off and recurring."""
     runtime: Runtime = app.state.runtime
     tasks = runtime.tasks.pending() if runtime.tasks is not None else []
-    return {"tasks": [t.to_dict() for t in tasks]}
+    return {
+        "tasks": [
+            {**t.to_dict(), "schedule": t.describe(), "recurring": t.recurring}
+            for t in tasks
+        ]
+    }
 
 
 @app.get("/costs")
@@ -570,6 +509,60 @@ async def traces(limit: int = 20, _token: None = Depends(require_token)) -> dict
     return {"traces": logger.recent(max(1, min(limit, 100))) if logger else []}
 
 
+@app.get("/tools")
+async def tools(_token: None = Depends(require_token)) -> dict:
+    """The declared tool surface: class, policy, source and deferral per tool.
+
+    Reads the same declarations `tool_schemas`/`dispatch` enforce, so this route
+    cannot describe a policy the engine does not apply.
+    """
+    from iris.toolpolicy import TOOL_DECLARATIONS, policy_snapshot, surface_order, unknown_overrides
+
+    overrides = settings.tool_policy_overrides
+    # A tool the engine did not register is not on the surface at all: reflect
+    # that rather than describing a capability this boot does not have.
+    runtime = getattr(app.state, "runtime", None)
+    present = None
+    if runtime is not None and getattr(runtime, "computer", None) is None:
+        present = [n for n in TOOL_DECLARATIONS if n != "computer"]
+    visible, deferred = surface_order(settings.tool_surface_budget, present=present)
+    return {
+        "budget": settings.tool_surface_budget,
+        "visible": visible,
+        "deferred": deferred,
+        "tools": policy_snapshot(overrides),
+        "unknown_overrides": unknown_overrides(overrides),
+    }
+
+
+@app.get("/guards")
+async def guards(_token: None = Depends(require_token)) -> dict:
+    """The pre-tool guard chain: declared policy *and* live state.
+
+    `iris guards` shows the same policy from settings and the day counters from
+    disk, but only a running engine knows which circuits are open right now —
+    that is per-run state, and this is the route that can see it.
+    """
+    runtime = getattr(app.state, "runtime", None)
+    chain = getattr(runtime, "guards", None) if runtime is not None else None
+    if chain is None:
+        return {"enabled": False, "reason": "no guard chain on this runtime"}
+    return chain.snapshot()
+
+
+@app.get("/actions")
+async def actions(limit: int = 20, _token: None = Depends(require_token)) -> dict:
+    """Recent computer-use actions (config/actions.jsonl, newest first).
+
+    The log never contains typed text — it carries a length and a digest instead
+    — so replaying this route cannot leak a credential.
+    """
+    from iris.computer.audit import ActionLog
+
+    log = ActionLog(Path(settings.workspace_dir) / "config" / "actions.jsonl")
+    return {"actions": log.recent(max(1, min(limit, 100)))}
+
+
 class ForgetRequest(BaseModel):
     query: str
 
@@ -586,12 +579,16 @@ async def forget_search(
     """HITL phase 1: find candidate memories matching the query.
 
     Restricted to MEMORY.md: the confirm step only edits curated owner
-    memory, so returning daily-note candidates was a dead end."""
+    memory, so returning daily-note candidates was a dead end. A hit without a
+    chunk index is skipped too — confirm addresses the entry by
+    (path, chunk_index), so such a candidate could never be retired. This route
+    raised AttributeError before `MemoryHit` carried the field, which broke the
+    Telegram bridge's whole forget flow."""
     runtime: Runtime = app.state.runtime
     hits = await runtime.index.search(
         req.query, top_k=3, mrr_top_k=1, require_origin={Origin.OWNER}
     )
-    hits = [h for h in hits if h.path == "MEMORY.md"]
+    hits = [h for h in hits if h.path == "MEMORY.md" and h.chunk_index >= 0]
     return {
         "candidates": [
             {
