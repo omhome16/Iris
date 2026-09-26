@@ -5,12 +5,21 @@ pulls the right memory?* Runs the real `MemoryIndex.search` code path with
 deterministic (hash) embeddings against a synthetic corpus, toggling one
 component at a time:
 
+  memory_off     no retrieval at all — the OFF baseline every other row is read against
   full           hybrid vector+FTS × recency decay × importance, then MMR
   vector_only    pure cosine similarity (no hybrid, no decay, no importance)
   no_decay       hybrid + importance, recency removed
   no_importance  hybrid + decay, importance removed
   no_mmr         full scoring but no diversity re-ranking (top-k by score)
   no_rerank      full scoring but the JEV relevance term is not consulted
+
+The OFF arm exists because an ablation table that only ever compares variants
+of memory cannot show that memory is worth having: the vault's note is that
+memory was never measured against a no-memory baseline, so a component that
+hurt was indistinguishable from one that merely did not help. `memory_off` is
+0/6 by construction (see `MemoryIndex.search`), so its value is not the number —
+it is that `full`'s margin over it is now stated with an interval instead of
+assumed.
 
 The rerank row matters because JEV replaces the hybrid relevance term. The lab
 forces the JEV client off (`jev_disabled_reason`), so `full` here is the
@@ -54,7 +63,10 @@ DSN = os.getenv(
 
 REPORT = ROOT / "reports" / "eval_lab.md"
 
+# Ordered baseline-first: the OFF arm leads so the table reads as "here is
+# nothing, here is everything, here is what each piece is worth".
 MODES = {
+    "memory_off": {"memory_off"},
     "full": set(),
     "vector_only": {"vector_only"},
     "no_decay": {"no_decay"},
@@ -62,6 +74,10 @@ MODES = {
     "no_mmr": {"no_mmr"},
     "no_rerank": {"no_rerank"},
 }
+
+# The arm nothing is measured against; `full` is the reference for the variants.
+OFF_MODE = "memory_off"
+REFERENCE_MODE = "full"
 
 
 class FakeLLM(LLMClient):
@@ -158,26 +174,40 @@ def render_report(
 
     Pure so the statistics can be checked without a database: the numbers are the
     input and the prose is the output (audit G6). Every rate carries a Wilson
-    interval, and every ablation carries a pre-registered verdict.
+    interval, every ablation carries a pre-registered verdict, and the OFF arm is
+    required rather than defaulted — a report that invents its own baseline is
+    the fabrication this arm exists to prevent.
     """
-    full = results["full"]
+    if OFF_MODE not in results or OFF_MODE not in per_query:
+        raise ValueError(
+            f"the report needs the {OFF_MODE} arm in both results and per_query: it "
+            "is the baseline every other row is read against"
+        )
+    off = results[OFF_MODE]
+    full = results[REFERENCE_MODE]
     lines = [
         "# Eval lab — recall ablation study",
         "",
         f"Date: {date.today().isoformat()} · synthetic corpus, deterministic embeddings, "
         "no model calls · the real `MemoryIndex.search` code path, one knob toggled per row.",
         "",
-        "| mode | recall@5 (95% CI) | mrr@5 | mean gold rank | vs full |",
-        "|---|---|---|---|---|",
+        f"`{OFF_MODE}` is the **OFF baseline**: no retrieval at all. Every other row is "
+        "read against it *and* against `full`, because a table that only compares "
+        "variants of memory cannot show that memory is worth having.",
+        "",
+        "| mode | recall@5 (95% CI) | mrr@5 | mean gold rank | vs full | vs off |",
+        "|---|---|---|---|---|---|",
     ]
     for mode, r in results.items():
-        delta = f"{r['recall@5'] - full['recall@5']:+.2f}" if mode != "full" else "—"
         values = per_query.get(mode, [])
         successes = round(r["recall@5"] * len(values)) if values else 0
         low, high = wilson_interval(successes, len(values))
         ci = f"{low:.2f}, {high:.2f}" if values else "—"
+        vs_full = f"{r['recall@5'] - full['recall@5']:+.2f}" if mode != REFERENCE_MODE else "—"
+        vs_off = f"{r['recall@5'] - off['recall@5']:+.2f}" if mode != OFF_MODE else "—"
         lines.append(
-            f"| {mode} | {r['recall@5']:.2f} [{ci}] | {r['mrr@5']:.2f} | {r['mean_rank']:.2f} | {delta} |"
+            f"| {mode} | {r['recall@5']:.2f} [{ci}] | {r['mrr@5']:.2f} | {r['mean_rank']:.2f} "
+            f"| {vs_full} | {vs_off} |"
         )
     lines += [
         "",
@@ -191,7 +221,8 @@ def render_report(
         "**Verdict:** the spread between modes shows how much each component "
         "contributes. If `no_decay` ~= `full`, recency isn't earning its keep on this "
         "corpus; if `no_mmr` ~= `full`, the diversity step adds nothing; `vector_only` "
-        "sets the baseline a deterministic pipeline must beat.",
+        "sets the baseline a deterministic pipeline must beat, and `memory_off` is the "
+        "floor both of them clear.",
         "",
         "**Honest caveat:** the default lane is a *precision* device — decay and "
         "importance deliberately demote old, low-importance facts below fresh, "
@@ -208,6 +239,10 @@ def render_report(
     lines += [
         "",
         "## Escalation lane — does it close the gap?",
+        "",
+        f"Measured against the escalation lane itself, not against `{OFF_MODE}`: the "
+        "lane is a second retrieval path, so its own recall@5 is the number that "
+        "matters.",
         "",
         "| metric | value |",
         "|---|---|",
@@ -258,9 +293,12 @@ def render_report(
         "|---|---|---|---|",
     ]
     for mode in MODES:
-        if mode == "full":
+        # `memory_off` is not a variant of the pipeline: it is the baseline, and
+        # it gets its own comparison below rather than a row that would read as
+        # "turning memory off regressed memory".
+        if mode in (REFERENCE_MODE, OFF_MODE):
             continue
-        outcome = decide(baseline=per_query["full"], candidate=per_query[mode], rule=rule)
+        outcome = decide(baseline=per_query[REFERENCE_MODE], candidate=per_query[mode], rule=rule)
         low, high = outcome["ci"]
         lines.append(
             f"| {mode} | {outcome['delta']:+.2f} | [{low:+.2f}, {high:+.2f}] | {outcome['verdict']} |"
@@ -271,6 +309,36 @@ def render_report(
         "single query is worth ~0.17 of recall — larger than any threshold worth "
         "pre-registering. The lab's value is the direction and the mechanism, not a "
         "p-value. Enlarging the query set is the prerequisite for a pass/fail claim.",
+        "",
+        "### Does memory earn its keep? (the OFF baseline)",
+        "",
+        "The one comparison that is meaningful at this set size, because the arms are "
+        "maximally far apart rather than separated by a single knob:",
+        "",
+        "| comparison | Δ recall@5 | 95% CI | verdict |",
+        "|---|---|---|---|",
+    ]
+    earns = decide(
+        baseline=per_query[OFF_MODE], candidate=per_query[REFERENCE_MODE], rule=rule
+    )
+    low, high = earns["ci"]
+    lines += [
+        f"| `{REFERENCE_MODE}` vs `{OFF_MODE}` | {earns['delta']:+.2f} | "
+        f"[{low:+.2f}, {high:+.2f}] | {earns['verdict']} |",
+        "",
+        f"A `pass` here means the interval clears the pre-registered "
+        f"+{rule.min_effect:g} minimum effect: memory's contribution on this corpus is "
+        "larger than the query set's own sampling noise. A `fail` would mean retrieval "
+        "was actively hurting, which is the outcome the OFF arm exists to catch.",
+        "",
+        "**Scope, stated plainly.** This is a *retrieval* OFF arm: the corpus is fixed "
+        "and the question is which stored fact reaches the caller. It says nothing "
+        "about the write path (capture, dreaming, consolidation), so it is not a "
+        "whole-system memory-off reply-quality study — that comparison needs the "
+        "capture node in the loop and a judged answer set, and it is the natural next "
+        "study rather than something this file can claim. What it does establish is the "
+        "floor: the number a memory change must beat before anyone may call it an "
+        "improvement.",
     ]
     return "\n".join(lines)
 

@@ -284,6 +284,35 @@ async def test_search_rerank_flips_the_order_and_respects_ablations():
     assert "headphones" in hits[0].content
 
 
+async def test_memory_off_is_an_off_switch_not_an_empty_result():
+    """The OFF baseline has to stop *before* the search: an arm that ran the
+    query and then discarded the hits would answer the same question while
+    hiding what retrieval costs, which is half of what the arm is for."""
+
+    class CountingEmbedder:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def embed(self, texts):
+            self.calls += 1
+            return [[0.1, 0.2]] * len(texts)
+
+        async def embed_one(self, text):
+            self.calls += 1
+            return [0.1, 0.2]
+
+    jev = FakeJev(nouls={"c0": 0.9})
+    idx = RowIndex(
+        [_row("the lease renews in September", vscore=0.9, embedding=[1.0, 0.0])],
+        reranker=JevReranker(jev),
+    )
+    idx.llm = CountingEmbedder()
+
+    assert await idx.search("lease", top_k=5, mrr_top_k=5, ablation={"memory_off"}) == []
+    assert idx.llm.calls == 0, "an OFF arm must not embed"
+    assert jev.calls == [], "an OFF arm must not consult the judgment layer"
+
+
 # ── guard ───────────────────────────────────────────────────────────────────
 
 async def test_guard_passes_ordinary_content():

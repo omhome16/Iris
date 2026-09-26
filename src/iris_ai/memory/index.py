@@ -306,8 +306,17 @@ class MemoryIndex:
         ablation: set[str] | None = None,
     ) -> list[MemoryHit]:
         """Ablation knobs (eval-lab only, default = full pipeline):
-        {"vector_only", "no_decay", "no_importance", "no_mmr", "no_rerank"}."""
+        {"memory_off", "vector_only", "no_decay", "no_importance", "no_mmr",
+        "no_rerank"}.
+
+        `memory_off` is the OFF baseline, and it returns before embedding on
+        purpose: an arm that ran the search and then discarded the hits would
+        measure the same answer while hiding what retrieval costs, and the lab's
+        claim about memory is about a turn that never had any.
+        """
         ablation = ablation or set()
+        if "memory_off" in ablation:
+            return []
         origins = [o.value for o in (require_origin or set(Origin))]
         key = self._cache_key(
             query=query, top_k=top_k, mrr_top_k=mrr_top_k, origins=origins, ablation=ablation

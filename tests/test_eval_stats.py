@@ -205,3 +205,40 @@ def test_the_report_is_a_pure_function_of_its_measurements():
     first = lab.render_report(results, per_query, {}, [0.5], [0.5], [])
     second = lab.render_report(results, per_query, {}, [0.5], [0.5], [])
     assert first == second
+
+
+def test_the_report_states_what_memory_is_worth_against_the_off_baseline():
+    """An ablation table that only compares variants of memory cannot show that
+    memory helps. The OFF arm is the floor, and the claim over it is the one
+    comparison that is meaningful at this query-set size."""
+    lab = _eval_lab()
+    modes = list(lab.MODES)
+    results = {m: {"recall@5": 5 / 6, "mrr@5": 0.7, "mean_rank": 1.5} for m in modes}
+    results[lab.OFF_MODE] = {"recall@5": 0.0, "mrr@5": 0.0, "mean_rank": 6.0}
+    per_query = {m: [1.0, 1.0, 1.0, 1.0, 1.0, 0.0] for m in modes}
+    per_query[lab.OFF_MODE] = [0.0] * 6
+
+    report = lab.render_report(results, per_query, {}, [0.9], [0.8], [])
+
+    assert "| mode | recall@5 (95% CI) | mrr@5 | mean gold rank | vs full | vs off |" in report
+    # The OFF arm's own rate keeps its interval (0/6 is not certainty).
+    assert f"| {lab.OFF_MODE} | 0.00 [0.00, 0.39]" in report
+    assert "Does memory earn its keep?" in report
+    # Paired against the OFF arm: five of six deltas are +1, so the interval
+    # clears the pre-registered minimum effect and the row says `pass`.
+    earns = next(
+        line
+        for line in report.splitlines()
+        if line.startswith(f"| `{lab.REFERENCE_MODE}` vs `{lab.OFF_MODE}` |")
+    )
+    assert earns.split("|")[2].strip() == "+0.83"
+    assert earns.strip().endswith("| pass |")
+
+
+def test_the_report_refuses_to_invent_its_own_baseline():
+    lab = _eval_lab()
+    modes = [m for m in lab.MODES if m != lab.OFF_MODE]
+    results = {m: {"recall@5": 0.5, "mrr@5": 0.5, "mean_rank": 3.0} for m in modes}
+    per_query = {m: [1.0, 0.0] for m in modes}
+    with pytest.raises(ValueError, match=lab.OFF_MODE):
+        lab.render_report(results, per_query, {}, [0.5], [0.5], [])
