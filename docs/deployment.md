@@ -44,12 +44,78 @@ Copy [`.env.example`](../.env.example) and set at minimum:
 | `LLM_PROVIDER` + one provider key | `gemini` is the only provider that also serves embeddings; with no Gemini key, embeddings fall back to a local Ollama, which must then also be reachable |
 | `POSTGRES_DSN` | must point at the pgvector database |
 | `IRIS_API_TOKEN` | the API is the only thing standing between the internet and your memory; boot logs a warning when it is unset |
-| `DASHBOARD_USER` / `DASHBOARD_PASSWORD` | the dashboard proxies write routes (chat, `/sleep`, `/forget`) |
 | `OWNER_CHAT_ID` | pins bridge ownership *and* enables the morning brief. Until it is set, the first `/start` claims the instance |
 | `TYPESAFE_API_KEY` | optional; enables the JEV layer, falls back cleanly without it |
 
 `IRIS_TIMEZONE` drives the sleep hour, the morning brief, and every daily-note
 timestamp — set it to your real timezone or the scheduler fires at odd hours.
+
+## Harness guards and budgets
+
+Every tool call passes a deterministic, pre-dispatch chain —
+`budget → circuit → spiral/dedup → record` — before the tool runs. Nothing in it
+calls a model, so a guard cannot itself run away. The defaults are tuned for one
+owner and 1–3 calls per turn:
+
+| Variable | Meaning |
+|---|---|
+| `TOOL_GUARD_ENABLED` | `false` turns the whole chain into a no-op |
+| `TOOL_MAX_CALLS_PER_TURN` | Growth ceiling; past this the turn stops whatever it is calling |
+| `TOOL_SPIRAL_MIN_REPEATS` / `TOOL_SPIRAL_JACCARD` | The same tool with near-identical arguments this many times, and the argument similarity that counts as "the same call" |
+| `TOOL_FAILURE_THRESHOLD` | Consecutive failures of the same tool that open its circuit for the rest of the run |
+| `TOOL_FAILING_TOOLS_PER_TURN` | Distinct failing tools that escalate the whole turn |
+| `BUDGET_MAX_TOKENS_PER_TURN` / `BUDGET_MAX_TOKENS_PER_DAY` | Token ceilings. **`0` means no ceiling.** The day ceiling is what stops a runaway that spends a little every turn |
+| `APPROVAL_BIND_DIGEST` / `APPROVAL_GUARD_REPLAY` | Bind a resume to the digest of the action it showed, and let one `tool_call_id` grant once per thread |
+
+The day counters persist to `workspace/config/budget.json` so the ceiling
+survives a restart rather than resetting on redeploy; spending is split by kind
+(input / output / cached / embedding / tool-schema), because they fail
+differently. Every refusal lands in the turn trace as a `tool_guard` event with
+its reason.
+
+## Skill scripts
+
+A skill that ships code (a `scripts/` directory) runs through one gated path:
+`skill_run` resolves the file inside that skill's own directory, a deterministic
+AST pre-screen flags network/credential/exec patterns, a JEV judgment gate
+blocks anything it reads as unsafe, and the owner approves a run that carries
+the findings and the exact arguments. The subprocess gets a **constructed
+environment** — no `.env`, no provider keys — a timeout, and capped output.
+
+**Residual risk, stated plainly:** this is *process* isolation, not *kernel*
+isolation. Approving a script runs it as the same OS user as Iris, with that
+user's filesystem access. An approved script can still read anything that user
+can read, and there is no container boundary between Iris and the script. The
+gate makes running unknown code a deliberate, informed act; it does not make it
+safe. If you host skills you did not write, put the container itself behind the
+boundary — a per-deploy sandbox or a separate machine — rather than relying on
+the approval prompt.
+
+## Computer-use
+
+Screen control is **off by default** (`COMPUTER_ENABLED=false`), and off means
+the `computer` tool is not registered at all — not present-but-refusing. When it
+is on, the permission model is the boundary, not the driver:
+
+| Variable | Meaning |
+|---|---|
+| `COMPUTER_PROVIDER` | `null` (default, no driver) or `playwright`. Any other value fails closed |
+| `COMPUTER_ALLOWED_HOSTS` | Comma-separated host suffixes `navigate` may reach. **Empty means nothing may be navigated** |
+| `COMPUTER_ALLOWED_APPS` | Comma-separated window/page title suffixes `click`/`type` may act in. Empty means nothing |
+| `COMPUTER_MAX_ACTIONS` | Actions one approval buys |
+| `COMPUTER_CONFIRM_DESTRUCTIVE` | Confirmation for `click`/`type`; a keystroke into a credential-looking field confirms regardless |
+| `COMPUTER_ALLOW_OWNER_SCRIPTS_ONLY` | The kernel-boundary statement (default true) |
+
+Every attempted action is appended to `workspace/config/actions.jsonl`: what,
+where, allowed-or-not, and **never what was typed** (a length and a digest
+instead). Read it with `iris tools actions` or `GET /actions`.
+
+**Residual risk, stated plainly:** the driver runs in the Iris process with
+access to the same session a browser would have. The allowlists bound *where* an
+action may go, and the grant bounds *how many*, but neither is a hypervisor. For
+untrusted or third-party automation, the prerequisite is a Wasm/microVM tier —
+a container is not a containment boundary for code that can reach the screen.
+Until that exists, keep `computer` to owner-authored, allowlisted flows.
 
 ## Backups
 
@@ -88,6 +154,5 @@ instance with:
 - its own empty `workspace/` (seed it by running `scripts/fresh_start.py` then
   holding a scripted onboarding conversation);
 - its own database;
-- `DASHBOARD_USER`/`DASHBOARD_PASSWORD` published on the landing page, and
-  `IRIS_API_TOKEN` set;
+- `IRIS_API_TOKEN` set;
 - no `TELEGRAM_BOT_TOKEN`, so the demo has no channel into anything real.
