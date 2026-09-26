@@ -31,6 +31,9 @@ workspace/sandbox/
 # this directory holds real skills that must never be published by a blanket
 # `git add`. The directory is recreated at boot when it is missing.
 workspace/skills/
+# ingested URLs (imports/*.md) are UNTRUSTED web content and still the owner's
+# reading history — same rule as skills: never publishable by accident.
+workspace/imports/
 *.sqlite3
 *.log
 

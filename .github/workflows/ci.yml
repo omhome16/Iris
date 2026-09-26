@@ -23,8 +23,6 @@ env:
   LLM_PROVIDER: ollama
   OLLAMA_BASE_URL: http://127.0.0.1:1
   IRIS_API_TOKEN: ci-token
-  DASHBOARD_USER: ci
-  DASHBOARD_PASSWORD: ci
 
 jobs:
   lint:
@@ -37,6 +35,25 @@ jobs:
       - run: uv sync --frozen
       - name: Ruff
         run: uv run ruff check .
+
+  package:
+    # "The wheel builds" is a claim about the artifact, not about pyproject.toml.
+    # Build it, install it into a clean venv, and run the console entry from the
+    # installed copy — so a broken build or a missing entry point fails here
+    # rather than on someone's machine.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv build
+      - name: Install the wheel and run the console entry
+        run: |
+          python -m venv /tmp/iris-venv
+          /tmp/iris-venv/bin/pip install --quiet dist/*.whl
+          /tmp/iris-venv/bin/iris version
+          /tmp/iris-venv/bin/iris --help
 
   test:
     runs-on: ubuntu-latest
@@ -74,8 +91,10 @@ jobs:
           docker exec "$container" psql -U iris -d iris -v ON_ERROR_STOP=1 \
             -c 'CREATE DATABASE iris_test;'
       - name: Unit + integration tests
-        # The DB-backed suite is included here on purpose: it is skipped
-        # locally whenever Postgres is down, which is how it stayed dark.
+        # The DB-backed suite is included here on purpose: locally those tests
+        # fail loudly when no Postgres is listening (they do not skip), so on a
+        # laptop they only run when someone starts the container by hand —
+        # which is how they stayed dark. CI is where they always run.
         run: uv run pytest tests -q
 
   build:

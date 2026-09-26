@@ -5,13 +5,21 @@ Two roles in one process:
    call: `send_message`, `get_chat_history`, `broadcast`. This is the
    outbound channel — Iris reaches the owner through it.
 2. Long-polling bridge: receives Telegram updates, dispatches slash
-   commands to iris-core HTTP endpoints, forwards plain messages into
-   the /chat graph, and sends replies back.
+   commands to the core's endpoints, forwards plain messages into the
+   /chat graph, and sends replies back.
 
 The bridge learns the owner's chat id from the first /start and persists
 it to data/owner.json so Iris can message the owner proactively later.
 
+**This is a client of the library, not a second brain.** Turn streaming and
+command calls go through `iris.channels.brain.HttpBrainClient` — the one
+definition of the brain-client contract — and update handling uses
+`iris.channels.updates` (normalization + an idempotency ledger on disk, so a
+restart cannot replay updates into fresh turns). What stays here is transport:
+polling, sending, progressive edits, typing, file downloads, the owner gate.
+
 Requires env: TELEGRAM_BOT_TOKEN, IRIS_CORE_URL (default http://127.0.0.1:8000)
+Optional: IRIS_API_TOKEN (forwarded as a bearer token), UPDATES_FILE
 """
 
 from __future__ import annotations
@@ -28,12 +36,19 @@ from pathlib import Path
 import httpx
 from mcp.server.mcpserver.server import MCPServer
 
+from iris.channels.brain import HttpBrainClient
+from iris.channels.updates import InboundUpdate, UpdateLedger, normalize_update
+from iris.security import auth_headers
+
 log = logging.getLogger("telegram-mcp")
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 IRIS_CORE_URL = os.environ.get("IRIS_CORE_URL", "http://127.0.0.1:8000").rstrip("/")
 IRIS_API_TOKEN = os.environ.get("IRIS_API_TOKEN", "")
 OWNER_FILE = Path(os.environ.get("OWNER_FILE", "data/owner.json"))
+# Idempotency ledger: what this bridge has already handled. Beside owner.json so
+# the compose volume that persists ownership persists delivery state too.
+UPDATES_FILE = Path(os.environ.get("UPDATES_FILE", str(OWNER_FILE.parent / "updates.json")))
 BOT_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"  # downloads only
 
@@ -57,9 +72,10 @@ ENV_OWNER_IDS = _parse_chat_ids(os.environ.get("OWNER_CHAT_ID", ""))
 
 
 def _core_headers() -> dict[str, str]:
-    if IRIS_API_TOKEN:
-        return {"Authorization": f"Bearer {IRIS_API_TOKEN}"}
-    return {}
+    # The bridge resolves its own token (it runs as a separate process) but the
+    # *shape* of the header comes from iris.security, so it cannot drift from the
+    # check iris-core applies.
+    return auth_headers(IRIS_API_TOKEN)
 
 server = MCPServer(
     name="telegram",
@@ -213,7 +229,13 @@ class PendingForget:
 
 
 class CommandDispatcher:
-    """Maps a Telegram command to an iris-core HTTP call. Testable with a fake client."""
+    """Maps a Telegram command onto the brain client's JSON endpoints.
+
+    The HTTP shapes live in `HttpBrainClient`, not here; this class owns the
+    command vocabulary, the reply formatting and the pending-forget state.
+    Testable with a fake transport (an injected httpx client is used, never
+    closed — the caller owns that pool).
+    """
 
     def __init__(self, core_url: str, client: httpx.AsyncClient | None = None) -> None:
         self.core_url = core_url.rstrip("/")
@@ -221,59 +243,57 @@ class CommandDispatcher:
         self._owns_client = client is None
         self._client = client
 
+    def _brain(self) -> HttpBrainClient:
+        """A stateless wrapper over the caller's pool (or a temporary one)."""
+        return HttpBrainClient(
+            self.core_url,
+            token=IRIS_API_TOKEN,
+            client=self._client if self._client is not None else httpx.AsyncClient(timeout=300),
+        )
+
     async def dispatch(self, chat_id: int, text: str) -> str | None:
         """Return the reply to send, or None if the message is not a command."""
         if not text.startswith("/"):
             return None
         parts = text.split(maxsplit=1)
         cmd, arg = parts[0].lower(), parts[1] if len(parts) > 1 else ""
-        client = self._client or httpx.AsyncClient(timeout=300)
+        brain = self._brain()
         try:
             if cmd == "/start":
                 return "Owner chat bound. Say hi or type /help."
             if cmd == "/help":
                 return HELP_TEXT
             if cmd == "/mind":
-                r = await client.get(f"{self.core_url}/mind", headers=_core_headers())
-                return _format_mind(r.json())
+                return _format_mind(await brain.json_get("/mind"))
             if cmd == "/sleep":
-                r = await client.post(f"{self.core_url}/sleep", headers=_core_headers())
-                return _format_sleep(r.json())
+                return _format_sleep(await brain.json_post("/sleep", {}))
             if cmd == "/wake":
-                ret = await client.get(f"{self.core_url}/retention", headers=_core_headers())
-                rot = await client.get(f"{self.core_url}/rot", headers=_core_headers())
-                return _format_wake(ret.json(), rot.json())
+                ret = await brain.json_get("/retention")
+                rot = await brain.json_get("/rot")
+                return _format_wake(ret, rot)
             if cmd == "/rot":
-                r = await client.get(f"{self.core_url}/rot", headers=_core_headers())
-                return _format_rot(r.json())
+                return _format_rot(await brain.json_get("/rot"))
             if cmd == "/retention":
-                r = await client.get(f"{self.core_url}/retention", headers=_core_headers())
-                return _format_retention(r.json())
+                return _format_retention(await brain.json_get("/retention"))
             if cmd == "/skills":
-                r = await client.get(f"{self.core_url}/skills", headers=_core_headers())
-                return _format_skills(r.json())
+                return _format_skills(await brain.json_get("/skills"))
             if cmd == "/tasks":
-                r = await client.get(f"{self.core_url}/tasks", headers=_core_headers())
-                return _format_tasks(r.json())
+                return _format_tasks(await brain.json_get("/tasks"))
             if cmd == "/forget":
-                return await self._forget(chat_id, arg, client)
+                return await self._forget(chat_id, arg, brain)
             if cmd == "/forget-confirm":
-                return await self._forget_confirm(chat_id, client)
+                return await self._forget_confirm(chat_id, brain)
             if cmd == "/forget-cancel":
                 self.pending.pop(chat_id, None)
                 return "Forget cancelled — nothing was touched."
             return f"Unknown command {cmd}. Try /help."
         finally:
-            if self._owns_client:
-                await client.aclose()
+            await brain.aclose()
 
-    async def _forget(self, chat_id: int, arg: str, client: httpx.AsyncClient) -> str:
+    async def _forget(self, chat_id: int, arg: str, brain: HttpBrainClient) -> str:
         if not arg.strip():
             return "Usage: /forget <what to forget>"
-        r = await client.post(
-            f"{self.core_url}/forget", json={"query": arg}, headers=_core_headers()
-        )
-        data = r.json()
+        data = await brain.json_post("/forget", {"query": arg})
         if not data.get("candidates"):
             return "Nothing in memory matched that."
         c = data["candidates"][0]
@@ -283,16 +303,13 @@ class CommandDispatcher:
             f"Reply /forget-confirm to retire it, /forget-cancel to abort."
         )
 
-    async def _forget_confirm(self, chat_id: int, client: httpx.AsyncClient) -> str:
+    async def _forget_confirm(self, chat_id: int, brain: HttpBrainClient) -> str:
         p = self.pending.pop(chat_id, None)
         if p is None:
             return "No pending forget. Run /forget <text> first."
-        r = await client.post(
-            f"{self.core_url}/forget/confirm",
-            json={"path": p.path, "chunk_index": p.chunk_index},
-            headers=_core_headers(),
+        data = await brain.json_post(
+            "/forget/confirm", {"path": p.path, "chunk_index": p.chunk_index}
         )
-        data = r.json()
         if not data.get("ok"):
             return f"Forget failed: {data.get('error', 'unknown')}"
         return "Retired. The entry is superseded, not deleted — provenance kept."
@@ -378,11 +395,15 @@ async def _typing_loop(chat_id: int) -> None:
 
 
 async def _stream_chat_turn(chat_id: int, text: str, image: str | None = None) -> tuple[str, bool]:
-    """Stream a chat turn from /chat/stream into a progressively edited
-    Telegram message: typing indicator while thinking, then a growing reply
-    (throttled edits), with tool activity shown inline. Returns
-    (final_reply_text, delivered) where delivered means at least one message
-    was sent to the chat (the caller must not send a second copy)."""
+    """Stream a turn into a progressively edited Telegram message: typing
+    indicator while thinking, then a growing reply (throttled edits), with tool
+    activity shown inline. Returns (final_reply_text, delivered) where delivered
+    means at least one message was sent to the chat (the caller must not send a
+    second copy).
+
+    The turn itself is the library's: `HttpBrainClient.stream()` yields
+    `BrainEvent`s, so this function owns only the Telegram side of the stream.
+    """
     typing_task = asyncio.create_task(_typing_loop(chat_id))
     sent_id: int | None = None
     buf = ""
@@ -390,66 +411,48 @@ async def _stream_chat_turn(chat_id: int, text: str, image: str | None = None) -
     last_edit = 0.0
     throttle = 1.2
     last_sent = ""
-    payload: dict = {"message": text, "session_id": str(chat_id)}
-    if image:
-        payload["image"] = image
+    brain = HttpBrainClient(IRIS_CORE_URL, token=IRIS_API_TOKEN)
     try:
-        async with httpx.AsyncClient(timeout=300) as client, client.stream(
-            "POST",
-            f"{IRIS_CORE_URL}/chat/stream",
-            json=payload,
-            headers=_core_headers(),
-        ) as r:
-            async for line in r.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
+        async for event in brain.stream(text, session_id=str(chat_id), image=image):
+            if event.kind == "text":
+                buf += event.delta
+                display = buf
+            elif event.kind == "reply":
+                buf = event.text or buf
+                display = buf
+            elif event.kind == "tool_call" and not display.endswith("…"):
+                name = (event.call or {}).get("name", "tool")
+                display = f"{buf or '…'}\n\n🔧 {name}…"
+            elif event.kind == "approval":
+                # Human-in-the-loop: telegram forgets stay on the
+                # bridge's own two-phase flow, so cancel the graph
+                # interrupt and point the owner at /forget.
+                buf = "I'd like your OK before touching that memory — reply /forget <text> and confirm there."
+                display = buf
                 try:
-                    ev = json.loads(line[6:])
-                except json.JSONDecodeError:
-                    continue
-                kind = ev.get("kind")
-                if kind == "text":
-                    buf += ev.get("delta", "")
-                    display = buf
-                elif kind == "reply":
-                    buf = ev.get("text", buf)
-                    display = buf
-                elif kind == "tool_call" and not display.endswith("…"):
-                    name = (ev.get("call") or {}).get("name", "tool")
-                    display = f"{buf or '…'}\n\n🔧 {name}…"
-                elif kind == "approval":
-                    # Human-in-the-loop: telegram forgets stay on the
-                    # bridge's own two-phase flow, so cancel the graph
-                    # interrupt and point the owner at /forget.
-                    buf = "I'd like your OK before touching that memory — reply /forget <text> and confirm there."
-                    display = buf
-                    try:
-                        async with httpx.AsyncClient(timeout=30) as c:
-                            await c.post(
-                                f"{IRIS_CORE_URL}/chat/resume",
-                                json={"session_id": str(chat_id), "decision": "cancelled"},
-                                headers=_core_headers(),
-                            )
-                    except Exception:
-                        log.warning("approval cancel failed", exc_info=True)
-                if not display or kind not in ("text", "reply", "tool_call", "approval"):
-                    continue
-                now = time.monotonic()
-                if sent_id is None:
-                    result = await _tg(
-                        "sendMessage", chat_id=chat_id, text=display, disable_web_page_preview=True
-                    )
-                    if result:
-                        sent_id = result.get("message_id")
-                        last_edit = now
-                        last_sent = display
-                elif now - last_edit >= throttle:
-                    await _tg(
-                        "editMessageText", chat_id=chat_id, message_id=sent_id, text=display,
-                        disable_web_page_preview=True,
-                    )
+                    await brain.resume(str(chat_id), decision="cancelled")
+                except Exception:
+                    log.warning("approval cancel failed", exc_info=True)
+            else:
+                continue
+            # Progressive delivery: create the message on the first chunk,
+            # then edit it (throttled) as the reply grows.
+            now = time.monotonic()
+            if sent_id is None:
+                result = await _tg(
+                    "sendMessage", chat_id=chat_id, text=display, disable_web_page_preview=True
+                )
+                if result:
+                    sent_id = result.get("message_id")
                     last_edit = now
                     last_sent = display
+            elif now - last_edit >= throttle:
+                await _tg(
+                    "editMessageText", chat_id=chat_id, message_id=sent_id, text=display,
+                    disable_web_page_preview=True,
+                )
+                last_edit = now
+                last_sent = display
         if sent_id is not None and buf and buf != last_sent:
             # final sync: throttled edits leave the first chunk on screen
             # (e.g. "H") while buf grew to the full reply. Always flush.
@@ -463,6 +466,7 @@ async def _stream_chat_turn(chat_id: int, text: str, image: str | None = None) -
             buf = "I can't reach my brain right now — try again in a bit."
     finally:
         typing_task.cancel()
+        await brain.aclose()
     return buf, sent_id is not None
 
 
@@ -544,58 +548,73 @@ async def _handle_photo(chat_id: int, photo: list[dict], caption: str = "") -> N
 # instance made /forget-confirm always answer "No pending forget".
 dispatcher = CommandDispatcher(IRIS_CORE_URL)
 
+# Delivery state: persists the long-poll offset so a restart resumes where it
+# stopped instead of replaying handled updates into fresh turns.
+ledger = UpdateLedger(UPDATES_FILE)
+
+
+async def _handle_update(inbound: InboundUpdate) -> None:
+    """One normalized update: owner gate, then media / command / plain turn."""
+    chat_id = inbound.chat_id
+
+    # Owner gate: once the instance is bound (env or first /start), nobody else
+    # may chat with the graph, run commands, or claim ownership with /start.
+    owner = _resolved_owner()
+    if owner is not None and chat_id != owner:
+        if chat_id not in _refused_chats:
+            _refused_chats.add(chat_id)
+            await send_to_chat(
+                chat_id, "This Iris instance is private — its owner has not invited you."
+            )
+        return
+
+    if inbound.kind == "photo":
+        await _handle_photo(chat_id, inbound.photo or [], inbound.caption)
+        return
+    if inbound.kind == "voice":
+        await _handle_voice(chat_id, inbound.voice or {})
+        return
+    if inbound.kind == "other":
+        await send_to_chat(chat_id, "I can only read text, voice, or photos for now.")
+        return
+
+    _log_chat(chat_id, "user", inbound.text)
+    if inbound.text.startswith("/start"):
+        _save_owner(chat_id)
+    if inbound.kind == "command":
+        reply = await dispatcher.dispatch(chat_id, inbound.text)
+        if reply:
+            await send_to_chat(chat_id, reply)
+            _log_chat(chat_id, "iris", reply)
+        return
+    # plain message → the graph (onboarding wizard included)
+    reply, delivered = await _stream_chat_turn(chat_id, inbound.text)
+    if not delivered:
+        await send_to_chat(chat_id, reply)
+    _log_chat(chat_id, "iris", reply)
+
 
 async def _poll_loop() -> None:
     """Long-poll Telegram updates; forward messages into iris-core /chat."""
-    offset = 0
+    ledger.load()
     while True:
         try:
-            updates = await _tg("getUpdates", offset=offset, timeout=30)
+            updates = await _tg("getUpdates", offset=ledger.next_offset(), timeout=30)
             for u in updates or []:
-                offset = max(offset, u["update_id"] + 1)
-                msg = u.get("message") or u.get("edited_message")
-                if not msg:
+                inbound = normalize_update(u)
+                if inbound is None:
+                    # Nothing actionable (a status update, a chat join). Still
+                    # acknowledge it, or Telegram returns it forever.
+                    update_id = u.get("update_id") if isinstance(u, dict) else None
+                    if isinstance(update_id, int):
+                        ledger.mark_processed(update_id)
+                        ledger.save()
                     continue
-                chat_id = msg["chat"]["id"]
-                text = (msg.get("text") or "").strip()
-
-                # Owner gate: once the instance is bound (env or first
-                # /start), nobody else may chat with the graph, run
-                # commands, or claim ownership with /start.
-                owner = _resolved_owner()
-                if owner is not None and chat_id != owner:
-                    if chat_id not in _refused_chats:
-                        _refused_chats.add(chat_id)
-                        await send_to_chat(
-                            chat_id, "This Iris instance is private — its owner has not invited you."
-                        )
+                if ledger.is_duplicate(inbound.update_id):
                     continue
-
-                voice = msg.get("voice")
-                photo = msg.get("photo")
-                if not text and not voice and photo:
-                    await _handle_photo(chat_id, photo, msg.get("caption") or "")
-                    continue
-                if not text and voice:
-                    await _handle_voice(chat_id, voice)
-                    continue
-                if not text:
-                    await send_to_chat(chat_id, "I can only read text, voice, or photos for now.")
-                    continue
-                _log_chat(chat_id, "user", text)
-                if text.startswith("/start"):
-                    _save_owner(chat_id)
-                if text.startswith("/"):
-                    reply = await dispatcher.dispatch(chat_id, text)
-                    if reply:
-                        await send_to_chat(chat_id, reply)
-                        _log_chat(chat_id, "iris", reply)
-                    continue
-                # plain message → the graph (onboarding wizard included)
-                reply, delivered = await _stream_chat_turn(chat_id, text)
-                if not delivered:
-                    await send_to_chat(chat_id, reply)
-                _log_chat(chat_id, "iris", reply)
+                await _handle_update(inbound)
+                ledger.mark_processed(inbound.update_id)
+                ledger.save()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - polling must never die

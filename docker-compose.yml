@@ -39,7 +39,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      # Internal service: the dashboard proxies to it, the bridge calls it.
+      # Internal service: the Telegram bridge and local tools call it.
       # Bound to loopback so `docker compose up` never exposes an
       # auth-disabled API to the network.
       - "127.0.0.1:8000:8000"
@@ -52,7 +52,11 @@ services:
       start_period: 15s
 
   telegram-mcp:
-    build: ./mcp_servers/telegram
+    # Root context: the bridge imports the library (`iris.channels.*`), so the
+    # image needs the package source. See mcp_servers/telegram/Dockerfile.
+    build:
+      context: .
+      dockerfile: mcp_servers/telegram/Dockerfile
     env_file: .env
     environment:
       IRIS_CORE_URL: http://iris-core:8000
@@ -69,28 +73,6 @@ services:
       - "127.0.0.1:8100:8100"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket;socket.create_connection(('127.0.0.1',8100),3).close()\""]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 10s
-
-  dashboard:
-    build: ./dashboard
-    env_file: .env
-    environment:
-      IRIS_API_URL: http://iris-core:8000
-      # HTTP Basic auth for the dashboard itself (DASHBOARD_USER/_PASSWORD from
-      # .env). Unset = open, with a boot warning.
-      DASHBOARD_USER: ${DASHBOARD_USER:-}
-      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
-    depends_on:
-      iris-core:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    healthcheck:
-      # /healthz is the credential-free liveness route.
-      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)\""]
       interval: 10s
       timeout: 5s
       retries: 12
