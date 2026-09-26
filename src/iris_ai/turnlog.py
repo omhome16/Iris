@@ -7,7 +7,9 @@ Two things were invisible before this module:
    *what it answered*. The product claim is "memory you can see and trust", and
    a trust layer you cannot inspect is a black box.
 2. **Where the latency is.** A turn's total wall-clock says nothing about
-   whether the tail (journal + capture) or a model call dominated it.
+   whether the tail (journal + capture) or a model call dominated it, and one
+   number cannot separate *prefill* from *generation*: a p99 you cannot
+   attribute to either is a p99 you cannot act on.
 
 Both are per-turn and scoped to the graph run, so they live in a ContextVar
 rather than in LangGraph state: nodes inside one `ainvoke` share the context,
@@ -36,6 +38,9 @@ from typing import Any
 
 # One turn can produce a judgment per recalled chunk; cap what we keep.
 _MAX_JUDGMENTS = 60
+# Streamed model calls in a turn. A ReAct loop is already bounded (tool calls
+# per turn, handoffs per turn), so this is a backstop rather than a budget.
+_MAX_THROUGHPUT = 12
 # Free-text reasons are for a human reading a trace, not a log dump.
 _MAX_TEXT = 240
 
@@ -69,6 +74,11 @@ class TurnLog:
     # assembled one (a direct tool call in a test), so quiet turns stay compact.
     prompt_version: str = ""
     prompt_fingerprint: str = ""
+    # Prefill vs generation, one entry per *streamed* model call. Deliberately a
+    # list and not a sum: two streamed calls had two different prefills, and
+    # adding them invents a number. The buffered path has no first token to
+    # measure, so it records nothing here rather than guessing a split.
+    throughput: list[dict[str, float]] = field(default_factory=list)
 
     def add_usage(
         self,
@@ -125,6 +135,46 @@ class TurnLog:
         run `tools` many times), which is what makes totals add up."""
         self.stages[stage] = self.stages.get(stage, 0) + int(max(0.0, ms))
 
+    def completion_tokens(self) -> int:
+        """Generated tokens this turn, across every tier."""
+        return sum(int(b.get("completion_tokens", 0)) for b in self.usage.values())
+
+    def add_throughput(
+        self, *, ttft_ms: float | None, elapsed_ms: float, generated_tokens: int
+    ) -> None:
+        """Split one streamed call into prefill and generation.
+
+        - `ttft_ms` — request to first token. Prefill plus queueing: the part of
+          the wait that a shorter prompt or a warm cache would shrink.
+        - `tpot_ms` — milliseconds per token *after* the first. Generation
+          speed, which is what a bigger model or a longer answer costs.
+        - `tps` — output tokens per second over the whole call, derived from the
+          final usage so it is the provider's own count rather than a guess from
+          the stream length.
+
+        `ttft_ms=None` means no token ever arrived (a provider failure); the
+        elapsed time is still recorded, because that wait was real.
+        """
+        if len(self.throughput) >= _MAX_THROUGHPUT:
+            return
+        tokens = max(0, int(generated_tokens or 0))
+        entry: dict[str, float] = {"elapsed_ms": round(max(0.0, elapsed_ms), 1)}
+        if ttft_ms is not None:
+            entry["ttft_ms"] = round(max(0.0, ttft_ms), 1)
+        if tokens:
+            entry["output_tokens"] = tokens
+            if elapsed_ms > 0:
+                entry["tps"] = round(tokens / (elapsed_ms / 1000.0), 1)
+            # TPOT excludes the first token on both sides: the prefill time is
+            # already attributed to TTFT, and the first token is what TTFT
+            # measured. Dividing by `tokens` here was the classic off-by-one
+            # that makes a chat and a long generation look alike.
+            if ttft_ms is not None and tokens > 1:
+                generation_ms = max(0.0, elapsed_ms - ttft_ms)
+                if generation_ms > 0:
+                    entry["tpot_ms"] = round(generation_ms / (tokens - 1), 1)
+        self.throughput.append(entry)
+
     def to_trace(self) -> dict:
         """The `judgment` block of a trace line. Omitted entirely when empty,
         so an all-deterministic turn stays a compact line."""
@@ -137,6 +187,8 @@ class TurnLog:
                 "version": self.prompt_version,
                 "fingerprint": self.prompt_fingerprint,
             }
+        if self.throughput:
+            out["throughput"] = [dict(entry) for entry in self.throughput]
         if self.judgments or self.stages or self.usage:
             out["stages_ms"] = dict(self.stages)
             if self.usage:
@@ -223,6 +275,34 @@ def usage_total() -> int:
     """Prompt + completion tokens spent so far this turn (0 outside a turn)."""
     log = _current.get()
     return log.total_tokens() if log is not None else 0
+
+
+def completion_tokens_total() -> int:
+    """Generated tokens so far this turn (0 outside a turn).
+
+    Deltas of this around one streamed call are how the throughput split gets
+    the provider's own token count: the client records usage as it arrives, and
+    nothing else calls a model while the agent's stream is open.
+    """
+    log = _current.get()
+    return log.completion_tokens() if log is not None else 0
+
+
+def record_throughput(
+    *, ttft_ms: float | None, elapsed_ms: float, generated_tokens: int
+) -> None:
+    """Record one streamed call's prefill/generation split. No-op outside a turn.
+
+    Best-effort like every other entry point here: telemetry must never cost a
+    reply, and a broken `add_throughput` is swallowed rather than raised.
+    """
+    log = _current.get()
+    if log is None:
+        return
+    with contextlib.suppress(Exception):
+        log.add_throughput(
+            ttft_ms=ttft_ms, elapsed_ms=elapsed_ms, generated_tokens=generated_tokens
+        )
 
 
 def usage_snapshot() -> dict[str, dict[str, int]]:

@@ -333,6 +333,13 @@ class ChatGraph:
         writer = get_stream_writer()
         text_parts: list[str] = []
         calls: list[dict] = []
+        # Prefill/generation split, measured only here because only here is
+        # there a first token to measure. `started` deliberately spans the
+        # throttle and any retry before the first chunk: TTFT is what the owner
+        # waited, not a provider-internal number that hides a rate limit.
+        started = time.monotonic()
+        tokens_before = turnlog.completion_tokens_total()
+        first_token_at: float | None = None
         try:
             async for kind, payload in turnlog.stream_stage(
                 "agent",
@@ -342,6 +349,8 @@ class ChatGraph:
                     max_attempts=2,
                 ),
             ):
+                if first_token_at is None and payload and kind in ("thinking", "text", "tool_call"):
+                    first_token_at = time.monotonic()
                 if kind == "thinking" and payload:
                     writer({"kind": "thinking", "delta": payload})
                 elif kind == "text" and payload:
@@ -355,6 +364,17 @@ class ChatGraph:
         except Exception as exc:  # noqa: BLE001 - a provider outage must not 500 the turn
             log.warning("streamed agent LLM call failed: %s", exc)
             writer({"kind": "error"})
+        finally:
+            # Recorded even on failure: a stream that produced one token and
+            # died still has a real TTFT, and a stream that produced none still
+            # spent the wait. `generated_tokens` is the client's own usage (see
+            # `LLMClient._record`), captured as a delta around this call.
+            elapsed_ms = (time.monotonic() - started) * 1000
+            turnlog.record_throughput(
+                ttft_ms=(first_token_at - started) * 1000 if first_token_at is not None else None,
+                elapsed_ms=elapsed_ms,
+                generated_tokens=turnlog.completion_tokens_total() - tokens_before,
+            )
         text = "".join(text_parts)
         if calls:
             ai = {
