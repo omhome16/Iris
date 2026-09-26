@@ -19,6 +19,9 @@ is identical when JEV is unavailable.
 
 from __future__ import annotations
 
+import hashlib
+
+from iris_ai import turnlog
 from iris_ai.agent.runtime import Runtime
 from iris_ai.jev import suggest_skill
 
@@ -61,7 +64,15 @@ class ContextAssembler:
         if skill_block:
             parts.append(skill_block)
 
-        return "\n\n".join(parts), active
+        prefix = "\n\n".join(parts)
+        # Record which prompt policy built this turn, plus a fingerprint of the
+        # prefix it actually produced. Without both, "quality changed" cannot be
+        # attributed to a prompt edit rather than a model or a corpus change —
+        # the vault's "can't tell which prompt caused it" failure. The version
+        # is deliberate and bumped by hand; the fingerprint catches the case
+        # where someone edited a prompt and forgot to bump it.
+        turnlog.note_prompt(hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:12])
+        return prefix, active
 
     async def _skills_block(self, user_message: str) -> tuple[str, list[str]]:
         """Name only the skills worth looking at — never the procedure itself.

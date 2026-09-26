@@ -323,6 +323,13 @@ class Settings(BaseSettings):
     # tokens are recorded in the cost ledger and surfaced in /costs.
     llm_caching: bool = True
 
+    # ── Prompt identity ──────────────────────────────────────────────────
+    # Prompts live in code, so git already versions them; this is the explicit
+    # marker that says "the prompt changed". It rides on every trace together
+    # with a fingerprint of the assembled prefix, because an eval score you
+    # cannot attribute to a prompt, a model or a corpus is not evidence.
+    prompt_version: str = "v1"
+
     # ── JEV — TypeSafe System One layer ──────────────────────────────────
     # Jev is not a chat model: it takes a *state* plus typed questions and
     # returns calibrated probabilities (Noul), distributions (Choice) and

@@ -64,6 +64,11 @@ class TurnLog:
     # visible where the decision was made rather than discovered in the ledger
     # at the end of the month.
     usage: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Which prompt policy produced this turn, and a fingerprint of the assembled
+    # prefix. Set by the context assembler; empty for a turn that never
+    # assembled one (a direct tool call in a test), so quiet turns stay compact.
+    prompt_version: str = ""
+    prompt_fingerprint: str = ""
 
     def add_usage(
         self,
@@ -123,23 +128,31 @@ class TurnLog:
     def to_trace(self) -> dict:
         """The `judgment` block of a trace line. Omitted entirely when empty,
         so an all-deterministic turn stays a compact line."""
-        if not self.judgments and not self.stages and not self.usage:
-            return {}
-        out: dict[str, Any] = {"stages_ms": dict(self.stages)}
-        if self.usage:
-            out["usage"] = {tier: dict(b) for tier, b in self.usage.items()}
-            out["total_tokens"] = self.total_tokens()
-            if self.models:
-                out["models"] = {tier: list(names) for tier, names in self.models.items()}
-        if self.judgments:
-            out["events"] = self.judgments
-            # Counts let consumers summarise without re-scanning events.
-            counts: dict[str, int] = {}
-            for entry in self.judgments:
-                counts[entry["kind"]] = counts.get(entry["kind"], 0) + 1
-            out["counts"] = counts
-        if self.dropped:
-            out["dropped"] = self.dropped
+        out: dict[str, Any] = {}
+        # Prompt identity rides on every assembled turn. It is deliberately
+        # outside the guard below: attribution matters most on an ordinary turn,
+        # which is exactly the one that would otherwise be too small to carry it.
+        if self.prompt_version or self.prompt_fingerprint:
+            out["prompt"] = {
+                "version": self.prompt_version,
+                "fingerprint": self.prompt_fingerprint,
+            }
+        if self.judgments or self.stages or self.usage:
+            out["stages_ms"] = dict(self.stages)
+            if self.usage:
+                out["usage"] = {tier: dict(b) for tier, b in self.usage.items()}
+                out["total_tokens"] = self.total_tokens()
+                if self.models:
+                    out["models"] = {tier: list(names) for tier, names in self.models.items()}
+            if self.judgments:
+                out["events"] = self.judgments
+                # Counts let consumers summarise without re-scanning events.
+                counts: dict[str, int] = {}
+                for entry in self.judgments:
+                    counts[entry["kind"]] = counts.get(entry["kind"], 0) + 1
+                out["counts"] = counts
+            if self.dropped:
+                out["dropped"] = self.dropped
         return out
 
 
@@ -155,6 +168,20 @@ def record(kind: str, **fields: Any) -> None:
     # Telemetry must never break a turn: a bug here is swallowed, not raised.
     with contextlib.suppress(Exception):
         log.add(kind, **fields)
+
+
+def note_prompt(fingerprint: str) -> None:
+    """Record which prompt policy and which assembled prefix produced this turn.
+
+    Best-effort and a no-op outside a turn, like every other entry point here.
+    """
+    log = _current.get()
+    if log is None:
+        return
+    from iris_ai.config import settings
+
+    log.prompt_version = settings.prompt_version
+    log.prompt_fingerprint = fingerprint
 
 
 def mark(stage: str, ms: float) -> None:
