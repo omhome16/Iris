@@ -9,11 +9,14 @@ re-verify rather than trust it.
 ## 1. Where things stand
 
 - **Repo:** `omhome16/Iris` · branch **`refactor/modernize-jev`**. The last
-  feature commit is **`60241d6`** ("feat(harness): a kill switch, and best-so-far
-  instead of an apology"); this handoff doc is a commit on top of it. Run
-  `git log --oneline -1` rather than trusting either hash.
-- **State:** working tree clean · `uv run pytest tests -q` → **831 passed** ·
-  `uv run ruff check .` → clean.
+  feature commit is **`68500f2`** ("feat(tools): make a deferred tool findable,
+  and load it for good"); the vault-review doc fix (`6699b94`) and this handoff
+  doc sit on top of it. Run `git log --oneline -1` rather than trusting either hash.
+- **State:** working tree clean · `uv run ruff check .` → clean ·
+  `uv run pytest tests -q --ignore=tests/test_memory_pipeline.py
+  --ignore=tests/test_retrieval_gate.py` → **880 passed**; with Postgres up the
+  full suite is **888 passed**. (A stale number here is worse than none —
+  re-run it.)
 - **Package identity (do not change without reason):** distribution
   `iris-personal-ai`, import package `iris_ai`, console command `iris`.
   `iris` was renamed because the PyPI name is taken and the `iris` import belongs
@@ -56,66 +59,31 @@ skill; the release workflow; the README rewrite; **prompt identity on every
 trace** (`PROMPT_VERSION` + assembled-prefix fingerprint); and the **kill switch
 + best-so-far**.
 
+Also done, and no longer in §4: hash-pinned third-party skill manifests (`e696b9c`),
+the TTFT/TPOT split (`da48b3e`), the memory-OFF ablation baseline (`c6b48bd`),
+the model-free retrieval gate in CI (`37f5592`), deferred tool loading with a
+namespace catalog (`68500f2`), and the vault-review doc fix (`6699b94`).
+
 Read `docs/vault-review.md` for the full map of what the vault recommends versus
-what Iris already has.
+what Iris already has — its backlog is now empty, recorded as a table of what
+landed.
 
-## 4. Remaining work, with the seam for each
+## 4. Remaining work — all of it is now done
 
-Ordered by value. One commit each, verified, is the pattern used so far.
+Each item was implemented, verified against the suite and committed on its own.
+`docs/vault-review.md` carries the same list with the vault's justification for
+each one.
 
-### 4.1 Hash-pin third-party skill packages, re-approve on change
-**Why:** the vault's MCP-security case — "a previously trusted tool starts
-behaving differently after an update" (rug pull). A `package:` skill is an
-installed distribution and currently trusted unconditionally.
-**Seam:** `SkillRegistry._resolve()` → its inner `collect()` in
-`src/iris_ai/skills/registry.py`, where a manifest's text is read and parsed.
-**Shape:** digest the raw manifest text for `package:` (and arguably `extra`)
-sources; keep an approval store at `workspace/config/skill_approvals.json`
-mapping `source/name → sha256`; first sighting records (trust on first use) and
-a *changed* digest raises a `ValidationIssue("error", …)` that disables the skill
-until re-approved. Add `iris skills approve <name>` (see
-`src/iris_ai/cli/skills.py`) and a test that a mutated manifest is refused.
+| Item | Commit |
+|---|---|
+| Hash-pin third-party skill packages, re-approve on change | `e696b9c` |
+| TTFT/TPOT split, rather than total latency | `da48b3e` |
+| Memory-OFF ablation baseline | `c6b48bd` |
+| A model-free retrieval gate in CI | `37f5592` |
+| Deferred tool loading / tool search past ~20 tools | `68500f2` |
+| Doc fix — the kill switch leaves the vault-review backlog | `6699b94` |
 
-### 4.2 TTFT / TPOT split, rather than total latency
-**Why:** "only total latency logged" is a listed observability failure; a p99
-cannot be attributed to prefill or generation without the split.
-**Seam:** the streamed path (`respond_stream`) in `src/iris_ai/agent/chat.py`,
-plus `turnlog.mark(stage, ms)` in `src/iris_ai/turnlog.py`.
-**Shape:** record `ttft` (first token) and derive tokens/second from the final
-usage, as `stages_ms` entries, on the streamed path only (the buffered path has
-no first token).
-
-### 4.3 Memory-OFF ablation baseline
-**Why:** "memory was never evaluated with an OFF baseline so nobody noticed it
-hurt." The current study predates the JEV-era capture node.
-**Seam:** `scripts/eval_lab.py`, output `reports/eval_lab.md`.
-**Shape:** add a memory-disabled arm and report the delta against it with the
-existing Wilson intervals and the pre-registered decision rule in
-`src/iris_ai/eval/stats.py`.
-
-### 4.4 A model-free retrieval gate in CI
-**Why:** two-speed gating — deterministic retrieval metrics on every PR, judge
-suites later.
-**Seam:** a labelled fixture (query → relevant chunk ids) plus a test that
-computes `recall@k` / `nDCG@k` with no model. Wire it into
-`.github/workflows/ci.yml` next to the existing lint/test jobs.
-**Note:** the runtime already logs the rerank candidate pool and each score
-(`src/iris_ai/memory/index.py`), so the run-time half exists; this adds the
-labelled half.
-
-### 4.5 Deferred tool loading / tool search past ~20 tools
-**Why:** the vault's "≤ ~30 tools per agent, deferral beyond that", and the
-catalog is a recurring per-turn token cost.
-**Seam:** `src/iris_ai/toolpolicy.py` (declarations and classes),
-`src/iris_ai/agent/context.py` (what enters the prompt), `src/iris_ai/cli/tools.py`
-(the visible-surface readout).
-**Shape:** expose namespace-level descriptions plus a search/load tool for the
-deferrable remainder, appending loaded subsets at the **tail** so the cached
-prefix is preserved. Largest item here; do it last.
-
-### 4.6 Doc fix
-`docs/vault-review.md` still lists the kill switch in its backlog. Move it to
-"already have" when convenient.
+Nothing here is outstanding. §5 is the user's publishing path, not an agent's.
 
 ## 5. Publishing — the user's steps, not yours
 
