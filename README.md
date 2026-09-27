@@ -883,6 +883,7 @@ re-runs onboarding.
 |---|---|
 | `README.md` (this file) | Pitch, architecture, status/roadmap, quickstart, operations |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Setup, the verify commands, what a good change looks like, commit conventions |
+| [`docs/MERGE-AND-VERIFY.md`](docs/MERGE-AND-VERIFY.md) | The end-to-end runbook: merge to `main`, verify every stage with its expected output, reproduce the CI runner locally, and what is *not* covered |
 | [`docs/architecture.md`](docs/architecture.md) | Module map, the turn lifecycle, the twelve invariants, where state lives |
 | [`docs/extending.md`](docs/extending.md) | Recipes: add a tool, a skill, a channel, a role, a guard, an eval metric |
 | [`docs/blueprint.md`](docs/blueprint.md) | The whole P1–P8 plan: scope, gates, risk register |

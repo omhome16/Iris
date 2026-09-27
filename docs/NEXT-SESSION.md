@@ -40,9 +40,14 @@ uv run iris version && uv run iris doctor
 
 - The 5 tests in `tests/test_memory_pipeline.py` need pgvector on `:5433` and
   **fail loudly** when it is absent (they do not skip). `tests/test_retrieval_gate.py`
-  is the same: it uses the `iris_eval` scratch database (`postgres/init.sql`
-  creates it on first boot), and `tests/test_retrieval_metrics.py` is the
-  DB-free half of that gate.
+  is the same: it uses the `iris_eval` scratch database, and
+  `tests/test_retrieval_metrics.py` is the DB-free half of that gate.
+- **Both scratch databases are created on demand** (`tests/db.py`), so there is no
+  `CREATE DATABASE` step — not locally and not in CI. They are the suite's own
+  databases, deliberately separate from real memory; drop them freely, the next
+  run recreates them.
+- `docs/MERGE-AND-VERIFY.md` is the end-to-end runbook: merge, verify, reproduce
+  the CI runner locally, and what each of the five checks proves.
 - Never print a secret value. `iris doctor` prints presence only, deliberately.
 - Commit convention: `type(scope): imperative summary`, a body that explains
   **why**, ending with the Codebuff footer used by every commit on this branch.
