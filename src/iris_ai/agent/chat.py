@@ -37,7 +37,7 @@ from iris_ai import background, turnlog
 from iris_ai.agent.compaction import compact_turn, messages_tokens, trim_messages
 from iris_ai.agent.context import ContextAssembler
 from iris_ai.agent.runtime import Runtime
-from iris_ai.agent.tools import dispatch, tool_schemas
+from iris_ai.agent.tools import dispatch, tool_schemas, tool_surface
 from iris_ai.approval import ApprovalGate, ApprovalPolicy
 from iris_ai.config import settings
 from iris_ai.guards import GuardChain
@@ -104,6 +104,12 @@ class IrisState(MessagesState):
     # activates its `allowed-tools` policy, so this is the state the policy reads
     # — set from the block that was actually injected, never guessed twice.
     active_skills: tuple[str, ...] = ()
+    # Tools the model pulled onto the surface with `find_tools`, accumulated for
+    # the life of the thread (the tools node appends; nothing resets it). This is
+    # the one piece of the surface that is *conversation* state rather than
+    # configuration: what has been looked at once need not be looked for again,
+    # and keeping it here means a resume after an approval keeps it too.
+    loaded_tools: tuple[str, ...] = ()
 
 
 def _human_content(message: str, image: str | None) -> object:
@@ -289,15 +295,26 @@ class ChatGraph:
         )
         if state.get("conversation_summary"):
             system += f"\n\n## Summary of earlier conversation\n{state['conversation_summary']}"
-        messages = [{"role": "system", "content": system}, *_to_llm_messages(state["messages"])]
         origin = state.get("origin") or "owner"
+        loaded = state.get("loaded_tools") or ()
+        # The catalog of what is *not* on the surface this call. Appended to the
+        # system message rather than declared in PERSONA because it depends on
+        # the session (a non-owner turn offers fewer tools) and on the boot (a
+        # connected channel promotes its own), and it is one line per namespace
+        # instead of one schema per tool — which is the whole point of deferral.
+        catalog = tool_surface(self.runtime, origin, state.get("active_skills") or (), loaded)[1]
+        if catalog:
+            system += f"\n\n{catalog}"
+        messages = [{"role": "system", "content": system}, *_to_llm_messages(state["messages"])]
         if state.get("stream"):
-            return await self._agent_streamed(messages, origin, state.get("active_skills") or ())
+            return await self._agent_streamed(
+                messages, origin, state.get("active_skills") or (), loaded
+            )
         try:
             with turnlog.stage("agent"):
                 text, calls, _thinking = await self.runtime.llm.complete_with_tools(
                     messages,
-                    tool_schemas(self.runtime, origin, state.get("active_skills") or ()),
+                    tool_schemas(self.runtime, origin, state.get("active_skills") or (), loaded),
                     max_attempts=2,
                 )
         except Exception as exc:  # noqa: BLE001 - a provider outage must not 500 the turn
@@ -324,7 +341,11 @@ class ChatGraph:
         return {"messages": [{"type": "ai", "content": text}]}
 
     async def _agent_streamed(
-        self, messages: list[dict], origin: str = "owner", active_skills: Sequence[str] = ()
+        self,
+        messages: list[dict],
+        origin: str = "owner",
+        active_skills: Sequence[str] = (),
+        loaded_tools: Sequence[str] = (),
     ) -> dict:
         """Streamed agent node: emit thinking / text / tool-call events as
         custom LangGraph events, then return the same shape as _agent."""
@@ -345,7 +366,7 @@ class ChatGraph:
                 "agent",
                 self.runtime.llm.stream_complete_with_tools(
                     messages,
-                    tool_schemas(self.runtime, origin, active_skills),
+                    tool_schemas(self.runtime, origin, active_skills, loaded_tools),
                     max_attempts=2,
                 ),
             ):
@@ -393,9 +414,20 @@ class ChatGraph:
     async def _tools(self, state: IrisState) -> dict:
         last = state["messages"][-1]
         results = []
-        from iris_ai.agent.runtime import current_session, current_tool_call
+        from iris_ai.agent.runtime import (
+            current_loaded_tools,
+            current_session,
+            current_tool_call,
+        )
 
         token = current_session.set(state.get("session_id") or "")
+        # A tool cannot return a state update, so `find_tools` appends here and
+        # this node folds the result into state. Accumulated, not replaced: the
+        # thread keeps what it has already loaded, which is what lets a later
+        # ReAct step (and a resume after an approval) call the tool with the
+        # right arguments instead of guessing from a tool *result*.
+        newly_loaded: list[str] = []
+        load_token = current_loaded_tools.set(newly_loaded)
         try:
             origin = state.get("origin") or "owner"
             for tc in last.tool_calls:
@@ -443,8 +475,13 @@ class ChatGraph:
                     {"type": "tool", "name": tc["name"], "content": out, "tool_call_id": tc["id"]}
                 )
         finally:
+            current_loaded_tools.reset(load_token)
             current_session.reset(token)
-        return {"messages": results}
+        if not newly_loaded:
+            return {"messages": results}
+        already = tuple(state.get("loaded_tools") or ())
+        loaded = already + tuple(name for name in newly_loaded if name not in already)
+        return {"messages": results, "loaded_tools": loaded}
 
     async def _journal(self, state: IrisState) -> dict:
         """Post-turn evidence, owner sessions only. Appends a digest line to

@@ -31,6 +31,17 @@ by name — and promotion (a connected channel, an active skill) beats the budge
 because a channel's own tools are not optional. A judgment nobody can inspect is
 indistinguishable from one that silently failed, so both the policy and the
 deferral are readable from `iris tools`.
+
+**Namespaces close deferral's own hole.** A deferred tool is invisible, and
+"call `find_tools` if you need anything" is not a plan: a model cannot ask for
+what it does not know exists, so a deferred capability is one it will never
+reach for. `NAMESPACES` groups tools and `deferred_catalog()` renders one line
+per group instead of one schema per tool — the discoverability of the full
+catalog at a fraction of the tokens, with the deferred names still spelled out
+so the model knows exactly what to load. Namespaces are declared data, and a
+test asserts the table partitions the declarations exactly, because a group
+nobody belongs to would silently drop a tool from the catalog as well as from
+the surface.
 """
 
 from __future__ import annotations
@@ -142,6 +153,107 @@ class ToolDecision:
     @property
     def denied(self) -> bool:
         return self.policy is Policy.DENY
+
+
+# ── namespaces — the catalog the prompt gets instead of the schemas ─────────
+#
+# One entry per group of related tools, with a one-line purpose, in the order
+# the catalog should read (the agent's working set first, the occasional
+# capabilities after). Membership is declared rather than derived from prefixes,
+# because a prefix rule quietly mis-files the first tool that does not follow it.
+NAMESPACES: dict[str, tuple[str, ...]] = {
+    "memory": (
+        "memory_search",
+        "deep_dive",
+        "verify_answer",
+        "remember",
+        "note",
+        "inspect_mind",
+        "forget",
+    ),
+    "files": ("file_create", "file_write", "file_read", "file_list"),
+    "web": ("web_search", "ingest_url"),
+    "skills": ("skill_list", "skill_apply", "skill_run", "skill_write", "skill_revise"),
+    "schedule": ("schedule_task",),
+    "delivery": ("send_message", "send_photo"),
+    "computer": ("computer",),
+    "dreaming": ("dream_now",),
+    "history": ("get_chat_history",),
+    "tools": ("find_tools",),
+}
+
+# What each group is *for*, in one line. Written for the model, not for the
+# table: it is what turns a list of names into "I could do that".
+NAMESPACE_PURPOSE: dict[str, str] = {
+    "memory": "search, inspect, deliberately record and forget long-term memory",
+    "files": "read and write files inside the sandbox",
+    "web": "search the web and ingest a page",
+    "skills": "apply a stored procedure, run its script, write or revise one",
+    "schedule": "time-triggered work (a one-off, an interval, or a daily job)",
+    "delivery": "send the owner a message or a photo over a live channel",
+    "computer": "drive a browser or the desktop (needs the owner's approval)",
+    "dreaming": "consolidate memory now instead of waiting for the nightly sweep",
+    "history": "read the raw record of past conversations",
+    "tools": "load the schema of a tool that is over this turn's surface budget",
+}
+
+# The tool the catalog tells the model to reach for. Named here so the prompt and
+# the tool cannot disagree about what loading looks like.
+LOADER_TOOL = "find_tools"
+
+
+def namespace_of(name: str) -> str:
+    """The namespace a tool belongs to, or "" when it belongs to none."""
+    for namespace, members in NAMESPACES.items():
+        if name in members:
+            return namespace
+    return ""
+
+
+def namespace_gaps() -> tuple[list[str], list[str]]:
+    """`(unclassified, phantom)` — the two ways the table can be wrong.
+
+    Exposed as a function rather than a runtime check so a test can assert it is
+    empty: a namespace table that misses a tool removes it from the catalog, and
+    that is exactly the invisibility this half of the module exists to fix. A
+    name in two namespaces is not reported here — `namespace_of` returns the
+    first, so the test asserts the table has no repeats instead.
+    """
+    classified = [name for members in NAMESPACES.values() for name in members]
+    unclassified = sorted(set(TOOL_DECLARATIONS) - set(classified))
+    phantom = sorted(set(classified) - set(TOOL_DECLARATIONS))
+    return unclassified, phantom
+
+
+def deferred_catalog(deferred: Sequence[str], *, loader: str = LOADER_TOOL) -> str:
+    """The prompt's description of the tools it does *not* have schemas for.
+
+    Grouped by namespace, listing the deferred names so `find_tools` is an
+    actionable pointer rather than a haystack. Empty when nothing was deferred:
+    a prompt section that says "nothing here" is pure per-turn cost.
+    """
+    hidden = [name for name in deferred if name in TOOL_DECLARATIONS]
+    if not hidden:
+        return ""
+    lines = [
+        f"## Tools you can load ({len(hidden)} not shown)",
+        f"Their schemas are left out of this turn's tool list to save tokens on "
+        f"every call. Call `{loader}` with a word or two when one of these is what "
+        f"you need — the matching schemas come back and stay loaded for the rest "
+        f"of this conversation. Nothing here needs permission you do not already "
+        f"have, and nothing is unavailable without it: they are still callable.",
+    ]
+    for namespace, declared in NAMESPACES.items():
+        members = [name for name in declared if name in hidden]
+        if not members:
+            continue
+        purpose = NAMESPACE_PURPOSE.get(namespace)
+        # A namespace with no purpose still lists its tools: dropping them here
+        # would recreate exactly the invisibility the catalog exists to fix, and
+        # `iris tools` warns about the missing line.
+        label = f"- {namespace} — {purpose}" if purpose else f"- {namespace}"
+        lines.append(f"{label}: {', '.join(members)}")
+    return "\n".join(lines)
 
 
 def declaration(name: str) -> Declaration:

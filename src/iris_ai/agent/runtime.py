@@ -36,6 +36,16 @@ current_session: ContextVar[str] = ContextVar("iris_current_session", default=""
 # can be in flight.
 current_tool_call: ContextVar[str] = ContextVar("iris_current_tool_call", default="")
 
+# Tools loaded onto the visible surface during this turn's tool node (set by the
+# tools node, appended to by `find_tools`). A list rather than the state itself,
+# because the node is what owns the state write: a tool cannot return a state
+# update, so it records here and the node folds this into `loaded_tools`.
+# `None` means "no tool node is running" — a direct `dispatch` from a test — and
+# loading is then a no-op rather than an error.
+current_loaded_tools: ContextVar[list[str] | None] = ContextVar(
+    "iris_current_loaded_tools", default=None
+)
+
 
 @dataclass(slots=True)
 class Runtime:

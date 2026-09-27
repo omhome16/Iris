@@ -17,7 +17,7 @@ from typing import Any
 from langgraph.types import interrupt
 
 from iris_ai import turnlog
-from iris_ai.agent.runtime import Runtime, current_session, current_tool_call
+from iris_ai.agent.runtime import Runtime, current_loaded_tools, current_session, current_tool_call
 from iris_ai.approval import Envelope
 from iris_ai.computer.actions import Action, ActionKind
 from iris_ai.config import settings
@@ -30,8 +30,8 @@ from iris_ai.memory.skills import Skill
 from iris_ai.skills.guard import screen_script
 from iris_ai.skills.policy import policy_for
 from iris_ai.skills.runner import ScriptError, pre_screen, resolve_script, run_script
+from iris_ai.toolpolicy import deferred_catalog, surface_order
 from iris_ai.toolpolicy import resolve as resolve_tool_policy
-from iris_ai.toolpolicy import surface_order
 
 
 @dataclass(slots=True)
@@ -1049,40 +1049,50 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         """Reach a tool whose schema was deferred off the visible surface.
 
         Deferral is a *context* decision, not a permission one: the tool was
-        already callable by name. This puts its schema back so the model can call
-        it correctly instead of guessing at arguments.
+        already callable by name. This **loads** it — the matched schemas are
+        appended to the tool list for the rest of the conversation, so the model
+        reads them as tool definitions instead of copying arguments out of a
+        tool result. Loading is bounded by the deferrable remainder, and it can
+        never widen permission: the pool comes from the policy-filtered surface,
+        so a denied tool is not in it to be loaded.
         """
         all_tools = get_tools(runtime)
-        visible, deferred = surface_order(
-            settings.tool_surface_budget,
-            promoted=_channel_promotions(runtime),
-            present=[t.name for t in all_tools],
-        )
+        visible, deferred = _allowed_and_deferred(runtime, [t.schema() for t in all_tools])
         hidden = set(deferred)
-        pool = [t.schema() for t in all_tools if t.name in hidden]
+        pool = [t for t in all_tools if t.name in hidden]
         if query.strip():
             needle = query.strip().lower()
-            pool = [s for s in pool if needle in json.dumps(s, ensure_ascii=False).lower()]
+            pool = [t for t in pool if needle in json.dumps(t.schema(), ensure_ascii=False).lower()]
+        loaded = current_loaded_tools.get()
+        if loaded is not None:
+            loaded.extend(t.name for t in pool if t.name not in loaded)
         turnlog.record(
             "tools",
             event="find_tools",
             query=query,
             matched=len(pool),
             deferred=len(deferred),
+            loaded=[t.name for t in pool],
         )
         return json.dumps(
-            {"ok": True, "visible": len(visible), "deferred": len(deferred), "tools": pool},
+            {
+                "ok": True,
+                "visible": len(visible),
+                "deferred": len(deferred),
+                "loaded": [t.name for t in pool],
+                "tools": [t.schema() for t in pool],
+            },
             ensure_ascii=False,
         )
 
     tools.append(
         Tool(
             "find_tools",
-            "Search the tools that were left off this turn's visible list because "
-            "the surface is over budget. Returns the matching tool schemas so you "
-            "can call one of them directly — they are always callable, this only "
-            "restores their definitions. Call it with no query to see everything "
-            "that was deferred.",
+            "Find and load tools that were left off this turn's visible list because "
+            "the surface is over budget. Returns their schemas and keeps them loaded "
+            "for the rest of the conversation, so you can call them directly with "
+            "the right arguments. Pass a word or two to match; call it with no "
+            "query to see everything that was deferred.",
             {
                 "type": "object",
                 "properties": {
@@ -1173,16 +1183,15 @@ def _tool_name(schema: dict) -> str:
     return str((schema.get("function") or {}).get("name", ""))
 
 
-def _apply_tool_policy(runtime: Runtime, schemas: list[dict]) -> list[dict]:
-    """Drop denied tools, then post the visible budget.
+def _allowed_schemas(runtime: Runtime, schemas: list[dict]) -> list[dict]:
+    """Drop what the class policy denies, recording each refusal.
 
-    Two separate questions, answered in order: *may* this be used (class + policy,
-    where deny wins), and *is it worth the prompt tokens* (surface, where core is
-    never hidden). A denied tool is never offered, and a deferred one is recorded
-    so "why couldn't it call `send_message`?" has an answer in the trace.
+    This runs *before* the surface split and before anything is loaded, so a
+    denied tool is not merely hidden: it is not in the pool that loading can
+    reach. Nothing downstream can widen it back.
     """
     overrides = settings.tool_policy_overrides
-    may_use: list[dict] = []
+    allowed: list[dict] = []
     for schema in schemas:
         decision = resolve_tool_policy(_tool_name(schema), overrides)
         if decision.denied:
@@ -1195,12 +1204,20 @@ def _apply_tool_policy(runtime: Runtime, schemas: list[dict]) -> list[dict]:
                 reason=decision.reason,
             )
             continue
-        may_use.append(schema)
+        allowed.append(schema)
+    return allowed
 
+
+def _surface_split(runtime: Runtime, allowed: list[dict]) -> tuple[list[dict], list[str]]:
+    """Post the prompt budget: (visible schemas, deferred names).
+
+    A deferred tool is recorded so "why couldn't it call `send_message`?" has an
+    answer in the trace rather than being inferred from a missing schema.
+    """
     visible, deferred = surface_order(
         settings.tool_surface_budget,
         promoted=_channel_promotions(runtime),
-        present=[_tool_name(s) for s in may_use],
+        present=[_tool_name(s) for s in allowed],
     )
     if deferred:
         turnlog.record(
@@ -1211,25 +1228,72 @@ def _apply_tool_policy(runtime: Runtime, schemas: list[dict]) -> list[dict]:
             budget=settings.tool_surface_budget,
         )
     keep = set(visible)
-    return [s for s in may_use if _tool_name(s) in keep]
+    return [s for s in allowed if _tool_name(s) in keep], deferred
 
 
-def tool_schemas(
-    runtime: Runtime, origin: str = "owner", active_skills: Sequence[str] | None = None
+def _allowed_and_deferred(
+    runtime: Runtime, schemas: list[dict]
+) -> tuple[list[dict], list[str]]:
+    """Both halves at once, for callers that need neither the tail nor the head."""
+    allowed = _allowed_schemas(runtime, schemas)
+    return _surface_split(runtime, allowed)
+
+
+def _narrowed_schemas(
+    runtime: Runtime, origin: str, active_skills: Sequence[str] | None
 ) -> list[dict]:
-    """Tool schemas offered to the agent. Non-owner sessions (scheduled
-    tasks, cron, heartbeats) never produce durable memory candidates —
-    the schema strips note/remember/dream_now/skill_write entirely. An active
-    skill narrows what is offered further (never widens it). The declared tool
-    class then removes anything policy denies, and the surface budget defers the
-    rest — both of which can only ever shrink the list.
+    """What this session may be offered at all, before policy and the budget.
+
+    Non-owner sessions (scheduled tasks, cron, heartbeats) never produce durable
+    memory candidates — the schema strips note/remember/dream_now/skill_write
+    entirely. An active skill narrows it further (never widens it).
     """
     if origin == "owner":
         schemas = [t.schema() for t in get_tools(runtime)]
     else:
         schemas = [t.schema() for t in get_tools(runtime) if t.name not in NON_OWNER_BLOCKED]
-    narrowed = policy_for(runtime.skills, active_skills).filter_schemas(schemas)
-    return _apply_tool_policy(runtime, narrowed)
+    return policy_for(runtime.skills, active_skills).filter_schemas(schemas)
+
+
+def tool_surface(
+    runtime: Runtime,
+    origin: str = "owner",
+    active_skills: Sequence[str] | None = None,
+    loaded: Sequence[str] = (),
+) -> tuple[list[dict], str]:
+    """The schemas for this call, plus the catalog of what is still not shown.
+
+    One function decides both, so the prompt can never advertise a tool the
+    surface will not offer (or worse, advertise one policy denies) — the two
+    halves of "what the model can reach" cannot drift apart.
+
+    Loaded tools are appended at the **tail**. The visible head is byte-identical
+    turn over turn — the deferral order is deterministic and core never moves —
+    so a provider's cached prefix still hits when the loaded subset changes.
+    Inserting them in place would trade the whole point of deferral (a stable,
+    cacheable prefix) for nothing.
+    """
+    narrowed = _narrowed_schemas(runtime, origin, active_skills)
+    allowed = _allowed_schemas(runtime, narrowed)
+    visible, deferred = _surface_split(runtime, allowed)
+    if not loaded:
+        return visible, deferred_catalog(deferred)
+    wanted = set(loaded)
+    present = {_tool_name(s) for s in visible}
+    tail = [s for s in allowed if _tool_name(s) in wanted and _tool_name(s) not in present]
+    # A loaded tool is off the hidden list: repeating it in the catalog would be
+    # telling the model to go find something it is already holding.
+    return visible + tail, deferred_catalog([n for n in deferred if n not in wanted])
+
+
+def tool_schemas(
+    runtime: Runtime,
+    origin: str = "owner",
+    active_skills: Sequence[str] | None = None,
+    loaded: Sequence[str] = (),
+) -> list[dict]:
+    """Tool schemas offered to the agent (see `tool_surface` for the catalog)."""
+    return tool_surface(runtime, origin, active_skills, loaded)[0]
 
 
 async def dispatch(

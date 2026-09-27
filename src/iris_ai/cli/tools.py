@@ -4,8 +4,11 @@ P7 replaced two hand-maintained allowlists with declarations, and a declaration
 nobody can read is only half a fix. Two verbs, both observation:
 
 - `policy` (default) — every declared tool with its class, the policy that class
-  resolves to, where that decision came from (class default vs an override), and
-  whether the tool is on the always-visible surface or deferrable.
+  resolves to, where that decision came from (class default vs an override),
+  which namespace it belongs to, and whether it is on the always-visible surface
+  or deferrable. It also prints the catalog the prompt gets for the deferred
+  remainder, so "what does the model know exists" is readable rather than
+  inferred from a schema count.
 - `actions` — recent computer-use actions read back out of
   `config/actions.jsonl`: what was attempted, where, whether it was allowed, and
   never what was typed.
@@ -24,8 +27,11 @@ from iris_ai.cli.help_theme import console
 from iris_ai.computer.audit import ActionLog
 from iris_ai.config import settings
 from iris_ai.toolpolicy import (
+    NAMESPACE_PURPOSE,
     TOOL_DECLARATIONS,
     PolicyError,
+    deferred_catalog,
+    namespace_of,
     policy_snapshot,
     surface_order,
     unknown_overrides,
@@ -55,6 +61,7 @@ def render_policy() -> int:
     table = Table(title="Tool surface", title_style="iris.title", header_style="iris.title")
     table.add_column("tool")
     table.add_column("class")
+    table.add_column("namespace")
     table.add_column("policy")
     table.add_column("source")
     table.add_column("surface")
@@ -69,6 +76,7 @@ def render_policy() -> int:
         table.add_row(
             row["tool"],
             row["class"],
+            namespace_of(row["tool"]) or "-",
             f"[{style}]{row['policy']}[/{style}]" if style else row["policy"],
             row["source"],
             surface,
@@ -78,8 +86,23 @@ def render_policy() -> int:
         f"[dim]visible budget {settings.tool_surface_budget}: "
         f"{len(visible)} shown, {len(deferred)} deferred. "
         f"Deferral is presentation, not permission — a deferred tool is still callable, "
-        f"and a connected channel's own tools are promoted at runtime.[/dim]"
+        f"`find_tools` loads a schema (appended at the tail, so the cached prefix "
+        f"survives), and a connected channel's own tools are promoted at runtime.[/dim]"
     )
+    catalog = deferred_catalog(deferred)
+    if catalog:
+        # The verbatim prompt section, not a summary of it: the question this
+        # readout exists to answer is what the model was actually told, and a
+        # paraphrase cannot answer that.
+        out.print("[dim]the prompt sees, for the deferred remainder:[/dim]")
+        for line in catalog.splitlines():
+            out.print(f"  [dim]{line}[/dim]")
+    missing = [n for n in TOOL_DECLARATIONS if namespace_of(n) not in NAMESPACE_PURPOSE]
+    if missing:
+        out.print(
+            f"[iris.warn]{len(missing)} tool(s) in a namespace with no purpose line[/iris.warn] — "
+            "they still appear in the catalog, without a description"
+        )
     for key in unknown_overrides(overrides):
         out.print(f"[iris.warn]unknown tool_policy_override {key!r} — names no tool or class[/iris.warn]")
     if not settings.computer_enabled:
