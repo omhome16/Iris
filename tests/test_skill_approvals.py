@@ -241,7 +241,10 @@ def test_the_cli_approves_a_changed_third_party_skill(tmp_path, monkeypatch):
     )
     refused = runner.invoke(app, ["skills", "validate"])
     assert refused.exit_code == 1
-    assert "approve from-a-package" in refused.output
+    # Collapse whitespace first: the CLI wraps its output to the console width,
+    # so a phrase can be split across lines (the message embeds a filesystem path
+    # and a digest, and a narrow console breaks it mid-phrase).
+    assert "approve from-a-package" in " ".join(refused.output.split())
 
     approved = runner.invoke(app, ["skills", "approve", "from-a-package"])
     assert approved.exit_code == 0, approved.output

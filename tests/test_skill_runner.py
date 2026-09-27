@@ -217,8 +217,12 @@ async def test_run_does_not_inherit_the_environment(tmp_path, monkeypatch):
     assert "TOKEN=absent" in result.stdout
     assert "KEY=absent" in result.stdout
     assert "super-secret" not in result.stdout
-    # …and it runs *inside* its own skill directory, not the repo.
-    assert str(Path(skill.root).resolve()) in result.stdout.replace("/", "\\").replace("\\\\", "\\")
+    # …and it runs *inside* its own skill directory, not the repo. Both sides are
+    # normalized to forward slashes: the child prints the OS's own separator, and
+    # this assertion must not care which one that is (it used to assume
+    # backslashes, so it passed on Windows and failed on Linux).
+    root = str(Path(skill.root).resolve()).replace("\\", "/")
+    assert root in result.stdout.replace("\\", "/")
 
 
 async def test_run_keeps_the_interpreter_on_the_path(tmp_path):
