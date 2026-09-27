@@ -8,6 +8,8 @@ straight to disk, so any secret a model passed as an argument was persisted.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -16,7 +18,37 @@ import pytest
 from iris_ai.redact import REDACTED, apply_content_policy, args_hash, redact, redact_text
 from iris_ai.trace import TraceLogger
 
-SECRET = "sk-live-abcdef1234567890abcdef"
+
+def _filler(seed: str, length: int) -> str:
+    """Deterministic, non-secret filler shaped like a credential value.
+
+    This file has to *contain credential shapes* to prove they are redacted, and
+    a literal high-entropy string in a test is still a finding: it costs a
+    reviewer a real investigation, and it teaches everyone to ignore the scanner.
+    So the values are generated here instead of written down. Deterministic on
+    purpose — a redaction test that asserts on random input is a flaky test.
+    """
+    out = ""
+    while len(out) < length:
+        out += hashlib.sha256(f"{seed}/{len(out)}".encode()).hexdigest()
+    return out[:length]
+
+
+def _b64url(segment: dict) -> str:
+    """One base64url JWT segment, the way a real encoder produces it."""
+    raw = json.dumps(segment, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+# An OpenAI-shaped key: the `sk-` prefix is what the pattern keys on.
+SECRET = "sk-" + _filler("openai-style", 24)
+# A bearer token, a long hex key, a password value, and a JWT assembled from
+# three base64url segments (the first starting `ey`, so the JWT detector has
+# something to match). All generated, none written down.
+BEARER = "Bearer " + _filler("bearer", 24)
+HEX_KEY = _filler("hex-key", 40)
+PASSWORD = _filler("password-value", 12)
+JWT = f"{_b64url({'alg': 'HS256'})}.{_b64url({'sub': '1234567890'})}.{_filler('jwt-sig', 32)}"
 
 
 # ── redact_text ──────────────────────────────────────────────────────────
@@ -26,17 +58,17 @@ SECRET = "sk-live-abcdef1234567890abcdef"
     "text",
     [
         f"key is {SECRET}",
-        "Authorization: Bearer abcdefghijklmnop12345",
-        'api_key="3f9a2b7c8d1e4f5a6b7c8d9e0f1a2b3c"',
-        "password=hunter2",
-        "TYPESAFE_API_KEY=9f8e7d6c5b4a39281706f5e4d3c2b1a0",
-        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1g",
+        f"Authorization: {BEARER}",
+        f'api_key="{HEX_KEY}"',
+        f"password={PASSWORD}",
+        f"TYPESAFE_API_KEY={HEX_KEY}",
+        JWT,
     ],
 )
 def test_credential_shapes_are_redacted(text):
     out = redact_text(text)
     assert REDACTED in out
-    assert "hunter2" not in out
+    assert PASSWORD not in out
     assert SECRET not in out
 
 
@@ -47,7 +79,7 @@ def test_ordinary_text_is_left_alone():
 
 def test_redaction_does_not_mangle_the_key_name():
     """Keeping the name is what makes a redacted trace debuggable."""
-    out = redact_text("api_key=9f8e7d6c5b4a39281706f5e4d3c2b1a0")
+    out = redact_text(f"api_key={HEX_KEY}")
     assert "api_key" in out
     assert REDACTED in out
 

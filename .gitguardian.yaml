@@ -1,0 +1,17 @@
+# One file in this repository has to contain credential *shapes* to prove they
+# are redacted: `tests/test_redaction.py` tests the patterns that strip `sk-...`,
+# bearer tokens, JWTs and long hex keys out of traces.
+#
+# Its fixtures are generated at import time (`_filler`) for exactly this reason,
+# so nothing in this repo is a real credential and nothing looks like one in the
+# source either. This exclusion is the second half of that fix: it tells the
+# scanner what the file is *for*, and it covers history, which cannot be
+# de-literalised retroactively — the literal strings are in the commits that added
+# the test, and a scanner run over a merge sees them.
+#
+# Deliberately one file. A broad `tests/**` exclusion would hide a real key pasted
+# into a fixture somewhere else, which is the case the scan exists for.
+version: 2
+secret:
+  ignored_paths:
+    - "tests/test_redaction.py"
