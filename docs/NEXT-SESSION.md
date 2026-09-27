@@ -14,8 +14,8 @@ re-verify rather than trust it.
   doc sit on top of it. Run `git log --oneline -1` rather than trusting either hash.
 - **State:** working tree clean · `uv run ruff check .` → clean ·
   `uv run pytest tests -q --ignore=tests/test_memory_pipeline.py
-  --ignore=tests/test_retrieval_gate.py` → **880 passed**; with Postgres up the
-  full suite is **888 passed**. (A stale number here is worse than none —
+  --ignore=tests/test_retrieval_gate.py` → **883 passed**; with Postgres up the
+  full suite is **891 passed**. (A stale number here is worse than none —
   re-run it.)
 - **Package identity (do not change without reason):** distribution
   `iris-personal-ai`, import package `iris_ai`, console command `iris`.
@@ -33,7 +33,7 @@ without an explicit instruction. Publishing steps are in §5 and are the user's 
 uv run ruff check .                     # must be clean before every commit
 uv run pytest tests -q --ignore=tests/test_memory_pipeline.py \
                         --ignore=tests/test_retrieval_gate.py   # fast, no DB
-docker compose up -d postgres           # then the full suite (5 DB-backed tests)
+docker compose up -d postgres           # then the full suite (8 DB-backed tests)
 uv run pytest tests -q                  # full suite
 uv run iris version && uv run iris doctor
 ```
