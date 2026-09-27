@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from asyncpg.exceptions import InvalidCatalogNameError
 
+from db import ensure_database
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.memory.index import ChunkRecord, MemoryIndex
 from iris_ai.memory.indexer import Reindexer
@@ -59,6 +60,10 @@ async def env(tmp_path: Path):
     llm = FakeLLM()
     index = MemoryIndex(DSN, llm)
     try:
+        # The scratch database is created here rather than required up front: it
+        # is a database the suite is already allowed to wipe, so demanding a
+        # manual `CREATE DATABASE` only meant the tests stayed dark.
+        await ensure_database(DSN)
         await index.connect()
     except InvalidCatalogNameError as exc:
         # A missing database used to surface as five cryptic asyncpg errors.

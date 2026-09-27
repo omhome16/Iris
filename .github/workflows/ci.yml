@@ -66,14 +66,11 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
-      - name: Create the eval scratch database
-        # `iris_eval` is created by postgres/init.sql only on a *first* boot, and
-        # a service container is already initialised. It is the eval scratch
-        # database the gate and scripts/eval_lab.py both wipe and re-seed.
-        run: |
-          container=$(docker ps --filter "publish=5433" --format '{{.ID}}' | head -1)
-          docker exec "$container" psql -U iris -d iris -v ON_ERROR_STOP=1 \
-            -c 'CREATE DATABASE iris_eval;'
+      # No `CREATE DATABASE` step: `iris_eval` is the gate's *scratch* corpus
+      # database, and the fixture creates it on demand (`tests/db.py`). Reaching
+      # into the service container to make it was the fragile half of this job —
+      # and it was only ever needed because a service container never runs
+      # postgres/init.sql.
       - name: Retrieval gate (labelled fixture, no model)
         run: uv run pytest tests/test_retrieval_gate.py tests/test_retrieval_metrics.py -q
 
@@ -125,20 +122,11 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
-      - name: Create the scratch databases
-        # test_memory_pipeline.py targets a *separate* database
-        # (IRIS_TEST_POSTGRES_DSN) so a test run can never touch real memory, and
-        # the retrieval gate targets the eval scratch database that
-        # postgres/init.sql creates on a *first* boot (a service container is
-        # already initialised, so neither exists here). The pgvector service only
-        # creates POSTGRES_DB. Run psql from inside the service container rather
-        # than depending on the runner image having a client installed.
-        run: |
-          container=$(docker ps --filter "publish=5433" --format '{{.ID}}' | head -1)
-          docker exec "$container" psql -U iris -d iris -v ON_ERROR_STOP=1 \
-            -c 'CREATE DATABASE iris_test;'
-          docker exec "$container" psql -U iris -d iris -v ON_ERROR_STOP=1 \
-            -c 'CREATE DATABASE iris_eval;'
+      # No `CREATE DATABASE` steps: `iris_test` and `iris_eval` are the suite's own
+      # *scratch* databases (the first is deliberately separate from real memory,
+      # the second is the eval corpus), and both fixtures create them on demand
+      # (`tests/db.py`). The pgvector service only creates POSTGRES_DB, and
+      # reaching into it from here was the fragile half of this job.
       - name: Unit + integration tests
         # The DB-backed suite is included here on purpose: locally those tests
         # fail loudly when no Postgres is listening (they do not skip), so on a
@@ -160,6 +148,11 @@ jobs:
           tags: iris:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Container is non-root and answers /health
+      - name: Container is non-root
+        # One assertion, named for what it does. It does *not* fetch /health:
+        # the API keeps `postgres="require"` (see `engine.harness`), so the image
+        # refuses to boot without a reachable database rather than serving a
+        # half-broken one — and this job has no Postgres service. The real
+        # healthcheck runs in `docker compose`, where the stack exists.
         run: |
           test "$(docker run --rm --entrypoint id iris:ci -u)" != "0"

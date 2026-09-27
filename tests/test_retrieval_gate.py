@@ -16,9 +16,10 @@ queries pull into the candidate pool) — that is `test_memory_pipeline.py`, and
 the two are complementary rather than redundant. A change to either can lose a
 memory, and a metrics-only test over canned rows would have missed the second.
 
-The corpus shares the `iris_eval` scratch database with `scripts/eval_lab.py`
-(created by `postgres/init.sql` at first boot). Both wipe and re-seed it, which
-is what a corpus database is for, and neither touches `iris` or `iris_test`.
+The corpus shares the `iris_eval` scratch database with `scripts/eval_lab.py`, and
+the fixture creates it if it is absent (`postgres/init.sql` also creates it at
+first boot). Both wipe and re-seed it, which is what a corpus database is for, and
+neither touches `iris` or `iris_test`.
 
 The metrics are computed by `iris_ai.eval.retrieval`, which is pure arithmetic
 and has its own unit tests, so the maths is gated even where no Postgres exists.
@@ -42,6 +43,7 @@ import numpy as np
 import pytest
 from asyncpg.exceptions import InvalidCatalogNameError
 
+from db import ensure_database
 from iris_ai.eval.retrieval import chunk_id, gate_failures, mean_metric, score_queries
 from iris_ai.memory.index import ChunkRecord, MemoryIndex
 from iris_ai.memory.llm import LLMClient
@@ -90,12 +92,16 @@ async def index():
     fixture = load_fixture()
     idx = MemoryIndex(DSN, FakeLLM())
     try:
+        # The corpus database is created here rather than required up front: it is
+        # the eval *scratch* database, so the thing being created is the thing the
+        # gate and `scripts/eval_lab.py` already wipe and re-seed. Requiring a
+        # manual `CREATE DATABASE` only meant the gate stayed dark.
+        await ensure_database(DSN)
         await idx.connect()
     except InvalidCatalogNameError as exc:
         pytest.fail(
-            f"the retrieval-gate database does not exist ({exc}). It is the eval "
-            "scratch database and is created by postgres/init.sql on first boot; on "
-            "an existing volume, create it with:\n"
+            f"the retrieval-gate database does not exist ({exc}) and could not be "
+            "created. Create it by hand with:\n"
             "  docker compose exec postgres psql -U iris -d iris -c 'CREATE DATABASE iris_eval;'",
             pytrace=False,
         )
