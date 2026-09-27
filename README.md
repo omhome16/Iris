@@ -28,7 +28,8 @@ Built to demonstrate four AI-engineering disciplines end to end:
 
 She lives in your pocket (Telegram over MCP), sleeps on command (`/sleep`),
 dreams in `DREAMS.md`, teaches herself skills, and her memory is proven by a
-full **ablation study** in `reports/eval_lab.md`.
+full **ablation study** — including a memory-OFF baseline — in
+`reports/eval_lab.md`.
 
 ---
 
@@ -773,9 +774,11 @@ Recommended for anything beyond localhost.
   decision with its gate inputs, the capture verdict and its rejection reason,
   and whether reflection ran inline or in the background) plus `stages_ms`
   (`assemble`, `agent`, `tools`, `rerank`, `guard`, `capture`, `reflection`,
-  `jev`). A judgment nobody can inspect is indistinguishable from one that
-  silently failed, so "not checked" is recorded as explicitly as "checked".
-  Implementation detail: `iris/turnlog.py`.
+  `jev`) and a per-call `throughput` list separating **TTFT from TPOT** on the
+  streamed path — a single total latency cannot say whether a p99 went to
+  prefill or to generation. A judgment nobody can inspect is indistinguishable
+  from one that silently failed, so "not checked" is recorded as explicitly as
+  "checked". Implementation detail: `iris/turnlog.py`.
 - **Judgment health** — `GET /jev` reports whether JEV is enabled, *why not* if
   it is not, and its request/failure counters and last latency.
   `background.pending` in `/health` shows in-flight post-reply work.
@@ -852,9 +855,12 @@ depend on a developer's laptop.
 ### Quality gates
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on every push and PR:
-**ruff**, the **full** test suite against a real pgvector Postgres, a production
-**image build** that asserts the container is non-root, and a **packaging** job
-that builds the wheel, installs it in a clean venv and runs the console entry
+**ruff**, the **full** test suite against a real pgvector Postgres, a model-free
+**retrieval gate** that scores a labelled fixture (`recall@k` / `nDCG@k`) so a
+ranking regression fails the PR instead of waiting for a judge suite, a
+production **image build** that asserts the container is non-root, and a
+**packaging** job that builds the wheel, installs it in a clean venv and runs
+the console entry
 (`iris version`, `iris --help`) — because a build that only exists in
 `pyproject.toml` is a claim, not a deliverable. See
 [`docs/support.md`](docs/support.md) for the support matrix and how a release is
@@ -877,7 +883,7 @@ re-runs onboarding.
 |---|---|
 | `README.md` (this file) | Pitch, architecture, status/roadmap, quickstart, operations |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Setup, the verify commands, what a good change looks like, commit conventions |
-| [`docs/architecture.md`](docs/architecture.md) | Module map, the turn lifecycle, the ten invariants, where state lives |
+| [`docs/architecture.md`](docs/architecture.md) | Module map, the turn lifecycle, the twelve invariants, where state lives |
 | [`docs/extending.md`](docs/extending.md) | Recipes: add a tool, a skill, a channel, a role, a guard, an eval metric |
 | [`docs/blueprint.md`](docs/blueprint.md) | The whole P1–P8 plan: scope, gates, risk register |
 | [`docs/jev.md`](docs/jev.md) | JEV: what it is, where it is integrated, where it is deliberately not, config, troubleshooting |
