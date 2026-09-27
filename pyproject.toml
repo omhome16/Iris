@@ -1,8 +1,23 @@
 [project]
-name = "iris"
-version = "0.1.0"
+name = "iris-personal-ai"
+# Single-sourced: the version lives in `src/iris_ai/__init__.py` (what `iris version`
+# prints) and hatch reads it from there, so the two cannot drift. See
+# docs/support.md for the release discipline.
+dynamic = ["version"]
 description = "Iris — a personal AI assistant with a visible mind (memory engineering, agent graphs, context engineering)"
 readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Iris contributors" }]
+keywords = ["llm", "agents", "agent-harness", "memory", "rag", "personal-assistant", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 requires-python = ">=3.12"
 dependencies = [
     "langgraph>=1.2",
@@ -18,17 +33,42 @@ dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
     "python-dotenv>=1.0",
+    # Read directly by iris_ai.skills.manifest for SKILL.md frontmatter. It was
+    # already in the lock as a transitive dependency of litellm; iris now uses
+    # it, so it is declared rather than relied on by accident.
+    "pyyaml>=6.0",
     "httpx>=0.27",
     "jinja2>=3.1",
     "typesafe-sdk>=0.5.7",
+    "typer>=0.12",
+    "rich>=13",
 ]
+
+[project.scripts]
+iris = "iris_ai.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/omhome16/Iris"
+Repository = "https://github.com/omhome16/Iris"
+Issues = "https://github.com/omhome16/Iris/issues"
+Changelog = "https://github.com/omhome16/Iris/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/iris_ai/__init__.py"
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/iris"]
+packages = ["src/iris_ai"]
+# The shipped skills live at the repo root for contributors to read. Without
+# this mapping they are absent from the wheel, and `iris skills list` on an
+# installed copy would quietly lose the builtin that the README advertises.
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "iris_ai/builtin_skills"
+"assets/mermaid" = "iris_ai/assets/mermaid"
 
 [tool.uv]
 package = true
@@ -47,7 +87,7 @@ asyncio_mode = "auto"
 [tool.ruff]
 target-version = "py312"
 line-length = 120
-src = ["src", "tests", "scripts", "mcp_servers", "dashboard"]
+src = ["src", "tests", "scripts", "mcp_servers"]
 
 [tool.ruff.lint]
 select = [

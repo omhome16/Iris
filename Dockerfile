@@ -19,8 +19,18 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy metadata first so the dependency layer caches independently of source.
-COPY pyproject.toml README.md ./
+# LICENSE is build metadata, not documentation: pyproject.toml declares
+# `license = { file = "LICENSE" }`, so hatchling refuses to build a wheel
+# without it ("License file does not exist") and this stage dies. README is
+# copied for the same reason (readme = "README.md").
+COPY pyproject.toml README.md LICENSE ./
+# `skills/` and `assets/mermaid` are force-included into the wheel by
+# pyproject.toml, so hatchling needs them present to build at all — a missing
+# forced include fails the build rather than silently shipping a wheel without
+# the builtin skill. They are package data, so they sit with the source.
 COPY src ./src
+COPY skills ./skills
+COPY assets ./assets
 
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
@@ -58,4 +68,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/health || exit 1
 
-CMD ["uvicorn", "iris.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "iris_ai.api:app", "--host", "0.0.0.0", "--port", "8000"]

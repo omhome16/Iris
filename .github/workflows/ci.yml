@@ -23,8 +23,6 @@ env:
   LLM_PROVIDER: ollama
   OLLAMA_BASE_URL: http://127.0.0.1:1
   IRIS_API_TOKEN: ci-token
-  DASHBOARD_USER: ci
-  DASHBOARD_PASSWORD: ci
 
 jobs:
   lint:
@@ -37,6 +35,67 @@ jobs:
       - run: uv sync --frozen
       - name: Ruff
         run: uv run ruff check .
+
+  retrieval:
+    # Two-speed gating: deterministic retrieval metrics on every change, judge
+    # suites (which need a key, a budget and a calibration study before their
+    # numbers mean anything) later. This job is the first speed, and it is
+    # deliberately the cheap one — a labelled fixture scored with recall@k and
+    # nDCG@k against a real pgvector index, with no model call anywhere. It has
+    # its own slot rather than a step in `test` so a ranking regression names
+    # itself in the checks list instead of hiding inside a 900-test run.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: iris
+          POSTGRES_PASSWORD: iris_dev_password
+          POSTGRES_DB: iris
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U iris"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      IRIS_EVAL_POSTGRES_DSN: postgresql+psycopg://iris:iris_dev_password@localhost:5433/iris_eval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      # No `CREATE DATABASE` step: `iris_eval` is the gate's *scratch* corpus
+      # database, and the fixture creates it on demand (`tests/db.py`). Reaching
+      # into the service container to make it was the fragile half of this job —
+      # and it was only ever needed because a service container never runs
+      # postgres/init.sql.
+      - name: Retrieval gate (labelled fixture, no model)
+        run: uv run pytest tests/test_retrieval_gate.py tests/test_retrieval_metrics.py -q
+
+  package:
+    # "The wheel builds" is a claim about the artifact, not about pyproject.toml.
+    # Build it, install it into a clean venv, and run the console entry from the
+    # installed copy — so a broken build or a missing entry point fails here
+    # rather than on someone's machine.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv build
+      - name: Install the wheel and run the console entry
+        run: |
+          python -m venv /tmp/iris-venv
+          /tmp/iris-venv/bin/pip install --quiet dist/*.whl
+          /tmp/iris-venv/bin/iris version
+          /tmp/iris-venv/bin/iris --help
+          # From /tmp, so repo-root `skills/` is NOT on the path: this asserts the
+          # builtin skill resolves out of the *packaged* copy, which is the bug
+          # that made `iris skills list` empty on an installed wheel.
+          cd /tmp && /tmp/iris-venv/bin/iris skills list | grep -q web-page-to-notes
 
   test:
     runs-on: ubuntu-latest
@@ -63,19 +122,16 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
-      - name: Create the memory-pipeline test database
-        # test_memory_pipeline.py targets a *separate* database
-        # (IRIS_TEST_POSTGRES_DSN) so a test run can never touch real memory,
-        # and the pgvector service only creates POSTGRES_DB. Run psql from
-        # inside the service container rather than depending on the runner
-        # image having a client installed.
-        run: |
-          container=$(docker ps --filter "publish=5433" --format '{{.ID}}' | head -1)
-          docker exec "$container" psql -U iris -d iris -v ON_ERROR_STOP=1 \
-            -c 'CREATE DATABASE iris_test;'
+      # No `CREATE DATABASE` steps: `iris_test` and `iris_eval` are the suite's own
+      # *scratch* databases (the first is deliberately separate from real memory,
+      # the second is the eval corpus), and both fixtures create them on demand
+      # (`tests/db.py`). The pgvector service only creates POSTGRES_DB, and
+      # reaching into it from here was the fragile half of this job.
       - name: Unit + integration tests
-        # The DB-backed suite is included here on purpose: it is skipped
-        # locally whenever Postgres is down, which is how it stayed dark.
+        # The DB-backed suite is included here on purpose: locally those tests
+        # fail loudly when no Postgres is listening (they do not skip), so on a
+        # laptop they only run when someone starts the container by hand —
+        # which is how they stayed dark. CI is where they always run.
         run: uv run pytest tests -q
 
   build:
@@ -92,6 +148,11 @@ jobs:
           tags: iris:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Container is non-root and answers /health
+      - name: Container is non-root
+        # One assertion, named for what it does. It does *not* fetch /health:
+        # the API keeps `postgres="require"` (see `engine.harness`), so the image
+        # refuses to boot without a reachable database rather than serving a
+        # half-broken one — and this job has no Postgres service. The real
+        # healthcheck runs in `docker compose`, where the stack exists.
         run: |
           test "$(docker run --rm --entrypoint id iris:ci -u)" != "0"

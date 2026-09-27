@@ -8,9 +8,9 @@ from datetime import date
 import numpy as np
 import pytest
 
-import iris.memory.index as index_mod
-from iris.config import settings
-from iris.memory.index import MemoryIndex
+import iris_ai.memory.index as index_mod
+from iris_ai.config import settings
+from iris_ai.memory.index import MemoryIndex
 
 
 class CountingLLM:
@@ -47,6 +47,7 @@ def make_row(content: str, origin: str = "owner") -> dict:
         "observed_at": date(2026, 8, 1),
         "evergreen": False,
         "embedding": _Vec([0.1, 0.2]),
+        "chunk_index": 0,  # the search SQL always selects this (NOT NULL column)
         "vscore": 0.9,
         "fscore": 5.0,
     }

@@ -1,0 +1,130 @@
+{
+  "k": 3,
+  "thresholds": {
+    "recall": 1.0,
+    "ndcg": 0.9
+  },
+  "note": "A labelled retrieval fixture: query -> the chunk ids that must be relevant. Deterministic by construction (hash embeddings, no model, no network), so it gates ranking changes on every change rather than only when a key is configured. thresholds: recall 1.0 = every labelled memory is inside the top k; ndcg 0.9 = every query's best match is at rank 1. Queries are written with the vocabulary their target fact uses, because the hash embedder has no notion of synonyms — the fixture tests the *ranking policy* (decay, importance, diversity), not the embedder, and a query phrased around a synonym would test the latter and quietly gate nothing. `must_fail_under` names the ablation that must break a query: it is how the fixture proves it is sensitive rather than merely green, and tests/test_retrieval_gate.py enforces it. Two honest limits: MMR diversity is exercised but not *gated* (a diversity failure keeps the answer in the top k, so binary relevance cannot see it — that needs a group-aware metric like alpha-nDCG), and the 400-day piano fact is unlabelled decay bait that no query should ever be able to surface. Dates are relative to run time (days_ago), so the fixture does not rot as the calendar moves.",
+  "corpus": [
+    {
+      "path": "memory/2026-05-02.md",
+      "chunk_index": 0,
+      "content": "Omar is learning Rust for systems programming and wants to build a small database engine.",
+      "days_ago": 3,
+      "importance": 8.0,
+      "evergreen": false
+    },
+    {
+      "path": "memory/2026-05-02.md",
+      "chunk_index": 1,
+      "content": "Omar is learning Rust for his job and reads the Rust book on the train.",
+      "days_ago": 3,
+      "importance": 7.0,
+      "evergreen": false
+    },
+    {
+      "path": "memory/2026-05-04.md",
+      "chunk_index": 0,
+      "content": "Omar went to the beach with his brother and they ate sandwiches in the car.",
+      "days_ago": 1,
+      "importance": 3.0,
+      "evergreen": false
+    },
+    {
+      "path": "memory/2026-05-03.md",
+      "chunk_index": 0,
+      "content": "Omar's favourite tea is jasmine, which he has with breakfast.",
+      "days_ago": 5,
+      "importance": 6.0,
+      "evergreen": false
+    },
+    {
+      "path": "memory/2025-11-08.md",
+      "chunk_index": 0,
+      "content": "Omar's favourite tea is oolong and oolong tea is what he drank at his old desk.",
+      "days_ago": 300,
+      "importance": 6.0,
+      "evergreen": false
+    },
+    {
+      "path": "memory/2026-04-20.md",
+      "chunk_index": 0,
+      "content": "Omar's least favourite food is cilantro.",
+      "days_ago": 20,
+      "importance": 2.0,
+      "evergreen": false
+    },
+    {
+      "path": "MEMORY.md",
+      "chunk_index": 0,
+      "content": "Omar's sister is named Layla and she lives in Lisbon.",
+      "days_ago": 200,
+      "importance": 9.0,
+      "evergreen": true
+    },
+    {
+      "path": "memory/2026-05-01.md",
+      "chunk_index": 0,
+      "content": "Omar called his sister on Sunday and they talked for an hour.",
+      "days_ago": 5,
+      "importance": 7.0,
+      "evergreen": false
+    },
+    {
+      "path": "memory/2026-03-02.md",
+      "chunk_index": 0,
+      "content": "Omar flew to Lisbon in the spring to see the city.",
+      "days_ago": 90,
+      "importance": 4.0,
+      "evergreen": false
+    },
+    {
+      "path": "memory/2026-02-11.md",
+      "chunk_index": 0,
+      "content": "Omar took piano lessons for six years as a child and played in school concerts.",
+      "days_ago": 400,
+      "importance": 7.0,
+      "evergreen": false
+    },
+    {
+      "path": "memory/2026-01-19.md",
+      "chunk_index": 0,
+      "content": "Omar bought new headphones and tried them out on the train to work.",
+      "days_ago": 120,
+      "importance": 4.0,
+      "evergreen": false
+    }
+  ],
+  "queries": [
+    {
+      "query": "what is Omar learning for systems programming",
+      "relevant": ["memory/2026-05-02.md::0"],
+      "must_fail_under": [],
+      "targets": "the plain lexical match, against its own near-duplicate and fresher noise"
+    },
+    {
+      "query": "when did Omar go to the beach",
+      "relevant": ["memory/2026-05-04.md::0"],
+      "must_fail_under": [],
+      "targets": "a fresh, low-importance fact still wins when it is the only match (importance is a multiplier, not a veto)"
+    },
+    {
+      "query": "what is Omar's favourite tea",
+      "relevant": ["memory/2026-05-03.md::0"],
+      "must_fail_under": ["no_decay"],
+      "targets": "recency: the fresh fact must outrank its 300-day-old superseded twin, which is *lexically* the better match — so this query fails the moment decay stops working. It is *not* sensitive to `vector_only`, because that knob only drops the FTS term: decay and importance still apply, which is why the eval lab's description of it was corrected in the same commit"
+    },
+    {
+      "query": "what is Omar's least favourite food",
+      "relevant": ["memory/2026-04-20.md::0"],
+      "must_fail_under": [],
+      "targets": "a 20-day-old fact with importance 2.0 still wins on relevance alone"
+    },
+    {
+      "query": "where does Omar's sister live",
+      "relevant": ["MEMORY.md::0"],
+      "must_fail_under": [],
+      "targets": "evergreen: a 200-day-old curated fact keeps rank 1 over fresher daily notes, because curated memory never decays"
+    }
+  ]
+}

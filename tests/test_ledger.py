@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from iris.ledger import CostLedger, estimate_cost
-from iris.memory.llm import LLMClient
+from iris_ai.ledger import CostLedger, estimate_cost
+from iris_ai.memory.llm import LLMClient
 
 
 def test_estimate_cost_known_and_unknown():
@@ -68,7 +68,7 @@ def test_ledger_cache_tokens_and_hit_rate(tmp_path: Path):
 
 
 async def test_llm_extracts_cached_tokens_both_provider_styles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    import iris.memory.llm as llm_mod
+    import iris_ai.memory.llm as llm_mod
 
     class FakeUsage:
         prompt_tokens = 500
@@ -113,7 +113,7 @@ def test_ledger_corrupt_line_skipped(tmp_path: Path):
 
 
 async def test_llm_records_usage_when_ledger_attached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    import iris.memory.llm as llm_mod
+    import iris_ai.memory.llm as llm_mod
 
     calls: list[dict] = []
 
@@ -141,7 +141,7 @@ async def test_llm_records_usage_when_ledger_attached(tmp_path: Path, monkeypatc
 
 
 async def test_llm_no_ledger_is_silent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    import iris.memory.llm as llm_mod
+    import iris_ai.memory.llm as llm_mod
 
     async def fake_acompletion(**kwargs):
         return type("R", (), {

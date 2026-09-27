@@ -12,15 +12,15 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from iris.agent.chat import ApprovalRequired, ChatGraph, _to_llm_messages
-from iris.agent.runtime import Runtime
-from iris.agent.tools import dispatch, get_tools
-from iris.memory.files import WorkspaceFiles
-from iris.memory.llm import LLMClient
-from iris.memory.provenance import Origin
-from iris.memory.skills import SkillLibrary
-from iris.onboarding import OnboardingWizard
-from iris.sandbox import Sandbox
+from fakes import skill_registry
+from iris_ai.agent.chat import ApprovalRequired, ChatGraph, _to_llm_messages
+from iris_ai.agent.runtime import Runtime
+from iris_ai.agent.tools import dispatch, get_tools
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.llm import LLMClient
+from iris_ai.memory.provenance import Origin
+from iris_ai.onboarding import OnboardingWizard
+from iris_ai.sandbox import Sandbox
 
 # ── onboarding wizard ───────────────────────────────────────────────────────
 
@@ -139,7 +139,7 @@ def make_runtime(files: WorkspaceFiles, llm: LLMClient) -> Runtime:
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(files.root / "sandbox"),
     )
 
@@ -197,7 +197,7 @@ async def test_tool_loop_hits_recursion_cap_gracefully(
     """An agent that never stops calling tools must get the graceful message,
     not a GraphRecursionError exploding out of respond()."""
     from fakes import WizardLLM
-    from iris.config import settings
+    from iris_ai.config import settings
 
     monkeypatch.setattr(settings, "graph_recursion_limit", 8)  # ~3 tool rounds
     files = WorkspaceFiles(tmp_path)
@@ -209,9 +209,57 @@ async def test_tool_loop_hits_recursion_cap_gracefully(
     assert "one step at a time" in reply
 
 
+async def test_kill_switch_refuses_before_the_graph_runs(tmp_path: Path, monkeypatch):
+    """The kill switch is enforced in code, before the graph is entered — so a
+    refusal costs nothing, and it can be flipped on a running service."""
+    from iris_ai.config import settings
+
+    monkeypatch.setattr(settings, "kill_switch", True)
+    files = WorkspaceFiles(tmp_path)
+    graph = ChatGraph(make_runtime(files, FakeLLM()), MemorySaver())
+
+    class _NeverRuns:
+        async def ainvoke(self, *_a, **_k):
+            raise AssertionError("the kill switch must refuse before the graph runs")
+
+    monkeypatch.setattr(graph, "graph", _NeverRuns())
+    reply = await graph.respond("anything", session_id="t-kill")
+    assert "kill switch" in reply
+    assert "KILL_SWITCH=false" in reply  # the halt says how to undo itself
+
+
+async def test_a_bailed_turn_returns_best_so_far_not_an_apology(tmp_path: Path, monkeypatch):
+    """Halting must degrade, not fail: what the agent already established exists in
+    the checkpoint and is returned, rather than discarded behind an apology."""
+    from types import SimpleNamespace
+
+    from langgraph.errors import GraphRecursionError
+
+    from iris_ai.config import settings
+
+    monkeypatch.setattr(settings, "graph_recursion_limit", 8)
+    files = WorkspaceFiles(tmp_path)
+    graph = ChatGraph(make_runtime(files, FakeLLM()), MemorySaver())
+
+    class _Snapshot:
+        values = {"messages": [SimpleNamespace(type="ai", content="Tea shows up in the March notes.")]}
+
+    class _Bails:
+        async def ainvoke(self, *_a, **_k):
+            raise GraphRecursionError("too many steps")
+
+        async def aget_state(self, *_a, **_k):
+            return _Snapshot()
+
+    monkeypatch.setattr(graph, "graph", _Bails())
+    reply = await graph.respond("what do you know about tea?", session_id="t-best")
+    assert "Tea shows up in the March notes." in reply
+    assert "one step at a time" not in reply
+
+
 async def test_skill_use_reinforces_success_score(tmp_path: Path):
     from fakes import WizardLLM
-    from iris.memory.skills import Skill
+    from iris_ai.memory.skills import Skill
 
     files = WorkspaceFiles(tmp_path)
     w = OnboardingWizard(files, WizardLLM())
@@ -230,8 +278,8 @@ async def test_skill_use_reinforces_success_score(tmp_path: Path):
 async def test_skill_apply_context_injection(tmp_path: Path):
     """A message matching a skill's trigger must inject the compact skill
     block into the assembled context (name + description, not the procedure)."""
-    from iris.agent.context import ContextAssembler
-    from iris.memory.skills import Skill
+    from iris_ai.agent.context import ContextAssembler
+    from iris_ai.memory.skills import Skill
 
     files = WorkspaceFiles(tmp_path)
     runtime = make_runtime(files, FakeLLM())
@@ -251,8 +299,8 @@ async def test_skill_apply_context_injection(tmp_path: Path):
 
 
 async def test_skill_apply_context_no_match_no_block(tmp_path: Path):
-    from iris.agent.context import ContextAssembler
-    from iris.memory.skills import Skill
+    from iris_ai.agent.context import ContextAssembler
+    from iris_ai.memory.skills import Skill
 
     files = WorkspaceFiles(tmp_path)
     runtime = make_runtime(files, FakeLLM())
@@ -286,7 +334,7 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(tmp_path / "sandbox"),
     )
     schemas = [t.schema() for t in get_tools(runtime)]
@@ -297,10 +345,12 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "note",
         "inspect_mind",
         "forget",
+        "find_tools",
         "skill_write",
         "skill_list",
         "skill_apply",
         "skill_revise",
+        "skill_run",
         "schedule_task",
         "dream_now",
         "file_create",
@@ -310,6 +360,7 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "web_search",
         "ingest_url",
         "deep_dive",
+        "verify_answer",
     }
     for s in schemas:
         assert s["function"]["parameters"]["type"] == "object"
@@ -326,7 +377,7 @@ def test_telegram_tools_appear_after_late_connect(tmp_path: Path):
         reindexer=None,  # type: ignore[arg-type]
         dreams=None,  # type: ignore[arg-type]
         forgetting=None,  # type: ignore[arg-type]
-        skills=SkillLibrary(files),
+        skills=skill_registry(files),
         sandbox=Sandbox(tmp_path / "sandbox"),
     )
 

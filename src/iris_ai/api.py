@@ -1,0 +1,633 @@
+"""Iris API — FastAPI entrypoint.
+
+The boot sequence lives in `iris_ai.engine` (public as `iris_ai.harness()`); this
+module is one client of it.
+The lifespan below opens a harness and hands the route handlers
+`app.state.runtime` / `app.state.graph`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import sys
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+
+# psycopg async (used by the LangGraph PostgresSaver) cannot run on
+# Windows' ProactorEventLoop; select the selector loop before any loop exists.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from iris_ai import background
+from iris_ai.agent.chat import ApprovalRequired, ChatGraph
+from iris_ai.agent.runtime import Runtime
+from iris_ai.config import settings
+from iris_ai.engine import harness
+from iris_ai.memory.files import ConcurrencyError, WorkspaceFiles
+from iris_ai.memory.forgetting import ForgettingEngine, decay_curve, supersede_in_text
+from iris_ai.memory.index import MemoryIndex
+from iris_ai.memory.provenance import Origin
+from iris_ai.onboarding import OnboardingWizard
+from iris_ai.security import require_token, warn_if_unset
+from iris_ai.text import text_of
+from iris_ai.voice import transcribe
+
+log = logging.getLogger("iris")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Boot the engine through the library (`iris_ai.harness`), then serve.
+
+    The API is a *client* of the library, exactly like `iris chat`: it opens the
+    same harness and hands the route handlers `app.state.runtime` /
+    `app.state.graph`. `postgres="require"` is the API's contract — a missing
+    database is a boot failure here, whereas the CLI degrades instead.
+
+    Shutdown ordering (stop taking work, drain the fire-and-forget passes,
+    release connections) lives in `Harness.aclose`, which is where it ran
+    before this module delegated — there is nothing left to do here.
+    """
+    async with harness(postgres="require") as brain:
+        app.state.brain = brain
+        app.state.runtime = brain.runtime
+        app.state.graph = brain.graph
+        yield
+
+
+app = FastAPI(title="Iris", version="0.1.0", lifespan=lifespan)
+warn_if_unset()
+
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str = "default"
+    image: str | None = None  # base64 data URI (data:image/...;base64,...)
+
+
+class ChatResumeRequest(BaseModel):
+    session_id: str
+    decision: str = "cancelled"
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    onboarded: bool
+    pending: bool = False
+    approval: dict | None = None  # human-in-the-loop payload when pending
+
+
+@app.get("/health")
+async def health() -> dict:
+    """Liveness + readiness: index reachability *and* optional-layer state.
+
+    `/health` is deliberately the one unauthenticated route, so it reports
+    capability flags rather than data.
+    """
+    index: MemoryIndex = app.state.runtime.index
+    jev = getattr(app.state.runtime, "jev", None)
+    telegram = getattr(app.state.runtime, "telegram", None)
+    return {
+        "status": "ok",
+        "service": "iris",
+        "memory": await index.stats(),
+        "jev": bool(jev is not None and jev.enabled),
+        "telegram": bool(telegram is not None and telegram.connected),
+        # Full judgment-layer health: whether it is live, why not if it is not,
+        # and how it has been behaving (requests, failures, last latency). A
+        # layer that is silently falling back looks identical to a healthy one
+        # without this.
+        "judgment": judgment_status_block(),
+        "background": {"pending": background.pending()},
+    }
+
+
+def judgment_status_block() -> dict:
+    """Judgment-layer status for `/health`, safe to call when JEV is absent."""
+    jev = getattr(app.state.runtime, "jev", None) if hasattr(app.state, "runtime") else None
+    if not hasattr(jev, "status"):
+        return {"enabled": False, "reason": "judgment layer not wired", "requests": 0, "failures": 0}
+    return jev.status()
+
+
+@app.get("/jev")
+async def judgment_status(_token: None = Depends(require_token)) -> dict:
+    """The judgment layer's own view of itself.
+
+    Authenticated (unlike `/health`) because it names failure modes and counts,
+    which is operational detail rather than a capability flag.
+    """
+    status = judgment_status_block()
+    status["pending_background"] = background.pending()
+    return status
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(
+    req: ChatRequest, _token: None = Depends(require_token)
+) -> ChatResponse:
+    """One chat turn through the durable graph. Routes to the onboarding
+    wizard until identity is born; then the ReAct loop.
+
+    When a tool asks for approval (forget), the turn halts and the response
+    carries `pending=True` with the approval payload; resume via
+    POST /chat/resume."""
+    graph: ChatGraph = app.state.graph
+    pending: dict | None = None
+    try:
+        reply = await asyncio.wait_for(
+            graph.respond(req.message, session_id=req.session_id, image=req.image),
+            timeout=120.0,
+        )
+    except ApprovalRequired as exc:
+        pending = exc.payload
+        reply = "I need your approval before doing that — resume with POST /chat/resume (decision: approved | cancelled)."
+    except TimeoutError:
+        log.warning("chat turn exceeded 120s budget; returning fallback")
+        reply = "I'm still thinking — the language model is under load right now. Give me a minute and say that again."
+    except Exception as exc:
+        log.exception("chat turn failed")
+        reply = f"I hit an unexpected error ({type(exc).__name__}) — say that again, or try later."
+    # wizard state lives on disk; reload for a fresh read (graph may have run it)
+    wizard = OnboardingWizard(app.state.runtime.files)
+    return ChatResponse(
+        reply=reply,
+        onboarded=wizard.onboarded,
+        pending=pending is not None,
+        approval=pending,
+    )
+
+
+@app.post("/chat/resume", response_model=ChatResponse)
+async def chat_resume(
+    req: ChatResumeRequest, _token: None = Depends(require_token)
+) -> ChatResponse:
+    """Resume an interrupted turn (human-in-the-loop approval) with the
+    owner's decision: "approved" performs the pending action, anything else
+    cancels it. The existing two-phase endpoints (/forget, /forget/confirm)
+    remain as the fallback path."""
+    graph: ChatGraph = app.state.graph
+    try:
+        reply = await asyncio.wait_for(
+            graph.resume(req.session_id, decision=req.decision),
+            timeout=120.0,
+        )
+    except ApprovalRequired as exc:
+        return ChatResponse(
+            reply="I need your approval before doing that — resume with POST /chat/resume (decision: approved | cancelled).",
+            onboarded=True,
+            pending=True,
+            approval=exc.payload,
+        )
+    except TimeoutError:
+        reply = "I'm still thinking — the language model is under load right now. Give me a minute and say that again."
+    except Exception as exc:
+        log.exception("chat resume failed")
+        reply = f"I hit an unexpected error ({type(exc).__name__}) — say that again, or try later."
+    wizard = OnboardingWizard(app.state.runtime.files)
+    return ChatResponse(reply=reply, onboarded=wizard.onboarded)
+
+
+@app.post("/chat/stream")
+async def chat_stream(
+    req: ChatRequest, _token: None = Depends(require_token)
+) -> StreamingResponse:
+    """SSE streaming chat with a visible mind.
+
+    Events (named `message`):
+    - {"kind": "thinking", "delta": ...}   reasoning tokens
+    - {"kind": "text", "delta": ...}       reply tokens
+    - {"kind": "tool_call", "call": {...}} tool invocation
+    - {"kind": "reply", "text": ...}       final reply (last event)
+    """
+    graph: ChatGraph = app.state.graph
+
+    async def gen():
+        # The SSE path carries the same 120 s turn budget as /chat and
+        # /voice — without it a hung provider pins the bridge's turn until
+        # its transport timeout. The deadline also covers slow consumers,
+        # which is the intended turn-budget semantics.
+        try:
+            async with asyncio.timeout(120.0):
+                async for mode, data in graph.respond_stream(
+                    req.message, session_id=req.session_id, image=req.image
+                ):
+                    if mode == "custom":
+                        yield f"data: {json.dumps(data)}\n\n"
+                    elif mode == "error":
+                        yield f"data: {json.dumps({'kind': 'reply', 'text': data})}\n\n"
+                    elif mode == "updates":
+                        for _node, update in (data or {}).items():
+                            for m in (update or {}).get("messages", []):
+                                mtype = m.get("type") if isinstance(m, dict) else getattr(m, "type", "")
+                                mcalls = m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)
+                                mcontent = m.get("content") if isinstance(m, dict) else m.content
+                                if mtype == "ai" and not mcalls:
+                                    yield f"data: {json.dumps({'kind': 'reply', 'text': text_of(mcontent)})}\n\n"
+        except TimeoutError:
+            yield f"data: {json.dumps({'kind': 'reply', 'text': 'I am still thinking — the turn ran past its 120 s budget. Ask me again in a bit.'})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/voice")
+async def voice_turn(
+    user_id: str = Form(...),
+    audio: UploadFile = File(...),
+    _token: None = Depends(require_token),
+) -> dict:
+    """Voice note → Groq Whisper transcript → the same chat graph as /chat.
+
+    Called by the Telegram bridge, which downloads the voice message and
+    forwards the audio file here. Replies with the graph's reply text.
+    """
+    import tempfile
+
+    # The bridge supplies the Telegram chat id as `user_id`, and it also chooses
+    # the graph thread — so this field is both identity and session key. Without
+    # a gate, any caller (with auth off, which is the dev default) could run
+    # turns under another chat's session. `require_token` above is the primary
+    # control; this is the second, and it holds even when auth is disabled.
+    if settings.owner_chat_id is not None and str(user_id) != str(settings.owner_chat_id):
+        raise HTTPException(status_code=403, detail="voice turns are owner-only")
+
+    graph: ChatGraph = app.state.graph
+    # mkstemp + fdopen rather than NamedTemporaryFile: the descriptor is closed
+    # deterministically even if the upload read fails mid-stream, and the path
+    # is removed in `finally` either way.
+    fd, name = tempfile.mkstemp(suffix=".ogg")
+    tmp_path = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(await audio.read())
+        transcript = await transcribe(tmp_path)
+    except Exception as exc:  # noqa: BLE001 - a voice turn must never 500
+        log.warning("voice turn failed: %s", exc)
+        return {"reply": f"I couldn't hear you: {exc}"}
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    try:
+        reply = await asyncio.wait_for(
+            graph.respond(transcript, session_id=user_id), timeout=120.0
+        )
+    except ApprovalRequired as exc:
+        reply = f"I need your approval before doing that ({exc.payload.get('action', 'action')}). Say it again to try once more."
+    except TimeoutError:
+        reply = "I'm still thinking — the language model is under load. Say that again in a bit."
+    except Exception as exc:
+        log.exception("voice graph turn failed")
+        reply = f"I hit an unexpected error ({type(exc).__name__}) — try again later."
+    return {"reply": reply, "transcript": transcript}
+
+
+@app.get("/onboarding")
+async def onboarding_status(_token: None = Depends(require_token)) -> dict:
+    wizard = OnboardingWizard(app.state.runtime.files)
+    return {
+        "onboarded": wizard.onboarded,
+        "step": wizard.state.step,
+        "next_prompt": wizard.current_prompt(),
+    }
+
+
+@app.post("/sleep")
+async def sleep(_token: None = Depends(require_token)) -> dict:
+    """Run the dream graph: Light → REM → Deep → DREAMS.md, then reindex."""
+    runtime: Runtime = app.state.runtime
+    record = await runtime.dreams.sleep()
+    try:
+        n = await runtime.reindexer.reindex_all()
+    except Exception as exc:  # noqa: BLE001
+        n = 0
+        log.warning("reindex after sleep failed: %s", exc)
+    return {
+        "staged": record.staged,
+        "promoted": record.promoted,
+        "themes": len(record.themes),
+        "added": record.added,
+        "superseded": record.superseded,
+        "fallback": record.fallback,
+        "reindexed": n,
+    }
+
+
+@app.get("/rot")
+async def rot(_token: None = Depends(require_token)) -> dict:
+    """Memory rot report — decayed entries the owner may want to /forget."""
+    forgetting: ForgettingEngine = app.state.runtime.forgetting
+    entries = await forgetting.rot_report()
+    return {
+        "count": len(entries),
+        "entries": [
+            {
+                "path": e.path,
+                "chunk_index": e.chunk_index,
+                "content": e.content,
+                "retention": round(e.retention, 3),
+                "age_days": e.age_days,
+                "reason": e.reason,
+            }
+            for e in entries
+        ],
+    }
+
+
+@app.get("/retention")
+async def retention(_token: None = Depends(require_token)) -> dict:
+    """Per-chunk retention stats + decay curve — API feed."""
+    forgetting: ForgettingEngine = app.state.runtime.forgetting
+    rows = await forgetting.retention_report()
+    curve = decay_curve()
+    return {"chunks": rows, "curve": curve}
+
+
+@app.get("/mind")
+async def mind(_token: None = Depends(require_token)) -> dict:
+    """Full memory snapshot — what Iris remembers, her dreams and skills.
+    Feeds the /mind command on Telegram."""
+    runtime: Runtime = app.state.runtime
+    files = runtime.files
+    dreams = files.read(files.dreams)[-2000:] if files.dreams.exists() else ""
+    skills = [{"name": s.name, "description": s.description} for s in runtime.skills.list()]
+    stats = await runtime.index.stats()
+    from iris_ai.memory.reflection import ReflectionPass
+
+    flags = ReflectionPass(runtime.llm, files.root / "config" / "hallucination_flags.jsonl").count()
+    today = files.today()
+    daily = files.daily_note(today)
+    return {
+        "memory": files.read(files.memory),
+        "user": files.read(files.user),
+        "agents": files.read(files.instructions),
+        # The episodic tier was missing from the snapshot, so clients
+        # could show what Iris believes but never what she was told today.
+        "daily": files.read(daily) if daily.exists() else "",
+        "today": today.isoformat(),
+        "dreams_tail": dreams,
+        "skills": skills,
+        "stats": stats,
+        "hallucination_flags": flags,
+        # What is waiting for the next dream cycle — the staged
+        # list. Without this the dream diary could only show what dreaming
+        # already wrote, never what it is about to promote.
+        "staged": _staged_preview(files),
+    }
+
+
+def _staged_preview(files: WorkspaceFiles, limit: int = 8) -> list[dict]:
+    """Newest staged signals from `.dreams/staging-*.jsonl` (best-effort)."""
+    out: list[dict] = []
+    try:
+        paths = sorted(files.staging_dir().glob("staging-*.jsonl"), reverse=True)
+    except OSError:
+        return out
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            content = str(raw.get("content", "")).strip()
+            if not content:
+                continue
+            out.append(
+                {
+                    "content": content,
+                    "importance": float(raw.get("importance", 0.0) or 0.0),
+                    "target": str(raw.get("target", "") or ""),
+                }
+            )
+            if len(out) >= limit:
+                return out
+    return out
+
+
+@app.get("/skills")
+async def skills_list(_token: None = Depends(require_token)) -> dict:
+    runtime: Runtime = app.state.runtime
+    return {
+        "skills": [
+            {
+                "name": s.name,
+                "description": s.description,
+                "triggers": s.triggers,
+                "success": s.success_score,
+            }
+            for s in runtime.skills.list()
+        ]
+    }
+
+
+@app.get("/agents")
+async def agents_list(limit: int = 10, _token: None = Depends(require_token)) -> dict:
+    """The declared roles plus recent delegations — which agent decided what."""
+    from iris_ai.agents.roles import ROLES
+    from iris_ai.cli.agents import handoffs_from_traces
+
+    return {
+        "enabled": settings.multi_agent_enabled,
+        "roles": [
+            {
+                "name": role.name,
+                "description": role.description,
+                "tier": role.tier,
+                "lane": role.search_lane,
+                "tools": sorted(role.tools),
+                "max_tool_rounds": role.max_tool_rounds,
+                "max_output_chars": role.max_output_chars,
+            }
+            for role in ROLES.values()
+        ],
+        "decisions": [
+            {"kind": kind, **event}
+            for kind, event in handoffs_from_traces(max(1, min(limit, 100)))
+        ],
+    }
+
+
+@app.post("/cron/reload")
+async def cron_reload(_token: None = Depends(require_token)) -> dict:
+    """Re-read stored jobs into the live scheduler.
+
+    `iris cron add|rm` edits the store from another process, so a running engine
+    needs to be told. This is that telling — one call, no restart.
+    """
+    runtime: Runtime = app.state.runtime
+    if runtime.tasks is None:
+        return {"reloaded": False, "reason": "this runtime has no task scheduler"}
+    runtime.tasks.register_all()
+    jobs = [t.to_dict() for t in runtime.tasks.pending()]
+    return {"reloaded": True, "jobs": jobs}
+
+
+@app.get("/tasks")
+async def tasks_list(_token: None = Depends(require_token)) -> dict:
+    """Pending scheduled jobs (/tasks feed): one-off and recurring."""
+    runtime: Runtime = app.state.runtime
+    tasks = runtime.tasks.pending() if runtime.tasks is not None else []
+    return {
+        "tasks": [
+            {**t.to_dict(), "schedule": t.describe(), "recurring": t.recurring}
+            for t in tasks
+        ]
+    }
+
+
+@app.get("/costs")
+async def costs(_token: None = Depends(require_token)) -> dict:
+    """LLM spend rollups from the append-only cost ledger."""
+    runtime: Runtime = app.state.runtime
+    ledger = runtime.llm.ledger
+    if ledger is None:
+        return {"totals": {"requests": 0, "cost": 0.0}, "daily": [], "weekly": []}
+    return {
+        "totals": ledger.totals(),
+        "daily": ledger.daily_totals(),
+        "weekly": ledger.weekly_totals(),
+    }
+
+
+@app.get("/traces")
+async def traces(limit: int = 20, _token: None = Depends(require_token)) -> dict:
+    """Recent turn traces (config/traces.jsonl, newest first)."""
+    logger = app.state.runtime.traces
+    return {"traces": logger.recent(max(1, min(limit, 100))) if logger else []}
+
+
+@app.get("/tools")
+async def tools(_token: None = Depends(require_token)) -> dict:
+    """The declared tool surface: class, policy, source and deferral per tool.
+
+    Reads the same declarations `tool_schemas`/`dispatch` enforce, so this route
+    cannot describe a policy the engine does not apply.
+    """
+    from iris_ai.toolpolicy import TOOL_DECLARATIONS, policy_snapshot, surface_order, unknown_overrides
+
+    overrides = settings.tool_policy_overrides
+    # A tool the engine did not register is not on the surface at all: reflect
+    # that rather than describing a capability this boot does not have.
+    runtime = getattr(app.state, "runtime", None)
+    present = None
+    if runtime is not None and getattr(runtime, "computer", None) is None:
+        present = [n for n in TOOL_DECLARATIONS if n != "computer"]
+    visible, deferred = surface_order(settings.tool_surface_budget, present=present)
+    return {
+        "budget": settings.tool_surface_budget,
+        "visible": visible,
+        "deferred": deferred,
+        "tools": policy_snapshot(overrides),
+        "unknown_overrides": unknown_overrides(overrides),
+    }
+
+
+@app.get("/guards")
+async def guards(_token: None = Depends(require_token)) -> dict:
+    """The pre-tool guard chain: declared policy *and* live state.
+
+    `iris guards` shows the same policy from settings and the day counters from
+    disk, but only a running engine knows which circuits are open right now —
+    that is per-run state, and this is the route that can see it.
+    """
+    runtime = getattr(app.state, "runtime", None)
+    chain = getattr(runtime, "guards", None) if runtime is not None else None
+    if chain is None:
+        return {"enabled": False, "reason": "no guard chain on this runtime"}
+    return chain.snapshot()
+
+
+@app.get("/actions")
+async def actions(limit: int = 20, _token: None = Depends(require_token)) -> dict:
+    """Recent computer-use actions (config/actions.jsonl, newest first).
+
+    The log never contains typed text — it carries a length and a digest instead
+    — so replaying this route cannot leak a credential.
+    """
+    from iris_ai.computer.audit import ActionLog
+
+    log = ActionLog(Path(settings.workspace_dir) / "config" / "actions.jsonl")
+    return {"actions": log.recent(max(1, min(limit, 100)))}
+
+
+class ForgetRequest(BaseModel):
+    query: str
+
+
+class ForgetConfirmRequest(BaseModel):
+    path: str
+    chunk_index: int
+
+
+@app.post("/forget")
+async def forget_search(
+    req: ForgetRequest, _token: None = Depends(require_token)
+) -> dict:
+    """HITL phase 1: find candidate memories matching the query.
+
+    Restricted to MEMORY.md: the confirm step only edits curated owner
+    memory, so returning daily-note candidates was a dead end. A hit without a
+    chunk index is skipped too — confirm addresses the entry by
+    (path, chunk_index), so such a candidate could never be retired. This route
+    raised AttributeError before `MemoryHit` carried the field, which broke the
+    Telegram bridge's whole forget flow."""
+    runtime: Runtime = app.state.runtime
+    hits = await runtime.index.search(
+        req.query, top_k=3, mrr_top_k=1, require_origin={Origin.OWNER}
+    )
+    hits = [h for h in hits if h.path == "MEMORY.md" and h.chunk_index >= 0]
+    return {
+        "candidates": [
+            {
+                "content": h.content,
+                "path": h.path,
+                "chunk_index": h.chunk_index,
+                "score": round(h.score, 3),
+                "origin": h.origin.value,
+            }
+            for h in hits
+        ]
+    }
+
+
+@app.post("/forget/confirm")
+async def forget_confirm(
+    req: ForgetConfirmRequest, _token: None = Depends(require_token)
+) -> dict:
+    """HITL phase 2: retire the entry. Supersession marker in the file
+    (source of truth), chunk dropped from the index, reindex."""
+    runtime: Runtime = app.state.runtime
+    files = runtime.files
+    if Path(req.path).name != files.memory.name:
+        return {"ok": False, "error": "only MEMORY.md entries are editable; daily notes are append-only"}
+    content = files.read(files.memory)
+    chunks = await runtime.index.list_chunks()
+    chunk = next(
+        (c for c in chunks if c["path"] == req.path and c["chunk_index"] == req.chunk_index),
+        None,
+    )
+    if chunk is None:
+        return {"ok": False, "error": "chunk not found in index"}
+    marker = f"(superseded {datetime.now().isoformat()[:10]})"
+    new = supersede_in_text(content, chunk["content"], marker)
+    if new is None:
+        return {"ok": False, "error": "could not locate the entry text in MEMORY.md"}
+    try:
+        files.write_curated(files.memory, new)
+        await runtime.reindexer.reindex_all()
+    except ConcurrencyError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "superseded": chunk["content"][:120]}

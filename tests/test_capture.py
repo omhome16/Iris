@@ -15,9 +15,9 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from fakes import WizardLLM
-from iris.agent.chat import ChatGraph
-from iris.config import settings
-from iris.memory.capture import (
+from iris_ai.agent.chat import ChatGraph
+from iris_ai.config import settings
+from iris_ai.memory.capture import (
     CaptureResult,
     condense,
     judge_capture,
@@ -25,10 +25,10 @@ from iris.memory.capture import (
     note_line,
     worth_capturing,
 )
-from iris.memory.dreaming import _NOTE_LINE_RE
-from iris.memory.files import WorkspaceFiles
-from iris.onboarding import OnboardingWizard
-from iris.trace import TraceLogger
+from iris_ai.memory.dreaming import _NOTE_LINE_RE
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.onboarding import OnboardingWizard
+from iris_ai.trace import TraceLogger
 from test_agent_graph import make_runtime
 
 INFORMATIVE = (

@@ -3,11 +3,11 @@
 import asyncio
 from pathlib import Path
 
-from iris.config import settings
-from iris.memory.dreaming import LightPhase
-from iris.memory.files import WorkspaceFiles
-from iris.memory.index import MemoryIndex
-from iris.memory.llm import LLMClient
+from iris_ai.config import settings
+from iris_ai.memory.dreaming import LightPhase
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.index import MemoryIndex
+from iris_ai.memory.llm import LLMClient
 
 
 async def main() -> None:

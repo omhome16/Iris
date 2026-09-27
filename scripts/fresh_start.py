@@ -18,11 +18,11 @@ import asyncio
 import shutil
 from pathlib import Path
 
-from iris.config import settings
-from iris.memory.files import WorkspaceFiles
-from iris.memory.index import MemoryIndex
-from iris.memory.llm import LLMClient
-from iris.onboarding import OnboardingState
+from iris_ai.config import settings
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.index import MemoryIndex
+from iris_ai.memory.llm import LLMClient
+from iris_ai.onboarding import OnboardingState
 
 HEADER_MEMORY = """# MEMORY.md — Iris long-term memory
 

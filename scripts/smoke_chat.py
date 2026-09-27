@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from iris.api import app
+from iris_ai.api import app
 
 
 def main() -> None:

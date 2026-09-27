@@ -15,12 +15,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from iris.config import Settings, settings
-from iris.memory.dreaming import DreamEngine, LightPhase, StagedSignal
-from iris.memory.files import WorkspaceFiles
-from iris.memory.forgetting import supersede_in_text
-from iris.memory.provenance import Origin, Provenance
-from iris.tasks import DEFAULT_REMINDER_HOUR, parse_when
+from iris_ai.config import Settings, settings
+from iris_ai.memory.dreaming import DreamEngine, LightPhase, StagedSignal
+from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.forgetting import supersede_in_text
+from iris_ai.memory.provenance import Origin, Provenance
+from iris_ai.tasks import DEFAULT_REMINDER_HOUR, parse_when
 
 # ── secrets must never print ────────────────────────────────────────────────
 
@@ -155,7 +155,7 @@ def test_parse_when_iso_and_relative_still_work(monkeypatch):
 # ── the ledger must admit when a cost is not measured ──────────────────────
 
 def test_ledger_flags_unpriced_models(tmp_path: Path):
-    from iris.ledger import CostLedger
+    from iris_ai.ledger import CostLedger
 
     ledger = CostLedger(tmp_path / "calls.jsonl")
     ledger.record(model="mystery/model-9000", tier="strong", prompt_tokens=10, completion_tokens=5)
@@ -170,7 +170,7 @@ def test_ledger_flags_unpriced_models(tmp_path: Path):
 
 
 def test_ledger_marks_fully_priced_run_as_measured(tmp_path: Path):
-    from iris.ledger import CostLedger
+    from iris_ai.ledger import CostLedger
 
     ledger = CostLedger(tmp_path / "calls.jsonl")
     ledger.record(model="jev-latest", tier="jev", prompt_tokens=100, completion_tokens=0)

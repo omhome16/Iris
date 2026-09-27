@@ -2,7 +2,7 @@
 
 uvicorn's asyncio default on Windows is the ProactorEventLoop, which psycopg
 async cannot use. This runner hands uvicorn an explicit SelectorEventLoop.
-In Docker (Linux) the plain `uvicorn iris.api:app` command works unchanged.
+In Docker (Linux) the plain `uvicorn iris_ai.api:app` command works unchanged.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ if sys.platform == "win32":
 
 def main() -> None:
     config = Config(
-        "iris.api:app",
+        "iris_ai.api:app",
         host="0.0.0.0",
         port=8000,
         loop="none",  # we own the loop

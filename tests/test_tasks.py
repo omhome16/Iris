@@ -9,8 +9,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from iris.config import settings
-from iris.tasks import TaskScheduler, TaskStore, parse_when
+from iris_ai.config import settings
+from iris_ai.tasks import TaskScheduler, TaskStore, parse_when
 
 
 def test_parse_when_iso():
