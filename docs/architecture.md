@@ -65,8 +65,8 @@ cost nothing, so it must happen before a provider is touched.
 |---|---|---|
 | `engine.py` | assembling the runtime, degraded mode, lifecycle | any policy decision |
 | `agent/chat.py` | the turn pipeline and its node implementations | tool implementations |
-| `agent/tools.py` | tool definitions, schemas, dispatch | which tools exist (see `toolpolicy`) |
-| `toolpolicy.py` | tool **classes** → policy, visible-surface budget | enforcing policy (that is `dispatch`) |
+| `agent/tools.py` | tool definitions, schemas, dispatch, loading a deferred schema onto the surface | which tools exist (see `toolpolicy`) |
+| `toolpolicy.py` | tool **classes** → policy, namespaces and the deferred catalog, visible-surface budget | enforcing policy (that is `dispatch`) |
 | `guards.py` | the pre-tool chain: budget → circuit → spiral → context → record | budgets (see `budget.py`) |
 | `budget.py` | scoped ceilings, counters split by kind, day persistence | who calls it (the chain) |
 | `approval.py` | digest binding, replay guard, terminal-state guard, fail-closed | prompting the owner |
@@ -91,21 +91,27 @@ conversation, not a test fix.
    re-opened by a per-tool `allow` (`tests/test_tool_policy.py`).
 3. **Every tool declares a class**, asserted in *both* directions: no
    unclassified tool, and no declaration for a tool that does not exist.
-4. **A guard can only refuse.** It cannot re-enable what another guard closed,
+4. **The namespace table partitions the declarations**, so the deferred catalog
+   names every hidden tool — a group nobody belongs to would drop a capability
+   from the prompt as well as from the surface (`tests/test_tool_loading.py`).
+5. **Loading a deferred tool can only add.** It never widens permission (the pool
+   is the policy-filtered, skill-narrowed surface) and never disturbs the visible
+   head, so the provider's cached prefix survives (`tests/test_tool_loading.py`).
+6. **A guard can only refuse.** It cannot re-enable what another guard closed,
    and refusals happen pre-dispatch (`tests/test_guard_wiring.py`).
-5. **Approval is bound to the action it showed.** The digest is of the *effective*
+7. **Approval is bound to the action it showed.** The digest is of the *effective*
    arguments after edits; one `tool_call_id` grants once per thread; a
    side-effecting envelope with no digest fails closed.
-6. **Nothing raises into a turn** from telemetry, reflection, capture, dreaming or
+8. **Nothing raises into a turn** from telemetry, reflection, capture, dreaming or
    the background pool. They degrade; they do not take the reply down.
-7. **Secrets never reach disk and never reach the screen.** `iris doctor` prints
+9. **Secrets never reach disk and never reach the screen.** `iris doctor` prints
    key *names*; the trace records tool arguments as a hash (`iris/redact.py`).
-8. **JEV is optional.** Every integration falls back to a deterministic path, and
-   deleting `iris/jev` must leave Iris exactly as it was before it.
-9. **CLI text is cp1252-clean.** A Windows console cannot encode a character
-   outside it, and the failure is a traceback, not a missing glyph
-   (`tests/test_cli.py`).
-10. **Every setting is documented** in `.env.example`, and every key there names a
+10. **JEV is optional.** Every integration falls back to a deterministic path, and
+    deleting `iris/jev` must leave Iris exactly as it was before it.
+11. **CLI text is cp1252-clean.** A Windows console cannot encode a character
+    outside it, and the failure is a traceback, not a missing glyph
+    (`tests/test_cli.py`).
+12. **Every setting is documented** in `.env.example`, and every key there names a
     real setting (`tests/test_packaging.py`).
 
 ## Where state lives
@@ -119,6 +125,7 @@ conversation, not a test fix.
 | Day token counters | `workspace/config/budget.json` | yes — that is the point |
 | Guard spiral/circuit state | in-process, per run | no — and it should not |
 | Approval replay guard | in-process, per thread | no; a restart already invalidates the interrupt |
+| Tools loaded by `find_tools` | graph state, checkpointed with the thread | yes, for that thread |
 | Per-turn observations | `ContextVar` | no |
 
 ## Reading the code

@@ -149,7 +149,8 @@ plan: `docs/superpowers/plans/2026-09-23-p4-skill-registry.md`, log:
   binding JEV judgment gate → owner approval carrying findings and args →
   subprocess with a constructed environment, timeout and capped output.
 - `iris skills list | show | validate` (exit 1 on errors) and one shipped
-  builtin skill proving the format end to end.
+  builtin skill proving the format end to end. (`approve` joined the verb set
+  later, with third-party manifest hash-pinning — see `docs/vault-review.md`.)
 - Tests 294 → 410 runnable. Prompt-side injection (P2) now draws from
   `selectable()`, so a disabled or invalid skill is never named.
 
@@ -278,13 +279,21 @@ unit test per outcome rather than an APScheduler kwarg.
   pin the table to `TOOL_NAMES` in *both* directions, so the failure mode that
   made the old hand-maintained allowlists dangerous — a new tool arriving
   unclassified — is now a red test.
-- **A visible-surface budget + `find_tools`.** The vault's guidance is ≤20 visible
-  tools, namespacing from 20–100. P7 declares each tool `core` (never deferred) or
-  `extended` (deferrable) and defers `extended` tools, last-declared first, past
-  `tool_surface_budget` (default 20). Deferral is **presentation, not permission**:
-  a deferred tool is still callable, `find_tools` returns its schema, core tools
-  are never hidden at any budget, and a connected channel's tools are promoted
-  past the budget.
+- **A visible-surface budget, a namespace catalog + `find_tools`.** The vault's
+  guidance is ≤20 visible tools, namespacing from 20–100. Each tool declares
+  `core` (never deferred) or `extended` (deferrable) and `extended` tools are
+  deferred, last-declared first, past `tool_surface_budget` (default 20). Deferral
+  is **presentation, not permission**: a deferred tool is still callable, core
+  tools are never hidden at any budget, and a connected channel's tools are
+  promoted past the budget. A deferred tool without a catalog is a capability the
+  model can never reach for — it cannot ask for what it does not know exists — so
+  the prompt now gets a **namespace catalog** in place of the schemas (one line
+  per group, listing the hidden names; `iris tools` prints the verbatim section)
+  and `find_tools` **loads** the matched schemas: appended at the *tail*
+  of the tool list, so the cached prefix survives, and kept for the rest of the
+  thread in graph state (so it also survives a resume). Loading can only ever
+  add, never widen — the pool is the policy-filtered, skill-narrowed surface, so
+  a denied tool is not in it.
 - **One `computer` tool, not five.** `computer(action=screenshot|navigate|click|type)`
   keeps new capability inside one schema name, and is registered **only when
   `computer_enabled`** — off means the capability is absent, not present-but-refusing.
