@@ -29,17 +29,23 @@ and they **fail loudly** rather than skipping — see [`docs/support.md`](suppor
 
 ## Add a tool
 
-A tool is four things: an implementation, a **class declaration**, a schema, and
-a test. The class is what derives its policy — `allow` / `ask` / `deny` — so it
-is not optional metadata.
+A tool is five things: an implementation, an entry in `TOOL_NAMES`, a **class
+declaration**, a **namespace**, and a test. The class is what derives its policy —
+`allow` / `ask` / `deny` — and the namespace is what keeps the tool reachable once
+its schema is deferred, so neither is optional metadata.
 
-1. **Implement it** next to the others in `src/iris_ai/agent/tools.py` (or in the
-   module that owns the capability, as `iris/computer/` does).
-2. **Declare its class** in `src/iris_ai/toolpolicy.py::TOOL_DECLARATIONS`:
+1. **Implement it and register it in `build_tools`** in
+   `src/iris_ai/agent/tools.py` (or in the module that owns the capability, as
+   `iris/computer/` does). Registration is a `Tool(name, description, params,
+   handler)`; a handler that returns a JSON string.
+2. **Add its name to `TOOL_NAMES`** in the same file. `get_tools` asserts the real
+   registry is a subset of it, so a tool nobody declared fails loudly rather than
+   shipping unclassifiable.
+3. **Declare its class and surface** in `src/iris_ai/toolpolicy.py::TOOL_DECLARATIONS`:
 
    ```python
-   TOOL_DECLARATIONS["send_postcard"] = ToolDeclaration(
-       name="send_postcard", klass=ToolClass.DELIVERY, surface="extended",
+   TOOL_DECLARATIONS["send_postcard"] = Declaration(
+       cls=ToolClass.DELIVERY, surface="extended",
    )
    ```
 
@@ -47,15 +53,27 @@ is not optional metadata.
    |---|---|---|
    | `read` | `allow` | memory search, traces, stats |
    | `filesystem` | `allow` | sandboxed file tools |
-   | `memory_write` | `ask` | `remember`, `forget`, `note` |
-   | `network` | `ask` | `web_search`, `ingest_url` |
+   | `memory_write` | `allow` | `remember`, `forget`, `note` |
+   | `network` | `allow` | `web_search`, `ingest_url` |
    | `credentialed` | `ask` | anything using an API key |
-   | `delivery` | `ask` | `send_message`, `send_photo` |
+   | `delivery` | `allow` | `send_message`, `send_photo` |
    | `control` | `ask` | `computer` |
 
-3. **Add its schema** to `tool_schemas()` in `agent/tools.py`.
-4. **Run the coverage test** — `tests/test_tool_policy.py` fails in both
-   directions if you forgot the declaration or declared a tool that does not exist.
+   `surface="core"` (the default) means never deferred. `"extended"` means the
+   tool can be pushed off the visible list when the budget binds, and is then
+   reachable through `find_tools` — declare it at the point in the table where you
+   want it to disappear *last*.
+4. **Put it in a namespace** in `NAMESPACES`. A tool in no namespace is dropped
+   from the catalog the prompt gets for the deferred remainder, which is how a
+   capability quietly becomes one the model never reaches for. Open a new group
+   with a one-line `NAMESPACE_PURPOSE` entry if none fits. If your tool reaches
+   outside the sandbox, consider whether it belongs in `NON_OWNER_BLOCKED` too —
+   a scheduled task must not write durable memory.
+5. **Run the coverage tests** — `tests/test_tool_policy.py` fails if you forgot
+   the declaration or declared a tool that does not exist,
+   `tests/test_tool_loading.py` fails if the namespace table no longer partitions
+   the declarations, and `tests/test_cli.py` fails if any new CLI text is not
+   cp1252-clean.
 
 Read this before choosing `allow`: the class default applies to everything in it,
 and **`deny` beats every override**, including a class-wide deny that a per-tool
