@@ -418,8 +418,11 @@ class ChatGraph:
             current_loaded_tools,
             current_session,
             current_tool_call,
+            current_tool_scope,
         )
 
+        origin = state.get("origin") or "owner"
+        active = tuple(state.get("active_skills") or ())
         token = current_session.set(state.get("session_id") or "")
         # A tool cannot return a state update, so `find_tools` appends here and
         # this node folds the result into state. Accumulated, not replaced: the
@@ -428,8 +431,11 @@ class ChatGraph:
         # right arguments instead of guessing from a tool *result*.
         newly_loaded: list[str] = []
         load_token = current_loaded_tools.set(newly_loaded)
+        # `find_tools` has to offer the same surface this node's prompt was built
+        # from, so it reads the session's origin and active skills from here
+        # rather than assuming the unrestricted owner case.
+        scope_token = current_tool_scope.set((origin, active))
         try:
-            origin = state.get("origin") or "owner"
             for tc in last.tool_calls:
                 # The guard chain runs *before* dispatch, outside the tool, so a
                 # refusal costs nothing and never reaches a provider. Order is
@@ -475,6 +481,7 @@ class ChatGraph:
                     {"type": "tool", "name": tc["name"], "content": out, "tool_call_id": tc["id"]}
                 )
         finally:
+            current_tool_scope.reset(scope_token)
             current_loaded_tools.reset(load_token)
             current_session.reset(token)
         if not newly_loaded:

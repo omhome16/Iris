@@ -17,7 +17,13 @@ from typing import Any
 from langgraph.types import interrupt
 
 from iris_ai import turnlog
-from iris_ai.agent.runtime import Runtime, current_loaded_tools, current_session, current_tool_call
+from iris_ai.agent.runtime import (
+    Runtime,
+    current_loaded_tools,
+    current_session,
+    current_tool_call,
+    current_tool_scope,
+)
 from iris_ai.approval import Envelope
 from iris_ai.computer.actions import Action, ActionKind
 from iris_ai.config import settings
@@ -1053,11 +1059,17 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         appended to the tool list for the rest of the conversation, so the model
         reads them as tool definitions instead of copying arguments out of a
         tool result. Loading is bounded by the deferrable remainder, and it can
-        never widen permission: the pool comes from the policy-filtered surface,
-        so a denied tool is not in it to be loaded.
+        never widen permission: the pool is the *same* narrowed-and-filtered
+        surface the prompt was built from (the session's origin and active skills
+        come from the tools node), so a denied or non-owner-blocked tool is not
+        in it to be loaded, and what this reports as loaded is exactly what the
+        surface will append.
         """
         all_tools = get_tools(runtime)
-        visible, deferred = _allowed_and_deferred(runtime, [t.schema() for t in all_tools])
+        scope = current_tool_scope.get()
+        origin, active_skills = scope if scope is not None else ("owner", ())
+        narrowed = _narrowed_schemas(runtime, origin, active_skills)
+        visible, deferred = _allowed_and_deferred(runtime, narrowed)
         hidden = set(deferred)
         pool = [t for t in all_tools if t.name in hidden]
         if query.strip():

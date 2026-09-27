@@ -26,6 +26,7 @@ from iris_ai.agent.runtime import Runtime
 from iris_ai.agent.tools import get_tools, tool_schemas, tool_surface
 from iris_ai.config import settings
 from iris_ai.memory.files import WorkspaceFiles
+from iris_ai.memory.skills import Skill
 from iris_ai.sandbox import Sandbox
 from iris_ai.toolpolicy import (
     LOADER_TOOL,
@@ -277,6 +278,83 @@ async def test_a_turn_that_loads_nothing_leaves_state_untouched(tmp_path, monkey
         }
     )
     assert "loaded_tools" not in update
+
+
+async def test_find_tools_offers_only_what_the_surface_will_load(tmp_path, monkeypatch):
+    """The tool and the surface must agree: `find_tools` reports a tool as loaded
+    only if the *narrowed* surface will actually put its schema in the prompt.
+    Otherwise the model is told it holds a tool that is not there and calls it
+    blind — the exact guessing this mechanism exists to prevent."""
+    runtime = _runtime(tmp_path)
+    _core_budget(runtime, monkeypatch)
+    # The skill has to allow `find_tools` for the call to happen at all (the
+    # allowlist narrows this turn too), and deliberately excludes `dream_now`.
+    runtime.skills.write(
+        Skill(
+            name="reader",
+            description="d",
+            procedure="p",
+            allowed_tools=["find_tools", "inspect_mind"],
+        )
+    )
+    graph = ChatGraph(runtime, MemorySaver())
+    update = await graph._tools(
+        {  # type: ignore[typeddict-item]
+            "messages": [_Message(("find_tools", {"query": "dream_now"}))],
+            "session_id": "s",
+            "origin": "owner",
+            "active_skills": ("reader",),
+        }
+    )
+    payload = json.loads(update["messages"][0]["content"])
+    assert payload["loaded"] == []
+    assert "dream_now" not in payload["loaded"]
+
+
+async def test_find_tools_still_loads_what_the_skill_did_allow(tmp_path, monkeypatch):
+    """Narrowing is not a blanket refusal: a skill that allows the tool must be
+    able to load it, and the surface must then actually append it."""
+    runtime = _runtime(tmp_path)
+    monkeypatch.setattr(settings, "tool_surface_budget", 1)
+    runtime.skills.write(
+        Skill(
+            name="writer",
+            description="d",
+            procedure="p",
+            allowed_tools=["find_tools", "skill_revise"],
+        )
+    )
+    graph = ChatGraph(runtime, MemorySaver())
+    update = await graph._tools(
+        {  # type: ignore[typeddict-item]
+            "messages": [_Message(("find_tools", {"query": "skill_revise"}))],
+            "session_id": "s",
+            "origin": "owner",
+            "active_skills": ("writer",),
+        }
+    )
+    payload = json.loads(update["messages"][0]["content"])
+    assert payload["loaded"] == ["skill_revise"]
+    surfaced = _names(
+        tool_surface(runtime, "owner", ("writer",), payload["loaded"])[0]
+    )
+    assert "skill_revise" in surfaced
+
+
+async def test_a_non_owner_find_tools_cannot_offer_a_blocked_tool(tmp_path, monkeypatch):
+    """A scheduled task cannot `remember`; asking to load it must not say it did."""
+    runtime = _runtime(tmp_path)
+    _core_budget(runtime, monkeypatch)
+    graph = ChatGraph(runtime, MemorySaver())
+    update = await graph._tools(
+        {  # type: ignore[typeddict-item]
+            "messages": [_Message(("find_tools", {"query": "skill_write"}))],
+            "session_id": "s",
+            "origin": "task",
+        }
+    )
+    payload = json.loads(update["messages"][0]["content"])
+    assert payload["loaded"] == []
 
 
 def test_tool_schemas_and_tool_surface_cannot_disagree(tmp_path, monkeypatch):

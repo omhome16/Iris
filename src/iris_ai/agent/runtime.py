@@ -46,6 +46,16 @@ current_loaded_tools: ContextVar[list[str] | None] = ContextVar(
     "iris_current_loaded_tools", default=None
 )
 
+# The session context the surface is being built under: `(origin, active skills)`,
+# set by the tools node. `find_tools` must offer exactly what `tool_surface` will
+# later append to the prompt, or it would report a tool as loaded that the
+# session's rule then refuses — telling the model it holds something it does not
+# have, which is the guessing this mechanism exists to prevent. `None` means
+# "no tool node is running", and the caller assumes the unrestricted owner case.
+current_tool_scope: ContextVar[tuple[str, tuple[str, ...]] | None] = ContextVar(
+    "iris_current_tool_scope", default=None
+)
+
 
 @dataclass(slots=True)
 class Runtime:
