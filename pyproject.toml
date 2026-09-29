@@ -2,7 +2,7 @@
 name = "iris-personal-ai"
 # Single-sourced: the version lives in `src/iris_ai/__init__.py` (what `iris version`
 # prints) and hatch reads it from there, so the two cannot drift. See
-# docs/support.md for the release discipline.
+# DOCS.md ("Testing and CI") for the release discipline.
 dynamic = ["version"]
 description = "Iris — a personal AI assistant with a visible mind (memory engineering, agent graphs, context engineering)"
 readme = "README.md"

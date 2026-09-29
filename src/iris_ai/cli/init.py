@@ -45,8 +45,9 @@ from pathlib import Path
 
 from iris_ai.capabilities.memory import MEMORY_BACKENDS
 from iris_ai.capabilities.models import MODELS
+from iris_ai.cli import ui
 from iris_ai.cli.doctor import PROVIDER_KEY_NAMES, Check, _load_dotenv, _resolve_provider
-from iris_ai.cli.help_theme import LEVEL_STYLE, console
+from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 from iris_ai.engine import _open_checkpointer
 from iris_ai.manifest import apply_manifest, load_manifest
@@ -263,17 +264,15 @@ async def _verify(*, offline: bool) -> tuple[list[Check], bool]:
 
 def _render(files: list[Check], checks: list[Check], *, recall_ok: bool) -> None:
     out = console()
-    out.print("[iris.title]Iris setup[/iris.title]")
-    for section, rows in (("files", files), ("checks", checks)):
+    ui.header(out, "Iris setup", "write the config, then measure the result")
+    for label, rows in (("files", files), ("checks", checks)):
         if not rows:
             continue
-        out.print(f"[dim]{section}[/dim]")
-
+        ui.section(out, label)
         for check in rows:
-            style = LEVEL_STYLE[check.level]
-            out.print(f"  [{style}]{check.level:4}[/{style}] {check.name}: {check.detail}")
-    counts = {level: sum(1 for c in checks if c.level == level) for level in ("ok", "warn", "fail")}
-    out.print(f"{counts['ok']} ok · {counts['warn']} warn · {counts['fail']} fail")
+            ui.status(out, check.level, check.name, check.detail)
+    out.print()
+    ui.counts(out, [check.level for check in checks])
     if not recall_ok:
         out.print()
         out.print(_TURN_ON_VECTORS)
@@ -282,12 +281,18 @@ def _render(files: list[Check], checks: list[Check], *, recall_ok: bool) -> None
 def _next_steps() -> None:
     out = console()
     out.print()
-    out.print("[iris.title]Next[/iris.title]")
-    out.print("  iris chat     talk to her (no service, no daemon)")
-    out.print("  iris doctor   re-check the environment any time")
-    out.print(
-        "  Postgres stays optional: keep the SQLite defaults, or point POSTGRES_DSN at a "
-        "server and set MEMORY_BACKEND=pgvector"
+    ui.steps(
+        out,
+        "next",
+        [
+            ("iris chat", "talk to her (no service, no daemon)"),
+            ("iris doctor", "re-check the environment any time"),
+        ],
+    )
+    ui.note(
+        out,
+        "Postgres stays optional: keep the SQLite defaults, or point POSTGRES_DSN at a "
+        "server and set MEMORY_BACKEND=pgvector",
     )
 
 

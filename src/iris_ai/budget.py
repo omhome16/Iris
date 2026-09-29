@@ -51,7 +51,7 @@ class CounterKind(StrEnum):
     #: **Reserved, and said so rather than implied.** Tool-schema tokens are
     #: real spend, but no provider reports them separately: they arrive inside
     #: `prompt_tokens`. The bucket exists so a future provider that splits them
-    #: has somewhere to land, and it is zero today — see `docs/support.md`.
+    #: has somewhere to land, and it is zero today — see DOCS.md, "Safety".
     TOOL_SCHEMA = "tool_schema"
 
 

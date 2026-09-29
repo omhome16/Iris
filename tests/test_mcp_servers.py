@@ -79,7 +79,7 @@ def test_the_shipped_example_config_loads_and_connects_nothing():
     """JSON has no comments, so the example is kept *valid and inert* instead.
 
     Copying it must not connect anything (`enabled: false` on every server), and
-    it must not raise. The prose explaining each key lives in docs/extending.md —
+    it must not raise. The prose explaining each key lives in DOCS.md —
     a `_notes` key inside the file would be an unknown-key error, which is exactly
     what the loader should do with it.
     """

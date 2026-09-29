@@ -5,7 +5,7 @@ goes through `Harness.stream` / `Harness.resume`, so memory, judgments,
 approvals, budgets and traces behave identically whether the owner is in a
 terminal, an HTTP client, or an editor. The adapter owns no brain, no store and
 no policy of its own — where it *does* decide something, that decision is
-written down here and in `docs/acp.md`, because an adapter that quietly answers
+written down here and in `DOCS.md`, because an adapter that quietly answers
 a protocol question differently from the CLI is a second behavior to debug.
 
 The four decisions worth reading before the code:
@@ -18,7 +18,7 @@ an editor restart without a second registry. `session/new` mints the id.
 directory is not the same as an owner granting it, so the session records the
 cwd (it is reported back and logged) while tools keep running against the
 harness workspace and its sandbox. Widening scope per session is a policy
-feature, and `docs/acp.md` says so.
+feature, and `DOCS.md` says so.
 
 **An approval is a permission request.** A kernel interrupt becomes
 `session/request_permission`; the answer comes back through the same
@@ -301,7 +301,7 @@ class IrisAcpAgent(_AcpAgent):
 
         `mcp_servers` is where the client offers servers for this session. They
         are *reported* and not adopted: a server the client brought is untrusted
-        by definition (nobody in this process vouched for it), and `docs/acp.md`
+        by definition (nobody in this process vouched for it), and `DOCS.md`
         records that v1 answers with the configured servers only rather than
         opening a connection on a client's say-so.
         """
@@ -315,7 +315,7 @@ class IrisAcpAgent(_AcpAgent):
         if mcp_servers:
             log.info(
                 "acp session %s offered %d client MCP server(s); the configured "
-                "servers are used (see docs/acp.md — a client's server is untrusted)",
+                "servers are used (see DOCS.md — a client's server is untrusted)",
                 session.session_id,
                 len(mcp_servers),
             )

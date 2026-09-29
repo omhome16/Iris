@@ -16,10 +16,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from rich import box
-from rich.table import Table
-
 from iris_ai.budget import Budget, BudgetPolicy, CounterKind
+from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 from iris_ai.guards import GuardChain
@@ -41,16 +39,14 @@ def _ceiling(value: int) -> str:
 
 def render(data: dict) -> None:
     out = console()
-    out.print("[iris.title]Guard chain[/iris.title] — every tool call passes this before it runs")
+    ui.header(out, "Guard chain", "every tool call passes this before it runs")
 
-    # `box.ASCII` on purpose, and the whole output is cp1252-clean: rich
+    # Every literal in this file stays cp1252-clean and the marks are ASCII: rich
     # downgrades its own borders on a limited console, but it cannot downgrade a
-    # character *we* emitted, and a `↑` in this table shipped a traceback instead
-    # of a table. Diagnostics get pasted into issues and logs, so portability
-    # beats prettier corners.
-    chain = Table(show_header=True, header_style="bold", box=box.ASCII)
-    chain.add_column("Guard")
-    chain.add_column("Ceiling / threshold")
+    # character *we* emitted, and a `↑` in this table once shipped a traceback
+    # instead of a table. Diagnostics get pasted into issues and logs, so
+    # portability beats prettier corners.
+    chain = ui.table(out, "Pre-tool order", ["guard", "ceiling / threshold"])
     for name in data["order"]:
         if name == "record":
             chain.add_row("record", "every verdict goes to the turn trace either way")
@@ -84,9 +80,7 @@ def render(data: dict) -> None:
         out.print("[iris.warn]the chain is switched off[/iris.warn] (TOOL_GUARD_ENABLED=false)")
 
     budget = data.get("budget") or {}
-    spend = Table(show_header=True, header_style="bold", title="Today's spend", box=box.ASCII)
-    spend.add_column("Kind")
-    spend.add_column("Tokens", justify="right")
+    spend = ui.table(out, "Today's spend", ["kind", ("tokens", {"justify": "right"})])
     counters = budget.get("counters") or {}
     for kind in CounterKind:
         if kind is CounterKind.TOOL_SCHEMA:
@@ -94,15 +88,14 @@ def render(data: dict) -> None:
         spend.add_row(kind.value, f"{int(counters.get(kind.value, 0)):,}")
     spend.add_row("[bold]total[/bold]", f"[bold]{int(budget.get('total', 0)):,}[/bold]")
     out.print(spend)
-    out.print(
-        f"[dim]policy {budget.get('policy', {}).get('version', '?')} · "
-        f"day {budget.get('day', '?')} · file {budget_path()}[/dim]"
+    ui.note(
+        out,
+        f"policy {budget.get('policy', {}).get('version', '?')} · "
+        f"day {budget.get('day', '?')} · file {budget_path()}",
     )
     if budget.get("persistence_error"):
-        out.print(f"[iris.warn]the day counters could not be saved:[/iris.warn] {budget['persistence_error']}")
-    out.print(
-        "[dim]circuit state is per-run: `GET /guards` on a running engine shows which tools are open.[/dim]"
-    )
+        ui.warn(out, f"the day counters could not be saved: {budget['persistence_error']}")
+    ui.note(out, "circuit state is per-run: `GET /guards` on a running engine shows which tools are open.")
 
 
 def run(*, json_output: bool = False) -> int:

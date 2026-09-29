@@ -1,4 +1,17 @@
-"""Iris CLI root — typer app bound to [project.scripts] iris."""
+"""Iris CLI root — typer app bound to [project.scripts] iris.
+
+The help is **generated from the command registry**, not written by hand. A
+hand-written help screen is a second list of commands, and the two drift: the
+screen keeps advertising a verb that was renamed and silently omits the one that
+was added. `_help_screen` walks the click group it is called on, so a command that
+exists is a command that is listed, and the test that asserts the exact command
+set is asserting the thing the user reads.
+
+The screen is grouped by what a person is trying to do (start, configure,
+inspect, maintain) rather than alphabetically. Commands are grouped by hand,
+because "which of these is a *setup* verb" is a judgment; a command missing from
+the grouping still appears, under its own heading, so the list is never partial.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +21,7 @@ from pathlib import Path
 import typer
 
 from iris_ai.cli import agents as agents_mod
-from iris_ai.cli import art
+from iris_ai.cli import art, ui
 from iris_ai.cli import chat as chat_mod
 from iris_ai.cli import costs as costs_mod
 from iris_ai.cli import cron as cron_mod
@@ -30,9 +43,25 @@ app = typer.Typer(
     help="Iris — personal agent harness (library + CLI).",
     invoke_without_command=True,
     add_completion=False,
+    # The root help is drawn by `_help_screen` instead: one screen, in this
+    # package's palette, always in sync with the registry. Subcommands keep the
+    # default help, which is where the per-flag detail belongs.
+    add_help_option=False,
     rich_markup_mode="rich",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+#: Which commands belong together, in reading order. A command that is not named
+#: here is listed under `More` — the screen degrades by getting longer, never by
+#: dropping a verb.
+_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("start", ("init", "chat", "doctor", "version")),
+    ("configure", ("secrets", "mcp", "policy")),
+    ("inspect", ("tools", "plugins", "guards", "costs", "agents", "skills", "cron")),
+    ("maintain", ("migrate",)),
+)
+
+_TAGLINE = "memory · judgment · agents — one library, one kernel, four faces"
 
 # Written by the root callback; read by commands that need --debug state.
 # click only guarantees root params exist during callback execution, so we
@@ -47,18 +76,71 @@ def _debug_enabled(debug: bool) -> bool:
 def _fail(message: str, debug: bool, *, cause: BaseException | None = None) -> None:
     """Print a friendly error; under debug re-raise `cause` for a traceback."""
     out = console()
-    out.print(f"[iris.fail]error[/iris.fail] {message}")
+    ui.failed(out, "error", message)
     if debug:
         if cause is not None:
             raise cause  # original traceback (spec: --debug / IRIS_DEBUG=1)
         raise typer.Exit(code=1)
-    out.print("hint: re-run with --debug or IRIS_DEBUG=1 for a traceback")
+    ui.hint(out, "hint: re-run with --debug or IRIS_DEBUG=1 for a traceback")
     raise typer.Exit(code=1)
+
+
+def _command_help(ctx: typer.Context) -> dict[str, str]:
+    """`name -> one-line summary`, read off the live command registry.
+
+    Click owns the summaries (`get_short_help_str`), so a docstring edit updates
+    this screen with no second copy to remember.
+    """
+    group = getattr(ctx.command, "commands", None) or {}
+    return {name: command.get_short_help_str(limit=60) for name, command in group.items()}
+
+
+def _grouped(commands: dict[str, str]) -> list[tuple[str, list[tuple[str, str]]]]:
+    """The registry, arranged into the reading order above (never a subset)."""
+    groups: list[tuple[str, list[tuple[str, str]]]] = []
+    placed: set[str] = set()
+    for label, names in _GROUPS:
+        rows = [(name, commands[name]) for name in names if name in commands]
+        if rows:
+            groups.append((label, rows))
+            placed.update(name for name, _ in rows)
+    leftover = sorted(name for name in commands if name not in placed)
+    if leftover:
+        groups.append(("more", [(name, commands[name]) for name in leftover]))
+    return groups
+
+
+def _help_screen(ctx: typer.Context, *, draw_art: bool = True) -> None:
+    """The start screen: the mark, then every command, grouped by intent."""
+    out = console()
+    if draw_art and art.banner_enabled(out):
+        art.render_banner(out, subtitle=version_mod.version_lines()[0], tagline=_TAGLINE)
+
+    ui.section(out, "commands")
+    for label, rows in _grouped(_command_help(ctx)):
+        out.print(f"  [iris.sub]{label}[/iris.sub]")
+        for name, summary in rows:
+            out.print(f"    [iris.cmd]{name}[/iris.cmd]  [iris.sub]{summary}[/iris.sub]")
+
+    out.print()
+    ui.steps(
+        out,
+        "next",
+        [
+            ("iris init", "set up this checkout, then prove it"),
+            ("iris chat", "talk to it — no service, no daemon"),
+        ],
+        subtitle="the flags of one command: `iris <command> --help`",
+    )
+    ui.note(out, "docs: DOCS.md  ·  state lives in workspace/  ·  no server required")
 
 
 @app.callback()
 def root(
     ctx: typer.Context,
+    help_: bool = typer.Option(
+        False, "--help", "-h", help="Show this screen and exit.", is_eager=True
+    ),
     version: bool = typer.Option(
         False, "--version", "-V", help="Show version and exit.", is_eager=True
     ),
@@ -66,27 +148,15 @@ def root(
 ) -> None:
     global _debug_flag
     _debug_flag = _debug_enabled(debug)
+    if help_:
+        _help_screen(ctx)
+        raise typer.Exit()
     if version:
         version_mod.print_version()
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        intro(ctx)
+        _help_screen(ctx)
         raise typer.Exit()
-
-
-def intro(ctx: typer.Context) -> None:
-    """The start screen: the mark, then the real help.
-
-    Drawing is skipped in a pipe, under `NO_COLOR`, or with `IRIS_NO_BANNER=1`
-    (`iris_ai.cli.art.banner_enabled`), so scripts and CI logs get the same text
-    they always did. The help that follows is the honest reference — the banner
-    is decoration, never a substitute for the command list.
-    """
-    out = console()
-    if art.banner_enabled(out):
-        art.render_banner(out, subtitle=version_mod.version_lines()[0])
-        out.print("  [dim]memory · judgment · agents — `iris chat` to talk to her[/dim]\n")
-    print(ctx.get_help())
 
 
 @app.command()

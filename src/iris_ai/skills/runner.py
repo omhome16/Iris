@@ -28,7 +28,7 @@ running as the same OS user can still read what that user can read, and can stil
 open a socket. That is why the judgment gate and the approval sit on the path
 *before* execution, why the environment carries no secrets, and why the container
 level exists for anyone who needs the stronger guarantee — see
-`docs/deployment.md` for the residual risk.
+DOCS.md, "Safety", for the residual risk.
 
 Two rules worth knowing from the industry guidance this follows (NVIDIA's
 sandboxing guidance, the OWASP agent cheat sheet, and Trail of Bits' 2025

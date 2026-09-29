@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from iris_ai.agent.chat import ApprovalRequired
-from iris_ai.cli import art
+from iris_ai.cli import art, ui
 from iris_ai.cli.doctor import PROVIDER_KEY_NAMES, _load_dotenv
 from iris_ai.cli.help_theme import console
 from iris_ai.engine import Harness, harness
@@ -32,12 +32,19 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 REPL_HELP = """\
-/exit, /quit   leave the chat
-/help          this list
+[iris.brand]commands[/iris.brand]
+  [iris.cmd]/exit[/iris.cmd], [iris.cmd]/quit[/iris.cmd]  leave the chat
+  [iris.cmd]/help[/iris.cmd]         this list
 
 Anything else is a turn: it goes to the same pipeline the API and the Telegram
 bridge use, so memory, judgments and traces behave identically.
 """
+
+#: The prompt marks. `›` is cp1252-safe (0x9B) and rich degrades its own frames
+#: for a console that cannot draw them; the *diagnostics* keep ASCII marks, because
+#: they get pasted into issues where a mojibake byte looks like a bug.
+YOU = "you › "
+IRIS = "iris › "
 
 
 def _provider_configured() -> bool:
@@ -53,10 +60,11 @@ def _provider_configured() -> bool:
 
 
 def _print_degraded(brain: Harness) -> None:
+    """On stderr on purpose: `iris chat --once > out.txt` must stay clean."""
     out = console(stderr=True)
     out.print(f"[iris.warn]degraded[/iris.warn] {brain.degraded_reason}")
     out.print(
-        "[iris.warn]         recall is unavailable this session[/iris.warn] "
+        "[iris.warn]recall is unavailable this session[/iris.warn] "
         "— new memories are still written to the workspace and indexed later."
     )
 
@@ -64,7 +72,7 @@ def _print_degraded(brain: Harness) -> None:
 async def _render_turn(brain: Harness, text: str, session: str) -> None:
     """One streamed turn, rendered as it happens."""
     out = console()
-    out.print("[iris.title]iris>[/iris.title] ", end="")
+    out.print("[iris.brand]iris[/iris.brand] [iris.mark]›[/iris.mark] ", end="")
     printed = False
     thinking = False
     pending: dict | None = None
@@ -74,12 +82,12 @@ async def _render_turn(brain: Harness, text: str, session: str) -> None:
             event_kind = payload.get("kind")
             if event_kind == "thinking" and not thinking:
                 thinking = True
-                out.print("[iris.warn]· thinking…[/iris.warn]", end="\r")
+                out.print("[iris.sub]thinking…[/iris.sub]", end="\r")
             elif event_kind == "text":
                 delta = str(payload.get("delta", ""))
                 if delta:
                     if thinking and not printed:
-                        out.print(" " * 40, end="\r")  # clear the thinking line
+                        out.print(" " * 12, end="\r")  # clear the thinking line
                     out.print(delta, end="")
                     printed = True
             elif event_kind == "tool_call":
@@ -88,7 +96,11 @@ async def _render_turn(brain: Harness, text: str, session: str) -> None:
                 args = call.get("args", {})
                 if not printed:
                     out.print("", end="\r")
-                out.print(f"  [dim]· {name}({json.dumps(args, ensure_ascii=False)})[/dim]")
+                # One dim line per call, prefix indented to sit under the reply
+                # header rather than in the reply text.
+                out.print(
+                    f"[iris.sub]  {ui.CHEVRON} {name}({json.dumps(args, ensure_ascii=False)})[/iris.sub]"
+                )
             elif event_kind == "approval":
                 pending = payload.get("payload") or {}
         elif kind == "updates" and isinstance(payload, dict):
@@ -110,8 +122,10 @@ async def _render_turn(brain: Harness, text: str, session: str) -> None:
 async def _handle_approval(brain: Harness, session: str, payload: dict) -> None:
     """The human-in-the-loop gate, in the terminal."""
     out = console()
-    out.print("[iris.warn]I need your approval before doing that:[/iris.warn]")
-    out.print(f"  {json.dumps(payload, ensure_ascii=False)}")
+    ui.header(out, "Approval needed", "an action outside the automatic policy is waiting")
+    for key, value in payload.items():
+        ui.grid(out, [(str(key), str(value))])
+    out.print()
     try:
         answer = input("approve? [y/N] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -120,21 +134,21 @@ async def _handle_approval(brain: Harness, session: str, payload: dict) -> None:
     try:
         reply = await brain.resume(session, decision=decision)
     except ApprovalRequired:
-        out.print("[iris.warn]still waiting on approval — say it again if you want to retry.[/iris.warn]")
+        ui.warn(out, "still waiting on approval — say it again if you want to retry.")
         return
     except Exception as exc:  # noqa: BLE001 — a failed resume must not kill the REPL
-        out.print(f"[iris.fail]error[/iris.fail] resume failed: {exc}")
+        ui.failed(out, "error", f"resume failed: {exc}")
         return
-    out.print(f"[iris.title]iris>[/iris.title] {reply}")
+    out.print(f"[iris.brand]iris[/iris.brand] [iris.mark]›[/iris.mark] {reply}")
 
 
 async def _run_chat(*, session: str, once: str | None, debug: bool, no_banner: bool = False) -> int:
     out = console()
 
     if not _provider_configured():
-        out.print("[iris.fail]error[/iris.fail] no LLM provider key found")
-        out.print("hint: `iris doctor` shows which key names are missing; put one in .env")
-        out.print("      (`cp .env.example .env` then set GEMINI_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY)")
+        ui.failed(out, "error", "no LLM provider key found")
+        ui.hint(out, "hint: `iris doctor` shows which key names are missing; put one in .env")
+        ui.hint(out, "      (`cp .env.example .env` then set GEMINI_API_KEY / GROQ_API_KEY / OPENROUTER_API_KEY)")
         return 1
 
     async with harness(services=False) as brain:
@@ -147,17 +161,22 @@ async def _run_chat(*, session: str, once: str | None, debug: bool, no_banner: b
             except Exception as exc:  # the CLI formats errors, the library raises them
                 if debug:
                     raise
-                out.print(f"[iris.fail]error[/iris.fail] {type(exc).__name__}: {exc}")
-                out.print("hint: re-run with --debug for a traceback")
+                ui.failed(out, "error", f"{type(exc).__name__}: {exc}")
+                ui.hint(out, "hint: re-run with --debug for a traceback")
                 return 1
             return 0
 
         if art.banner_enabled(out, no_banner=no_banner):
             art.render_banner(out)
-        out.print(f"[iris.title]Iris chat[/iris.title] — session '{session}' (Ctrl+C or /exit to leave)")
+        ui.header(
+            out,
+            f"Iris chat - session '{session}'",
+            "streaming; the same pipeline the API and the Telegram bridge use",
+        )
+        ui.note(out, "Ctrl+C or /exit to leave  ·  /help for the commands")
         while True:
             try:
-                line = input("you> ")
+                line = input(YOU)
             except (EOFError, KeyboardInterrupt):
                 out.print("")
                 return 0
@@ -174,8 +193,8 @@ async def _run_chat(*, session: str, once: str | None, debug: bool, no_banner: b
             except Exception as exc:  # same contract as --once
                 if debug:
                     raise
-                out.print(f"[iris.fail]error[/iris.fail] {type(exc).__name__}: {exc}")
-                out.print("hint: re-run with --debug for a traceback")
+                ui.failed(out, "error", f"{type(exc).__name__}: {exc}")
+                ui.hint(out, "hint: re-run with --debug for a traceback")
 
 
 def run_chat(
@@ -190,8 +209,9 @@ def run_chat(
     except Exception as exc:  # last-resort formatting for a boot crash
         if debug:
             raise
-        console(stderr=True).print(f"[iris.fail]error[/iris.fail] {type(exc).__name__}: {exc}")
-        console(stderr=True).print("hint: re-run with --debug for a traceback")
+        err = console(stderr=True)
+        ui.failed(err, "error", f"{type(exc).__name__}: {exc}")
+        ui.hint(err, "hint: re-run with --debug for a traceback")
         return 1
 
 

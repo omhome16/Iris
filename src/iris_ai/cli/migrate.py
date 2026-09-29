@@ -33,8 +33,9 @@ from pathlib import Path
 
 from iris_ai.capabilities.memory import MEMORY_BACKENDS
 from iris_ai.capabilities.models import MODELS
+from iris_ai.cli import ui
 from iris_ai.cli.doctor import Check
-from iris_ai.cli.help_theme import LEVEL_STYLE, console
+from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 from iris_ai.ledger import CostLedger
 from iris_ai.memory.files import WorkspaceFiles
@@ -148,18 +149,22 @@ async def _reindex(target: str, *, dry_run: bool) -> tuple[list[Check], bool]:
 
 def _render(edit: _EnvEdit, checks: list[Check], *, dry_run: bool) -> None:
     out = console()
-    out.print("[iris.title]Iris migrate[/iris.title]")
+    ui.header(out, "Iris migrate", "rebuild the index from the Markdown, then point .env at it")
+    ui.section(out, "result")
     level = "warn" if edit.outcome == "missing" else "ok"
-    out.print(f"  [{LEVEL_STYLE[level]}]{edit.outcome:9}[/{LEVEL_STYLE[level]}] {edit.path}: {edit.detail}")
+    ui.status(out, level, str(edit.path), f"{edit.outcome} - {edit.detail}")
     for check in checks:
-        style = LEVEL_STYLE[check.level]
-        out.print(f"  [{style}]{check.level:9}[/{style}] {check.name}: {check.detail}")
+        ui.status(out, check.level, check.name, check.detail)
     out.print()
     if dry_run:
-        out.print("  nothing was written — drop --dry-run to migrate")
+        ui.note(out, "nothing was written - drop --dry-run to migrate")
     else:
-        out.print("  next: iris chat      (the Markdown, not the old store, is the source of truth)")
-        out.print("  Postgres is no longer required; stop it whenever you like.")
+        ui.steps(
+            out,
+            "next",
+            [("iris chat", "the Markdown, not the old store, is the source of truth")],
+        )
+        ui.note(out, "Postgres is no longer required; stop it whenever you like.")
 
 
 def run(*, to: str = "sqlite", dry_run: bool = False, env_path: Path | None = None) -> int:

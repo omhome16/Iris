@@ -488,7 +488,7 @@ class Settings(BaseSettings):
     # and installed packages use. The registry discovers both, reports name
     # clashes instead of hiding them, and a skill can only ever *narrow* what
     # the agent may do — never grant a tool the runtime does not already have.
-    # Docs: docs/superpowers/specs/2026-09-23-p4-skill-registry-design.md
+    # Docs: DOCS.md, "Extending Iris" (skills).
     skills_enabled: bool = True
     skills_builtin_dir: str = "skills"  # repo-relative; "" disables the builtin source
     skills_extra_dirs: str = ""  # comma-separated extra roots (private skill packs)
@@ -518,7 +518,7 @@ class Settings(BaseSettings):
     # Multi-agent is not free: the industry measurement is ~15x the tokens of a
     # chat, so the defaults are deliberately tight and a breach degrades the
     # answer rather than failing the turn.
-    # Docs: docs/superpowers/specs/2026-09-24-p5-multi-agent-design.md
+    # Docs: DOCS.md, "Extending Iris" (roles and handoffs).
     multi_agent_enabled: bool = True  # off = the pre-P5 single-agent path exactly
     multi_agent_max_calls: int = 2  # handoffs per turn
     multi_agent_max_parallel: int = 3  # concurrent researcher sub-questions
@@ -565,7 +565,7 @@ class Settings(BaseSettings):
     # is now a decision instead of an accident. Each tool declares a class, the
     # class yields a default policy (`credentialed` and `control` default to
     # ask), and overrides resolve most-specific-wins with `deny` winning outright
-    # (see iris/toolpolicy.py). Docs: docs/superpowers/plans/2026-09-24-p7-computer-use.md
+    # (see iris/toolpolicy.py). Docs: DOCS.md, "Safety".
     #
     # A malformed entry raises at boot rather than being skipped: a security knob
     # that fails open is worse than no knob.

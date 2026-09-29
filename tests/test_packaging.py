@@ -89,8 +89,10 @@ def test_the_neutral_default_does_not_claim_a_persona():
     )
 
 
-def test_the_support_doc_exists_and_names_the_python_floor():
-    doc = (ROOT / "docs" / "support.md").read_text(encoding="utf-8")
+def test_the_manual_exists_and_names_the_python_floor():
+    """The support matrix lives in the manual now, and the floor has to be in both
+    places or one of them is a claim nobody checked."""
+    doc = (ROOT / "DOCS.md").read_text(encoding="utf-8")
     assert "requires-python" in doc or "Python" in doc
     assert _pyproject()["project"]["requires-python"] == ">=3.12"
 

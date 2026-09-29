@@ -214,7 +214,7 @@ def render_report(
     lines += [
         "",
         "`no_rerank` isolates the hybrid relevance term that JEV replaces when a "
-        "TypeSafe key is configured; see `docs/jev.md`.",
+        "TypeSafe key is configured; see DOCS.md, the judgment layer.",
         "",
         "**Reading:** recall@5 = fraction of queries whose gold fact made the top-5, "
         "with a 95% Wilson interval. mrr@5 = how early the gold fact appeared. mean "

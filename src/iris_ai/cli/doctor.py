@@ -147,13 +147,13 @@ def exit_code(checks: list[Check]) -> int:
 
 
 def render(checks: list[Check]) -> None:
-    from iris_ai.cli.help_theme import LEVEL_STYLE, console
+    from iris_ai.cli import ui
+    from iris_ai.cli.help_theme import console
 
     out = console()
-    out.print("[iris.title]Iris doctor[/iris.title]")
-    counts = {"ok": 0, "warn": 0, "fail": 0}
-    for c in checks:
-        counts[c.level] += 1
-        style = LEVEL_STYLE[c.level]
-        out.print(f"  [{style}]{c.level:4}[/{style}] {c.name}: {c.detail}")
-    out.print(f"{counts['ok']} ok · {counts['warn']} warn · {counts['fail']} fail")
+    ui.header(out, "Iris doctor", "offline checks - names only, never secret values")
+    ui.section(out, "environment")
+    for check in checks:
+        ui.status(out, check.level, check.name, check.detail)
+    out.print()
+    ui.counts(out, [check.level for check in checks])

@@ -1,6 +1,6 @@
 """Capabilities — the swappable parts behind the kernel.
 
-The kernel (`01-kernel.md`) is fixed; everything it talks to is a capability
+The kernel is fixed; everything it talks to is a capability
 behind a small Protocol, discovered through a registry. Each module here owns one
 *kind* and does three things:
 
@@ -12,9 +12,9 @@ Imports are deliberately **not** eager: `import iris_ai.capabilities` must stay
 cheap, because a capability module pulls its heavy dependency (litellm, asyncpg,
 the typesafe SDK). Import the one you need.
 
-Phase 1 of `docs/redesign/09-roadmap.md` builds these seams around the existing
-implementations with **no behavior change**; later phases move the implementations
-in behind them.
+These seams wrap the existing implementations with **no behavior change**: the
+implementations themselves live behind the Protocols, reached through the
+registries, so a second implementation is a registration rather than an edit.
 """
 
 from __future__ import annotations

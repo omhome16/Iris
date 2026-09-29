@@ -57,7 +57,7 @@ COPY --from=builder /opt/venv /opt/venv
 # baked into the image. Created up front and owned by the runtime user so a
 # fresh *named* volume is writable. A bind-mounted host directory keeps the
 # host's ownership instead — on Linux, chown it to uid 10001 (see
-# docs/deployment.md) or Iris cannot write memory.
+# DOCS.md, "Deployment") or Iris cannot write memory.
 RUN mkdir -p /data/workspace /app && chown -R iris:iris /data /app
 
 USER iris

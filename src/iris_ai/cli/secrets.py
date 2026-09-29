@@ -15,8 +15,8 @@ the same rule `iris doctor` follows, and it is why `list` can be shown to someon
 from __future__ import annotations
 
 import typer
-from rich.table import Table
 
+from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 
@@ -29,22 +29,22 @@ def _backend() -> int:
     try:
         store = resolve_store()
     except SecretStoreError as exc:
-        out.print(f"[iris.fail]no usable secret store:[/iris.fail] {exc}")
+        ui.failed(out, "no usable secret store:", str(exc))
         return 1
 
-    table = Table(title="Secret store", title_style="iris.title", header_style="iris.title")
-    table.add_column("backend")
-    table.add_column("available")
+    ui.header(out, "Secret store", "where a token lives, and which backends this machine has")
+    table = ui.table(out, "Backends", ["backend", "available"])
     for name, ok in available_backends().items():
-        table.add_row(name, "yes" if ok else "no")
+        table.add_row(name, "[iris.ok]yes[/iris.ok]" if ok else "[iris.sub]no[/iris.sub]")
     out.print(table)
-    out.print(f"active: [iris.ok]{store.name}[/iris.ok] — {store.location()}")
-    out.print(f"[dim]chosen by SECRET_STORE={settings.secret_store!r} ({', '.join(BACKENDS)})[/dim]")
-    out.print(f"[dim]file for the `file` backend: {settings.secrets_file}[/dim]")
+    ui.grid(out, [("active", f"[iris.ok]{store.name}[/iris.ok] — {store.location()}")])
+    ui.note(out, f"chosen by SECRET_STORE={settings.secret_store!r} ({', '.join(BACKENDS)})")
+    ui.note(out, f"file for the `file` backend: {settings.secrets_file}")
     if store.name == "file":
-        out.print(
-            "[iris.warn]the file backend is not encrypted — for OS-level encryption install "
-            "the extra: pip install 'iris-personal-ai[secrets]'[/iris.warn]"
+        ui.warn(
+            out,
+            "the file backend is not encrypted — for OS-level encryption install "
+            "the extra: pip install 'iris-personal-ai[secrets]'",
         )
     return 0
 
@@ -82,19 +82,18 @@ def _list() -> int:
 
     names = _referenced()
     if not names:
-        out.print("[dim]No declared MCP server references a ${VAR} secret.[/dim]")
+        ui.note(out, "No declared MCP server references a ${VAR} secret.")
         _backend_names_only(out)
         return 0
 
-    table = Table(title="Secrets referenced", title_style="iris.title", header_style="iris.title")
-    table.add_column("name")
-    table.add_column("found in")
+    ui.header(out, "Secrets referenced", "every ${VAR} a declared server uses — resolved, or missing")
+    table = ui.table(out, "", ["name", "found in"])
     missing = 0
     for name in names:
         try:
             value, where = lookup(name)
         except SecretStoreError as exc:
-            out.print(f"[iris.fail]secret store unusable:[/iris.fail] {exc}")
+            ui.failed(out, "secret store unusable:", str(exc))
             return 1
         if value is None:
             missing += 1
@@ -103,16 +102,17 @@ def _list() -> int:
             table.add_row(name, f"[iris.ok]{where}[/iris.ok]")
     out.print(table)
     if missing:
-        out.print(
-            f"[dim]{missing} missing — `iris secrets set <NAME>` stores one in "
-            f"{resolve_store().name}; an environment variable is found first.[/dim]"
+        ui.note(
+            out,
+            f"{missing} missing — `iris secrets set <NAME>` stores one in "
+            f"{resolve_store().name}; an environment variable is found first.",
         )
     return 0
 
 
 def _backend_names_only(out) -> None:
     """The useful line when there is nothing declared: how to add one."""
-    out.print("[dim]add one: `iris secrets set NAME` (stored in the active backend).[/dim]")
+    ui.note(out, "add one: `iris secrets set NAME` (stored in the active backend).")
 
 
 def _set(name: str, value: str) -> int:
@@ -123,16 +123,16 @@ def _set(name: str, value: str) -> int:
         # Prompted, not echoed: a value in a shell's history is a value leaked.
         value = typer.prompt(f"value for {name}", hide_input=True)
     if not value:
-        out.print("[iris.fail]nothing to store (empty value)[/iris.fail]")
+        ui.error(out, "nothing to store (empty value)")
         return 1
     try:
         store = resolve_store()
         store.set(name, value)
     except SecretStoreError as exc:
-        out.print(f"[iris.fail]could not store {name}:[/iris.fail] {exc}")
+        ui.failed(out, f"could not store {name}:", str(exc))
         return 1
     out.print(f"[iris.ok]stored[/iris.ok] {name} in {store.name}")
-    out.print(f"[dim]{store.location()}[/dim]")
+    ui.note(out, store.location())
     return 0
 
 
@@ -144,10 +144,10 @@ def _rm(name: str) -> int:
         store = resolve_store()
         removed = store.delete(name)
     except SecretStoreError as exc:
-        out.print(f"[iris.fail]could not remove {name}:[/iris.fail] {exc}")
+        ui.failed(out, f"could not remove {name}:", str(exc))
         return 1
     if not removed:
-        out.print(f"[iris.warn]{name} was not in {store.name}[/iris.warn]")
+        ui.warn(out, f"{name} was not in {store.name}")
         return 1
     out.print(f"[iris.ok]removed[/iris.ok] {name} from {store.name}")
     return 0
@@ -164,21 +164,19 @@ def run(action: str = "backend", name: str = "", value: str = "") -> int:
                 return _list()
             case "set":
                 if not name:
-                    out.print("[iris.fail]`set` needs a name[/iris.fail]")
+                    ui.error(out, "`set` needs a name")
                     return 2
                 return _set(name, value)
             case "rm" | "delete":
                 if not name:
-                    out.print("[iris.fail]`rm` needs a name[/iris.fail]")
+                    ui.error(out, "`rm` needs a name")
                     return 2
                 return _rm(name)
             case _:
-                out.print(
-                    f"[iris.fail]unknown action {action!r}[/iris.fail] — use backend, list, set or rm"
-                )
+                ui.failed(out, f"unknown action {action!r}", "- use backend, list, set or rm")
                 return 2
     except typer.Exit:
         raise
     except Exception as exc:  # noqa: BLE001 - an inspection command must not traceback
-        out.print(f"[iris.fail]secret store error:[/iris.fail] {exc}")
+        ui.failed(out, "secret store error:", str(exc))
         return 1

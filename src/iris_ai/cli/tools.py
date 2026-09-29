@@ -21,8 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rich.table import Table
-
+from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.computer.audit import ActionLog
 from iris_ai.config import settings
@@ -42,14 +41,15 @@ _POLICY_STYLE = {"allow": "iris.ok", "ask": "iris.warn", "deny": "iris.fail"}
 
 def render_policy() -> int:
     out = console()
+    ui.header(out, "Tool surface", "every declared tool, its policy, and where that decision came from")
     overrides = settings.tool_policy_overrides
     try:
         rows = policy_snapshot(overrides)
     except PolicyError as exc:
         # A malformed override stops the engine booting too; the CLI says why
         # instead of raising a traceback over a typo in `.env`.
-        out.print(f"[iris.fail]tool_policy_overrides is invalid:[/iris.fail] {exc}")
-        out.print("  format: name or class = allow | ask | deny, comma-separated")
+        ui.failed(out, "tool_policy_overrides is invalid:", str(exc))
+        ui.note(out, "format: name or class = allow | ask | deny, comma-separated")
         return 1
     # A tool that is not registered this boot cannot be shown, deferred or
     # otherwise: `computer` with computer-use off is *absent*, and calling it
@@ -58,13 +58,11 @@ def render_policy() -> int:
     visible, deferred = surface_order(settings.tool_surface_budget, present=present)
     visible_set, deferred_set = set(visible), set(deferred)
 
-    table = Table(title="Tool surface", title_style="iris.title", header_style="iris.title")
-    table.add_column("tool")
-    table.add_column("class")
-    table.add_column("namespace")
-    table.add_column("policy")
-    table.add_column("source")
-    table.add_column("surface")
+    table = ui.table(
+        out,
+        "Declared tools",
+        ["tool", "class", "namespace", "policy", "source", "surface"],
+    )
     for row in rows:
         style = _POLICY_STYLE.get(row["policy"], "")
         if row["tool"] in deferred_set:
@@ -82,47 +80,50 @@ def render_policy() -> int:
             surface,
         )
     out.print(table)
-    out.print(
-        f"[dim]visible budget {settings.tool_surface_budget}: "
+    out.print()
+    ui.note(
+        out,
+        f"visible budget {settings.tool_surface_budget}: "
         f"{len(visible)} shown, {len(deferred)} deferred. "
         f"Deferral is presentation, not permission — a deferred tool is still callable, "
         f"`find_tools` loads a schema (appended at the tail, so the cached prefix "
-        f"survives), and a connected channel's own tools are promoted at runtime.[/dim]"
+        f"survives), and a connected channel's own tools are promoted at runtime.",
     )
     catalog = deferred_catalog(deferred)
     if catalog:
         # The verbatim prompt section, not a summary of it: the question this
         # readout exists to answer is what the model was actually told, and a
         # paraphrase cannot answer that.
-        out.print("[dim]the prompt sees, for the deferred remainder:[/dim]")
+        ui.section(out, "the prompt sees, for the deferred remainder")
         for line in catalog.splitlines():
-            out.print(f"  [dim]{line}[/dim]")
+            ui.note(out, line)
     missing = [n for n in TOOL_DECLARATIONS if namespace_of(n) not in NAMESPACE_PURPOSE]
     if missing:
-        out.print(
-            f"[iris.warn]{len(missing)} tool(s) in a namespace with no purpose line[/iris.warn] — "
-            "they still appear in the catalog, without a description"
+        ui.warn(
+            out,
+            f"{len(missing)} tool(s) in a namespace with no purpose line — "
+            "they still appear in the catalog, without a description",
         )
     for key in unknown_overrides(overrides):
-        out.print(f"[iris.warn]unknown tool_policy_override {key!r} — names no tool or class[/iris.warn]")
+        ui.warn(out, f"unknown tool_policy_override {key!r} — names no tool or class")
     if not settings.computer_enabled:
-        out.print("[dim]computer-use is off (`computer_enabled=false`) — the `computer` tool is not registered[/dim]")
+        ui.note(out, "computer-use is off (`computer_enabled=false`) — the `computer` tool is not registered")
     return 0
 
 
 def render_actions(limit: int = 20) -> int:
     out = console()
+    ui.header(out, "Computer actions", "what was attempted, where, and whether it was allowed - never what was typed")
     rows = ActionLog(Path(settings.workspace_dir) / "config" / "actions.jsonl").recent(max(1, limit))
     if not rows:
-        out.print("[iris.warn]no computer actions recorded[/iris.warn]")
-        out.print("  nothing has tried to drive a screen, or computer-use is off")
+        ui.warn(out, "no computer actions recorded")
+        ui.note(out, "nothing has tried to drive a screen, or computer-use is off")
         return 0
-    table = Table(title="Computer actions", title_style="iris.title", header_style="iris.title")
-    table.add_column("time")
-    table.add_column("action")
-    table.add_column("target")
-    table.add_column("decision")
-    table.add_column("ok")
+    table = ui.table(
+        out,
+        "Recent actions",
+        ["time", "action", "target", "decision", "ok"],
+    )
     for row in rows:
         table.add_row(
             str(row.get("ts", ""))[:19],

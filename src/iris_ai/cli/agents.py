@@ -18,9 +18,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rich.table import Table
-
 from iris_ai.agents.roles import ROLES, RoleError, get_role
+from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 from iris_ai.trace import TraceLogger
@@ -31,13 +30,19 @@ _DECISION_EVENTS = ("handoff", "agent_effort", "answer_check", "merge")
 
 def render_roles() -> int:
     out = console()
-    table = Table(title="Agent roles", title_style="iris.title", header_style="iris.title")
-    table.add_column("role")
-    table.add_column("tier")
-    table.add_column("lane")
-    table.add_column("tools")
-    table.add_column("rounds", justify="right")
-    table.add_column("chars", justify="right")
+    ui.header(out, "Agent roles", "who may be delegated to, and the bound that shapes each one")
+    table = ui.table(
+        out,
+        "Declared roles",
+        [
+            "role",
+            "tier",
+            "lane",
+            "tools",
+            ("rounds", {"justify": "right"}),
+            ("chars", {"justify": "right"}),
+        ],
+    )
     for role in ROLES.values():
         table.add_row(
             role.name,
@@ -48,12 +53,14 @@ def render_roles() -> int:
             str(role.max_output_chars),
         )
     out.print(table)
-    out.print(
-        "[dim]the lead is the main agent: it orchestrates, executes and authors. "
-        "There is no executor role on purpose.[/dim]"
+    out.print()
+    ui.note(
+        out,
+        "the lead is the main agent: it orchestrates, executes and authors. "
+        "There is no executor role on purpose.",
     )
     if not settings.multi_agent_enabled:
-        out.print("[iris.warn]multi_agent_enabled is false — delegation is refused[/iris.warn]")
+        ui.warn(out, "multi_agent_enabled is false — delegation is refused")
     return 0
 
 
@@ -62,19 +69,20 @@ def render_show(name: str) -> int:
     try:
         role = get_role(name)
     except RoleError as exc:
-        out.print(f"[iris.fail]{exc}[/iris.fail]")
+        ui.error(out, str(exc))
         return 1
-    out.print(f"[iris.title]{role.name}[/iris.title] [dim]({role.tier} tier)[/dim]")
-    out.print(f"  description: {role.description}")
-    for label, value in (
-        ("recall lane", role.search_lane),
-        ("tools", ", ".join(sorted(role.tools)) or "(none)"),
-        ("tool rounds", str(role.max_tool_rounds)),
-        ("output cap", f"{role.max_output_chars} chars"),
-        ("run by", "iris_ai.agents.runner.RoleRunner"),
-    ):
-        out.print(f"  {label}: {value}")
-    out.print("")
+    ui.header(out, role.name, f"{role.tier} tier - {role.description}")
+    ui.grid(
+        out,
+        [
+            ("recall lane", role.search_lane),
+            ("tools", ", ".join(sorted(role.tools)) or "(none)"),
+            ("tool rounds", str(role.max_tool_rounds)),
+            ("output cap", f"{role.max_output_chars} chars"),
+            ("run by", "iris_ai.agents.runner.RoleRunner"),
+        ],
+    )
+    ui.section(out, "system prompt")
     out.print(role.system_prompt)
     return 0
 
@@ -104,17 +112,23 @@ def render_handoffs(limit: int = 10) -> int:
     out = console()
     rows = handoffs_from_traces(limit)
     if not rows:
-        out.print("[iris.warn]no agent decisions in the recent traces[/iris.warn]")
-        out.print("  delegation is opt-in: a turn that never delegates records nothing")
+        ui.warn(out, "no agent decisions in the recent traces")
+        ui.note(out, "delegation is opt-in: a turn that never delegates records nothing")
         return 0
-    table = Table(title="Agent decisions", title_style="iris.title", header_style="iris.title")
-    table.add_column("event")
-    table.add_column("from")
-    table.add_column("to")
-    table.add_column("claims")
-    table.add_column("unsourced", justify="right")
-    table.add_column("tokens", justify="right")
-    table.add_column("ms", justify="right")
+    ui.header(out, "Agent decisions", "recent delegations, read back out of the turn traces")
+    table = ui.table(
+        out,
+        "",
+        [
+            "event",
+            "from",
+            "to",
+            "claims",
+            ("unsourced", {"justify": "right"}),
+            ("tokens", {"justify": "right"}),
+            ("ms", {"justify": "right"}),
+        ],
+    )
     for kind, event in rows:
         table.add_row(
             kind,
@@ -139,10 +153,10 @@ def run(action: str, name: str | None = None, limit: int = 10) -> int:
             return render_handoffs(limit)
         case "show":
             if not name:
-                out.print("[iris.fail]`iris agents show` needs a role name[/iris.fail]")
-                out.print(f"  roles: {', '.join(sorted(ROLES))}")
+                ui.error(out, "`iris agents show` needs a role name")
+                ui.note(out, f"roles: {', '.join(sorted(ROLES))}")
                 return 2
             return render_show(name)
         case _:
-            out.print(f"[iris.fail]unknown action {action!r}[/iris.fail] — use roles, show or handoffs")
+            ui.failed(out, f"unknown action {action!r}", "- use roles, show or handoffs")
             return 2

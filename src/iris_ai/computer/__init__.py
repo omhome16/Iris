@@ -19,7 +19,7 @@ The package is deliberately four small pieces, each of which can refuse:
 
 `session.Computer` composes them behind one `execute()` so every attempt —
 refused, cancelled, budget-exhausted or performed — produces exactly one audit
-record. Read `docs/deployment.md` and the P7 plan for the operational story.
+record. Read DOCS.md, "Safety" and "Deployment", for the operational story.
 """
 
 from __future__ import annotations

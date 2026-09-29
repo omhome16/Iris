@@ -4,7 +4,7 @@ Why this exists
 ---------------
 The memory-orchestration v2 design removed the per-turn extraction judge and
 handed the "is this worth keeping?" decision to the agent's own `note` tool
-(`docs/superpowers/specs/2026-08-20-memory-orchestration-v2.md`, §4.2). The
+(the decision, and the measurement that reversed it, are in DOCS.md "Memory"). The
 reasoning was sound — write-time reconciliation is the expensive, error-prone
 part — but the outcome was measured and it failed: **across 36 traced turns the
 agent called `note` zero times**. Leaving curation to a model's goodwill, with

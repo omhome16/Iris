@@ -16,8 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rich.table import Table
-
+from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 from iris_ai.ledger import CostLedger
@@ -30,8 +29,8 @@ def run(action: str = "summary", days: int = 14) -> int:
     ledger = CostLedger(path)
     rows = ledger.rows()
     if not rows:
-        out.print(f"[dim]No model calls recorded yet ({path} is empty or absent).[/dim]")
-        out.print("[dim]the ledger fills as Iris runs; `iris chat` is the quickest way.[/dim]")
+        ui.note(out, f"No model calls recorded yet ({path} is empty or absent).")
+        ui.note(out, "the ledger fills as Iris runs; `iris chat` is the quickest way.")
         return 0
 
     if action in ("summary", "totals"):
@@ -40,7 +39,7 @@ def run(action: str = "summary", days: int = 14) -> int:
         return _daily(out, ledger, days)
     if action in ("weekly", "weeks"):
         return _weekly(out, ledger)
-    out.print(f"[iris.fail]unknown action {action!r}[/iris.fail] — use summary, daily or weekly")
+    ui.failed(out, f"unknown action {action!r}", "— use summary, daily or weekly")
     return 2
 
 
@@ -48,23 +47,28 @@ def _unpriced_note(out, totals: dict) -> None:
     """A total is only a total if every model in it was priced."""
     missing = totals.get("unpriced_models") or []
     if missing:
-        out.print(
-            f"[iris.warn]{len(missing)} model(s) have no price in the table, so this is a "
-            f"lower bound, not the total:[/iris.warn] {', '.join(missing)}"
+        ui.warn(
+            out,
+            f"{len(missing)} model(s) have no price in the table, so this is a "
+            f"lower bound, not the total: {', '.join(missing)}",
         )
-        out.print("[dim]model_costs.py holds the price table; an unpriced model records 0.0.[/dim]")
+        ui.note(out, "model_costs.py holds the price table; an unpriced model records 0.0.")
 
 
 def _summary(out, ledger: CostLedger, rows: list[dict]) -> int:
     totals = ledger.totals()
-    out.print(
-        f"[iris.title]Spend[/iris.title] — {totals.get('requests', 0)} calls, "
-        f"${totals.get('cost', 0.0):.4f}"
+    ui.header(
+        out,
+        f"Spend - {totals.get('requests', 0)} calls, ${totals.get('cost', 0.0):.4f}",
+        "from the append-only call ledger: every call, its usage, and its price",
     )
-    out.print(
-        f"[dim]{totals.get('prompt_tokens', 0):,} prompt tokens "
-        f"({totals.get('cached_tokens', 0):,} cached), "
-        f"{totals.get('completion_tokens', 0):,} completion tokens[/dim]"
+    ui.grid(
+        out,
+        [
+            ("prompt tokens", f"{totals.get('prompt_tokens', 0):,}"),
+            ("cached", f"{totals.get('cached_tokens', 0):,}"),
+            ("completion tokens", f"{totals.get('completion_tokens', 0):,}"),
+        ],
     )
     _unpriced_note(out, totals)
 
@@ -74,10 +78,11 @@ def _summary(out, ledger: CostLedger, rows: list[dict]) -> int:
         bucket = by_model.setdefault(key, {"calls": 0, "cost": 0.0})
         bucket["calls"] += 1
         bucket["cost"] += float(row.get("cost") or 0.0)
-    table = Table(title="By model", title_style="iris.title", header_style="iris.title")
-    table.add_column("model")
-    table.add_column("calls", justify="right")
-    table.add_column("cost", justify="right")
+    table = ui.table(
+        out,
+        "By model",
+        ["model", ("calls", {"justify": "right"}), ("cost", {"justify": "right"})],
+    )
     for model, bucket in sorted(by_model.items(), key=lambda kv: -kv[1]["cost"]):
         table.add_row(model, str(bucket["calls"]), f"${bucket['cost']:.4f}")
     out.print(table)
@@ -85,12 +90,17 @@ def _summary(out, ledger: CostLedger, rows: list[dict]) -> int:
 
 
 def _daily(out, ledger: CostLedger, days: int) -> int:
-    table = Table(title=f"Last {days} days", title_style="iris.title", header_style="iris.title")
-    table.add_column("day")
-    table.add_column("calls", justify="right")
-    table.add_column("prompt", justify="right")
-    table.add_column("completion", justify="right")
-    table.add_column("cost", justify="right")
+    table = ui.table(
+        out,
+        f"Last {days} days",
+        [
+            "day",
+            ("calls", {"justify": "right"}),
+            ("prompt", {"justify": "right"}),
+            ("completion", {"justify": "right"}),
+            ("cost", {"justify": "right"}),
+        ],
+    )
     for row in ledger.daily_totals(days=max(1, days)):
         table.add_row(
             str(row.get("day", "")),
@@ -104,10 +114,11 @@ def _daily(out, ledger: CostLedger, days: int) -> int:
 
 
 def _weekly(out, ledger: CostLedger) -> int:
-    table = Table(title="Last 4 weeks", title_style="iris.title", header_style="iris.title")
-    table.add_column("week")
-    table.add_column("calls", justify="right")
-    table.add_column("cost", justify="right")
+    table = ui.table(
+        out,
+        "Last 4 weeks",
+        ["week", ("calls", {"justify": "right"}), ("cost", {"justify": "right"})],
+    )
     for row in ledger.weekly_totals():
         table.add_row(
             str(row.get("week", "")),

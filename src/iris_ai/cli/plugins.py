@@ -23,8 +23,8 @@ MCP readout is the one exception, and it is opt-in.
 from __future__ import annotations
 
 import typer
-from rich.table import Table
 
+from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 
@@ -35,11 +35,8 @@ def _channels() -> int:
 
     from_plugins = discover_channels()
     enabled = {spec.name for spec in channel_specs()}
-    table = Table(title="Channels", title_style="iris.title", header_style="iris.title")
-    table.add_column("channel")
-    table.add_column("source")
-    table.add_column("enabled")
-    table.add_column("address")
+    ui.header(out, "Channels", "every registered transport, whether config enables it, and where it points")
+    table = ui.table(out, "Registered", ["channel", "source", "enabled", "address"])
     for reg in CHANNELS:
         table.add_row(
             reg.name,
@@ -75,9 +72,8 @@ def _tools() -> int:
     from iris_ai.toolregistry import TOOL_PROVIDERS, discover_tool_providers
 
     from_plugins = discover_tool_providers()
-    table = Table(title="Tool providers", title_style="iris.title", header_style="iris.title")
-    table.add_column("provider")
-    table.add_column("source")
+    ui.header(out, "Tool providers", "which packages contribute tools, and whether each came from core")
+    table = ui.table(out, "Registered", ["provider", "source"])
     for reg in TOOL_PROVIDERS:
         table.add_row(reg.name, reg.source)
     out.print(table)
@@ -95,9 +91,8 @@ def _hooks() -> int:
     from iris_ai.guards import GuardName
     from iris_ai.hooks import EVENTS, HookBus, discover_hooks
 
-    table = Table(title="Lifecycle hooks", title_style="iris.title", header_style="iris.title")
-    table.add_column("event")
-    table.add_column("built-in subscriber")
+    ui.header(out, "Lifecycle hooks", "the events a plugin may subscribe to, and who answers each one today")
+    table = ui.table(out, "Events", ["event", "built-in subscriber"])
     builtin = {
         "turn_start": "guards (reset turn detectors)",
         "pre_tool": "guards (budget -> circuit -> spiral)",
@@ -154,12 +149,8 @@ def _mcp(live: bool = False) -> int:
         return 0
 
     rows = _mcp_rows(specs, live=live)
-    table = Table(title="MCP servers", title_style="iris.title", header_style="iris.title")
-    table.add_column("server")
-    table.add_column("transport")
-    table.add_column("trust")
-    table.add_column("approval")
-    table.add_column("state")
+    ui.header(out, "MCP servers", "declared external tools: their trust, their approval, and their state")
+    table = ui.table(out, "Declared", ["server", "transport", "trust", "approval", "state"])
     for row in rows:
         if row["connected"]:
             state = "connected"

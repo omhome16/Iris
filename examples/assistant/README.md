@@ -5,7 +5,7 @@ than code: a persona, a memory workspace, and a front door. It is the proof that
 the harness is general — nothing in `src/` mentions a persona, Telegram, or a
 life, and here is one assembled from a manifest and two Markdown files.
 
-Roadmap: `docs/redesign/09-roadmap.md` Phase 7.
+The harness it exercises is documented in [`DOCS.md`](../../DOCS.md).
 
 ## Run it
 
@@ -71,4 +71,5 @@ the same, and boot says which channels are missing rather than failing.
 Copy the directory, edit `workspace/AGENTS.md`, and point `WORKSPACE_DIR` at your
 copy. Personas, not forks: if your profile needs behavior the harness cannot
 express, that is a missing capability interface — see
-`docs/redesign/06-extensibility.md` — rather than a reason to patch `src/`.
+[§10 of the manual](../../DOCS.md#10-extending-iris) — rather than a reason to patch
+`src/`.

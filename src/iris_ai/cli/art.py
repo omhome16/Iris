@@ -34,7 +34,7 @@ from rich.text import Text
 RAMP = " .:-=+*#%@"
 
 #: The dawn ramp, dark violet → rose → amber. Same family as the palette the
-#: old console used (`docs/console.md` is gone; the taste survived it).
+#: earlier console used (that page is long gone; the taste survived it).
 STOPS = ("#1b1035", "#5b2a86", "#a84a80", "#e87a63", "#ffc46b")
 
 WIDE = (76, 19)
@@ -181,12 +181,21 @@ def banner_enabled(console: Console, *, no_banner: bool = False) -> bool:
     return bool(console.is_terminal)
 
 
-def render_banner(console: Console, *, subtitle: str = "", color: bool = True) -> None:
-    """Draw the mark and, optionally, a line under it."""
+def render_banner(
+    console: Console, *, subtitle: str = "", tagline: str = "", color: bool = True
+) -> None:
+    """Draw the mark and, optionally, a line or two under it.
+
+    `subtitle` carries the version (the fact), `tagline` the one-line pitch (the
+    framing) — kept separate so a caller that only wants the version does not have
+    to quote the pitch.
+    """
     width, height = size_for(console)
     console.print(art_text(width, height, color=color), end="")
     if subtitle:
-        console.print(f"  [iris.title]{subtitle}[/iris.title]")
+        console.print(f"  [iris.brand]{subtitle}[/iris.brand]")
+    if tagline:
+        console.print(f"  [iris.sub]{tagline}[/iris.sub]")
 
 
 __all__ = [

@@ -22,7 +22,7 @@ No Windows event-loop policy is set here on purpose (unlike `iris chat`). The
 protocol's Windows stdio transport needs `connect_write_pipe`, which
 `WindowsSelectorEventLoopPolicy` does not implement — so on Windows the loop
 must stay the default Proactor one. The consequence, recorded in
-`docs/acp.md`, is that an ACP session on Windows uses the SQLite checkpointer
+DOCS.md, is that an ACP session on Windows uses the SQLite checkpointer
 even when Postgres is configured.
 """
 

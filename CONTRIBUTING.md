@@ -4,9 +4,8 @@ Iris is a personal AI assistant built as a **library** (`import iris_ai`) with a
 **CLI** and a Telegram bridge as its clients. This file is how to get a change
 merged without guessing at the conventions.
 
-New here? Read [`docs/architecture.md`](docs/architecture.md) for the map, then
-[`docs/extending.md`](docs/extending.md) for recipes. The design history and the
-phase-by-phase plan are in [`docs/blueprint.md`](docs/blueprint.md).
+New here? [`DOCS.md`](DOCS.md) is the whole manual: **§6** is the map, **§10** is
+the recipes, and **§18** is the house rules and where to start reading.
 
 ## Setup
 
@@ -31,7 +30,7 @@ uv run pytest tests -q
 
 A plain `postgres` image will not do: the index uses `vector` columns and an HNSW
 index, so the pgvector image is a hard requirement (see
-[`docs/support.md`](docs/support.md)).
+[`DOCS.md` §16](DOCS.md#163-the-compatibility-matrix)).
 
 ## Verify
 
@@ -98,9 +97,8 @@ changes behaviour should say what the new behaviour is and what it replaced.
 | add an eval metric | `iris/eval/stats.py` — with an interval, not a point estimate |
 
 Run `uv run iris plugins channels|tools|hooks` to see what is registered and
-where it came from. [`docs/extending.md`](docs/extending.md) has the detailed
-version of each of these, including the test that will catch you, and
-[`docs/redesign/plugin-architecture.md`](docs/redesign/plugin-architecture.md)
+where it came from. [§10 of the manual](DOCS.md#10-extending-iris) has the
+detailed version of each of these, including the test that will catch you, and
 explains the plug-and-play layer as a whole.
 
 ## Project rules
@@ -120,22 +118,17 @@ explains the plug-and-play layer as a whole.
 
 ## Documentation
 
+Two documents, and the split is deliberate:
+
 | File | What belongs there |
 |---|---|
-| `README.md` | pitch, status table, quickstart, how each phase changed things |
-| `docs/blueprint.md` | phase scope, gates, the risk register |
-| `docs/architecture.md` | module map, turn lifecycle, invariants, where state lives |
-| `docs/extending.md` | recipes for extension points |
-| `docs/jev.md` | the judgment layer, every integration, the audit of model calls |
-| `docs/deployment.md` | hosting, volumes, secrets, guards/budgets, backups |
-| `docs/support.md` | support matrix, the compatibility matrix, what CI verifies, how a release is cut |
-| `docs/quickstart.md` | the five-minute path, and what each failure means |
-| `docs/plugins.md` | installing or writing a plugin: entry points, Protocols, a worked example |
-| `docs/acp.md` | Iris in an editor, and the decisions the adapter makes |
-| `docs/observability.md` | traces, GenAI spans, the cost ledger |
-| `docs/redesign/` | the redesign's deep-dives, the phased plan, and the answers to its open questions |
+| `README.md` | the front door: what Iris is, why it is different, the five-minute path, and where to read next. Keep it short enough to read in one sitting |
+| `DOCS.md` | **the manual.** Every page: install, all 15 commands, every setting, the turn, memory, the judgment layer, safety, extending, interfaces, observability, providers, scheduling, deployment, testing, troubleshooting |
 | `CHANGELOG.md` | per-phase notes, newest first, numbers grounded in a command |
-| `docs/superpowers/` | specs, plans and per-phase execution logs |
+
+If a change needs prose that is neither a pitch nor release history, it belongs in
+the relevant `DOCS.md` section — updating an existing section beats adding a third
+document, because the second and third copies are what drift.
 
 If you change behaviour, the README's status/“what changed” prose and the
 CHANGELOG entry are part of the change, not a follow-up.

@@ -23,8 +23,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from rich.table import Table
-
+from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 from iris_ai.toolpolicy import (
@@ -51,13 +50,17 @@ def _overrides() -> tuple[dict, int]:
     except PolicyError as exc:
         # The engine refuses to boot on this too, so the CLI says why rather than
         # raising a traceback over a typo.
-        out.print(f"[iris.fail]tool_policy_overrides is invalid:[/iris.fail] {exc}")
-        out.print("  format: name or class = allow | ask | deny, comma-separated")
+        ui.failed(out, "tool_policy_overrides is invalid:", str(exc))
+        ui.note(out, "format: name or class = allow | ask | deny, comma-separated")
         return {}, 1
 
 
-def _classes() -> int:
+def _classes(*, heading: bool = True) -> int:
     out = console()
+    if heading:
+        ui.header(out, "Capability classes", "what each class of tool defaults to, and whether an override moved it")
+    else:
+        ui.section(out, "Capability classes")
     rules, code = _overrides()
     if code:
         return code
@@ -68,11 +71,7 @@ def _classes() -> int:
         [d.cls.value for d in TOOL_DECLARATIONS.values()]
         + [t.cls.value for t in EXTERNAL_TOOLS.values()]
     )
-    table = Table(title="Capability classes", title_style="iris.title", header_style="iris.title")
-    table.add_column("class")
-    table.add_column("default")
-    table.add_column("override")
-    table.add_column("tools")
+    table = ui.table(out, "", ["class", "default", "override", "tools"])
     for cls in ToolClass:
         default = CLASS_DEFAULTS[cls]
         override = rules.get(cls.value)
@@ -83,16 +82,22 @@ def _classes() -> int:
             str(counts.get(cls.value, 0)),
         )
     out.print(table)
-    out.print(
-        "[dim]precedence: class default < a tool's own source (an MCP server's trust) "
+    out.print()
+    ui.note(
+        out,
+        "precedence: class default < a tool's own source (an MCP server's trust) "
         "< a class override < a per-tool override. `deny` wins outright at every level, "
-        "so an override can tighten and never loosen.[/dim]"
+        "so an override can tighten and never loosen.",
     )
     return 0
 
 
-def _overrides_view() -> int:
+def _overrides_view(*, heading: bool = True) -> int:
     out = console()
+    if heading:
+        ui.header(out, "Overrides", "every key in TOOL_POLICY_OVERRIDES, and what it actually applies to")
+    else:
+        ui.section(out, "Overrides")
     rules, code = _overrides()
     if code:
         return code
@@ -100,12 +105,9 @@ def _overrides_view() -> int:
     from iris_ai.toolpolicy import TOOL_DECLARATIONS
 
     known_classes = {c.value for c in ToolClass}
-    table = Table(title="Overrides", title_style="iris.title", header_style="iris.title")
-    table.add_column("key")
-    table.add_column("applies to")
-    table.add_column("policy")
+    table = ui.table(out, "", ["key", "applies to", "policy"])
     if not rules:
-        out.print("[dim]no overrides set (TOOL_POLICY_OVERRIDES is empty)[/dim]")
+        ui.note(out, "no overrides set (TOOL_POLICY_OVERRIDES is empty)")
     for key, policy in sorted(rules.items()):
         if key in known_classes:
             applies = f"class: {key} (every tool in it)"
@@ -119,36 +121,40 @@ def _overrides_view() -> int:
     if rules:
         out.print(table)
     for key in unknown_overrides(settings.tool_policy_overrides):
-        out.print(
-            f"[iris.warn]unknown override {key!r}[/iris.warn] — it names no tool and no class, "
-            "so it changes nothing (and the engine does not fail on it)"
+        ui.warn(
+            out,
+            f"unknown override {key!r} — it names no tool and no class, "
+            "so it changes nothing (and the engine does not fail on it)",
         )
     return 0
 
 
-def _servers() -> int:
+def _servers(*, heading: bool = True) -> int:
     out = console()
     from iris_ai.mcp import McpConfigError, McpToolInfo, enabled_servers, load_servers, policy_for
 
     try:
         specs = load_servers()
     except McpConfigError as exc:
-        out.print(f"[iris.fail]MCP config is not usable:[/iris.fail] {exc}")
+        ui.failed(out, "MCP config is not usable:", str(exc))
         return 1
     if not specs:
-        out.print(
-            f"[dim]No MCP servers declared in {settings.mcp_servers_file} "
-            "(see config/mcp.json.example).[/dim]"
+        ui.note(
+            out,
+            f"No MCP servers declared in {settings.mcp_servers_file} "
+            "(see config/mcp.json.example).",
         )
         return 0
 
-    table = Table(title="Server policy", title_style="iris.title", header_style="iris.title")
-    table.add_column("server")
-    table.add_column("transport")
-    table.add_column("trust")
-    table.add_column("approval")
-    table.add_column("a read-only tool")
-    table.add_column("anything else")
+    if heading:
+        ui.header(out, "Server policy", "what a tool from each declared server would be allowed to do")
+    else:
+        ui.section(out, "Server policy")
+    table = ui.table(
+        out,
+        "",
+        ["server", "transport", "trust", "approval", "a read-only tool", "anything else"],
+    )
     for spec in load_servers():
         # Two hypothetical tools, because the rule is a function of the
         # declaration: this is the preview of what connecting would produce.
@@ -164,21 +170,25 @@ def _servers() -> int:
             _styled(write.value),
         )
     out.print(table)
-    out.print(
-        "[dim]an approval override is checked first and can tighten either row "
+    out.print()
+    ui.note(
+        out,
+        "an approval override is checked first and can tighten either row "
         "(`tool_policy_overrides=\"external=deny\"` closes every external tool, or "
-        "name one as `server/tool=deny`).[/dim]"
+        "name one as `server/tool=deny`).",
     )
     if not enabled_servers():
-        out.print("[dim]every declared server is switched off (`enabled: false`)[/dim]")
-    out.print("[dim]for what each server actually offers: `iris plugins mcp --live`[/dim]")
+        ui.note(out, "every declared server is switched off (`enabled: false`)")
+    ui.note(out, "for what each server actually offers: `iris plugins mcp --live`")
     return 0
 
 
 def _show() -> int:
-    """The default view: classes, then overrides, then servers."""
+    """The default view: classes, then overrides, then servers, under one header."""
+    out = console()
+    ui.header(out, "Policy", "what every tool and server is allowed to do, and where each decision came from")
     for step in (_classes, _overrides_view, _servers):
-        code = step()
+        code = step(heading=False)
         if code:
             return code
     return 0
@@ -197,5 +207,5 @@ def run(action: str = "show") -> int:
         case "servers":
             return _servers()
         case _:
-            out.print(f"[iris.fail]unknown action {action!r}[/iris.fail] — use show, classes, overrides or servers")
+            ui.failed(out, f"unknown action {action!r}", "- use show, classes, overrides or servers")
             return 2

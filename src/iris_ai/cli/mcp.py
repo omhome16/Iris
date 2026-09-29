@@ -28,8 +28,8 @@ import json
 from pathlib import Path
 
 import typer
-from rich.table import Table
 
+from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 
@@ -108,13 +108,14 @@ def _add(
     _write(data)
     verb = "updated" if existed else "added"
     out.print(f"[iris.ok]{verb}[/iris.ok] {name} in {_path()}")
-    out.print(f"[dim]trust={trust} approval={approval} enabled={str(enabled).lower()}[/dim]")
+    ui.note(out, f"trust={trust} approval={approval} enabled={str(enabled).lower()}")
     if trust == "untrusted":
-        out.print(
-            "[dim]untrusted (the default): its writes are denied and its output is screened. "
-            "`iris mcp add ... --trust owner` only for a server you wrote.[/dim]"
+        ui.note(
+            out,
+            "untrusted (the default): its writes are denied and its output is screened. "
+            "`iris mcp add ... --trust owner` only for a server you wrote.",
         )
-    out.print(f"[dim]verify with `iris mcp test {name}`[/dim]")
+    ui.note(out, f"verify with `iris mcp test {name}`")
     return 0
 
 
@@ -123,10 +124,10 @@ def _remove(name: str) -> int:
     try:
         data = _read()
     except (OSError, ValueError) as exc:
-        out.print(f"[iris.fail]could not read {_path()}:[/iris.fail] {exc}")
+        ui.failed(out, f"could not read {_path()}:", str(exc))
         return 1
     if name not in data["mcpServers"]:
-        out.print(f"[iris.warn]{name} is not declared in {_path()}[/iris.warn]")
+        ui.warn(out, f"{name} is not declared in {_path()}")
         return 1
     del data["mcpServers"][name]
     _write(data)
@@ -146,7 +147,7 @@ def _test(name: str) -> int:
         out.print(f"[iris.fail]MCP config is not usable:[/iris.fail] {exc}")
         return 1
     if not specs:
-        out.print(f"[iris.warn]{name} is not declared in {_path()}[/iris.warn]")
+        ui.warn(out, f"{name} is not declared in {_path()}")
         return 1
 
     async def _probe() -> list[dict]:
@@ -160,15 +161,17 @@ def _test(name: str) -> int:
         return 1
 
     if not row["connected"]:
-        out.print(f"[iris.fail]{name} did not connect:[/iris.fail] {row['error']}")
+        ui.failed(out, f"{name} did not connect:", str(row["error"]))
         if row.get("retryable"):
-            out.print("[dim]a boot would keep retrying this one in the background.[/dim]")
+            ui.note(out, "a boot would keep retrying this one in the background.")
         return 1
 
-    table = Table(title=f"{name} — {row['transport']}", title_style="iris.title", header_style="iris.title")
-    table.add_column("tool")
-    table.add_column("read-only")
-    table.add_column("policy")
+    ui.header(
+        out,
+        f"{name} - {row['transport']}",
+        f"connected: {len(row['tools'])} tool(s), and the policy each one would get",
+    )
+    table = ui.table(out, "", ["tool", "read-only", "policy"])
     style = {"allow": "iris.ok", "ask": "iris.warn", "deny": "iris.fail"}
     for tool in row["tools"]:
         table.add_row(
@@ -177,7 +180,7 @@ def _test(name: str) -> int:
             f"[{style[tool['policy']]}]{tool['policy']}[/{style[tool['policy']]}]",
         )
     out.print(table)
-    out.print(f"[dim]{len(row['tools'])} tool(s); the policy shown is what the surface will apply.[/dim]")
+    ui.note(out, "the policy shown is what the surface will apply.")
     return 0
 
 
@@ -190,26 +193,24 @@ def run(action: str = "list", name: str = "", **options) -> int:
                 return _list()
             case "add":
                 if not name:
-                    out.print("[iris.fail]`add` needs a name[/iris.fail]")
+                    ui.error(out, "`add` needs a name")
                     return 2
                 return _add(name, **options)
             case "remove" | "rm":
                 if not name:
-                    out.print("[iris.fail]`remove` needs a name[/iris.fail]")
+                    ui.error(out, "`remove` needs a name")
                     return 2
                 return _remove(name)
             case "test":
                 if not name:
-                    out.print("[iris.fail]`test` needs a name[/iris.fail]")
+                    ui.error(out, "`test` needs a name")
                     return 2
                 return _test(name)
             case _:
-                out.print(
-                    f"[iris.fail]unknown action {action!r}[/iris.fail] — use list, add, remove or test"
-                )
+                ui.failed(out, f"unknown action {action!r}", "- use list, add, remove or test")
                 return 2
     except typer.Exit:
         raise
     except Exception as exc:  # noqa: BLE001 - a declaration command must not traceback
-        out.print(f"[iris.fail]mcp error:[/iris.fail] {exc}")
+        ui.failed(out, "mcp error:", str(exc))
         return 1

@@ -23,8 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from rich.table import Table
-
+from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.config import settings
 from iris_ai.tasks import (
@@ -62,20 +61,26 @@ def render_list(store: TaskStore) -> int:
     now = datetime.now(ZoneInfo(settings.iris_timezone))
     jobs = store.list()
     if not jobs:
-        out.print("[iris.warn]no scheduled jobs[/iris.warn]")
-        out.print(f"  {BUILTIN_HINT}")
+        ui.warn(out, "no scheduled jobs")
+        ui.note(out, BUILTIN_HINT)
         return 0
     # Kept narrow on purpose: nine columns wrapped the schedule text on an
     # 80-column terminal, which made the one thing this table is for unreadable.
     # The schedule itself carries the kind ("every 2 hours" vs "at 18:00 daily").
-    table = Table(title="Scheduled jobs", title_style="iris.title", header_style="iris.title")
-    table.add_column("id")
-    table.add_column("schedule")
-    table.add_column("next run")
-    table.add_column("runs", justify="right")
-    table.add_column("miss", justify="right")
-    table.add_column("fail", justify="right")
-    table.add_column("on", justify="center")
+    ui.header(out, "Scheduled jobs", "what fires when, and how it has been going")
+    table = ui.table(
+        out,
+        "",
+        [
+            "id",
+            "schedule",
+            "next run",
+            ("runs", {"justify": "right"}),
+            ("miss", {"justify": "right"}),
+            ("fail", {"justify": "right"}),
+            ("on", {"justify": "center"}),
+        ],
+    )
     for task in sorted(jobs, key=lambda t: t.run_at):
         table.add_row(
             task.id,
@@ -89,11 +94,12 @@ def render_list(store: TaskStore) -> int:
     out.print(table)
     disabled = [t for t in jobs if t.disabled]
     if disabled:
-        out.print(
-            f"[iris.warn]{len(disabled)} job(s) disabled after repeated failure[/iris.warn] — "
-            "`iris cron rm <id>` then re-add to retry"
+        ui.warn(
+            out,
+            f"{len(disabled)} job(s) disabled after repeated failure — "
+            "`iris cron rm <id>` then re-add to retry",
         )
-    out.print(f"[dim]{BUILTIN_HINT}[/dim]")
+    ui.note(out, BUILTIN_HINT)
     return 0
 
 
@@ -108,16 +114,18 @@ def render_add(
     out = console()
     chosen = [name for name, value in (("--once", once), ("--every", every), ("--at", at)) if value]
     if len(chosen) != 1:
-        out.print(
-            f"[iris.fail]pick exactly one schedule[/iris.fail] — got {', '.join(chosen) or 'none'} "
-            "(use --once '<time>', --every '<interval>' or --at 'HH:MM')"
+        ui.failed(
+            out,
+            "pick exactly one schedule:",
+            f"got {', '.join(chosen) or 'none'} "
+            "(use --once '<time>', --every '<interval>' or --at 'HH:MM')",
         )
         return 2
     try:
         if once:
             when = parse_when(once)
             if when <= datetime.now(when.tzinfo):
-                out.print("[iris.fail]that time has already passed[/iris.fail]")
+                ui.error(out, "that time has already passed")
                 return 1
             task = store.add(instruction=instruction, run_at=when)
         elif every:
@@ -144,22 +152,22 @@ def render_add(
                 catch_up=True,
             )
     except ValueError as exc:
-        out.print(f"[iris.fail]{exc}[/iris.fail]")
+        ui.error(out, str(exc))
         return 1
     out.print(f"[iris.ok]added[/iris.ok] {task.id} — {task.describe()}")
-    out.print(f"  instruction: {task.instruction}")
-    out.print("[dim]takes effect at the next engine start, or after POST /cron/reload[/dim]")
+    ui.grid(out, [("instruction", task.instruction)])
+    ui.note(out, "takes effect at the next engine start, or after POST /cron/reload")
     return 0
 
 
 def render_rm(store: TaskStore, job_id: str) -> int:
     out = console()
     if not job_id:
-        out.print("[iris.fail]`iris cron rm` needs a job id[/iris.fail] — see `iris cron list`")
+        ui.failed(out, "`iris cron rm` needs a job id:", "see `iris cron list`")
         return 2
     if store.get(job_id) is None:
-        out.print(f"[iris.fail]no job with id {job_id!r}[/iris.fail]")
-        out.print(f"  {BUILTIN_HINT}")
+        ui.error(out, f"no job with id {job_id!r}")
+        ui.note(out, BUILTIN_HINT)
         return 1
     store.remove(job_id)
     out.print(f"[iris.ok]removed[/iris.ok] {job_id}")
@@ -184,5 +192,5 @@ def run(action: str, job_id: str = "", **kwargs: object) -> int:
         case "rm" | "remove":
             return render_rm(store, job_id)
         case _:
-            out.print(f"[iris.fail]unknown action {action!r}[/iris.fail] — use list, add or rm")
+            ui.failed(out, f"unknown action {action!r}", "- use list, add or rm")
             return 2
