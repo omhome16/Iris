@@ -24,6 +24,13 @@ from iris_ai.cli.doctor import PROVIDER_KEY_NAMES, _load_dotenv
 from iris_ai.cli.help_theme import console
 from iris_ai.engine import Harness, harness
 
+# psycopg async (used by the LangGraph PostgresSaver) cannot run on
+# Windows' ProactorEventLoop; select the selector loop before any loop exists.
+# Same guard as iris_ai.api and scripts/run_core.py — without it `iris chat`
+# crashes against a reachable Postgres on Windows instead of talking to it.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 REPL_HELP = """\
 /exit, /quit   leave the chat
 /help          this list

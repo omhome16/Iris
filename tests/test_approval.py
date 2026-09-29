@@ -101,6 +101,42 @@ def test_a_non_approval_payload_is_not_resumable():
     assert gate.verify(pending={"type": "question"}, decision="approved", thread="t1").refused
 
 
+def test_a_spent_approval_survives_a_restart(tmp_path):
+    """Durable approvals: a second guard over the same journal still refuses.
+
+    Without the backing log, a resume that arrives after a restart would look like
+    a first grant — the in-memory set is empty again — and the same call_id could
+    be approved twice.
+    """
+    from iris_ai.approval import ApprovalGate, ApprovalPolicy, ReplayGuard
+    from iris_ai.kernel import TurnJournal
+
+    journal = TurnJournal(tmp_path / "journal.jsonl")
+    pending = {"type": "approval", "action": "forget", "side_effecting": True, "call_id": "c1", "digest": "d"}
+
+    first = ApprovalGate(policy=ApprovalPolicy(), replay=ReplayGuard(journal))
+    assert first.verify(pending=pending, decision="approved", thread="t1").allowed
+
+    # A new process, same journal.
+    restarted = ApprovalGate(policy=ApprovalPolicy(), replay=ReplayGuard(journal))
+    verdict = restarted.verify(pending=pending, decision="approved", thread="t1")
+    assert verdict.refused
+    assert "already granted" in verdict.reason
+
+
+def test_a_grant_does_not_leak_to_another_thread(tmp_path):
+    from iris_ai.approval import ApprovalGate, ApprovalPolicy, ReplayGuard
+    from iris_ai.kernel import TurnJournal
+
+    journal = TurnJournal(tmp_path / "journal.jsonl")
+    pending = {"type": "approval", "action": "forget", "side_effecting": True, "call_id": "c1", "digest": "d"}
+    ApprovalGate(policy=ApprovalPolicy(), replay=ReplayGuard(journal)).verify(
+        pending=pending, decision="approved", thread="t1"
+    )
+    other = ApprovalGate(policy=ApprovalPolicy(), replay=ReplayGuard(journal))
+    assert other.verify(pending=pending, decision="approved", thread="t2").allowed
+
+
 def test_the_replay_guard_is_per_thread():
     guard = ReplayGuard()
     guard.grant("t1", "c1")

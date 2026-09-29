@@ -41,7 +41,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from iris_ai import turnlog
 from iris_ai.agent.runtime import Runtime
 from iris_ai.agent.tools import Tool, memory_result_payload, run_memory_search
-from iris_ai.agents.handoff import Claim, Handoff, Source, Spend
+from iris_ai.agents.handoff import REFUSED_ERROR, Claim, Handoff, Source, Spend
 from iris_ai.agents.roles import Role
 
 log = logging.getLogger("iris_ai.agents.runner")
@@ -167,7 +167,13 @@ class RoleRunner:
                         {"role": "tool", "content": m.content, "tool_call_id": m.tool_call_id}
                     )
                 elif mtype in ("human", "ai"):
-                    llm_messages.append({"role": mtype, "content": m.content})
+                    # LangChain names its own roles ("human"/"ai"); every provider
+                    # expects the OpenAI names. Passing `mtype` through verbatim is
+                    # how the critic's first call reached Gemini as
+                    # `{"role": "human"}` and failed on all four providers at once.
+                    llm_messages.append(
+                        {"role": "user" if mtype == "human" else "assistant", "content": m.content}
+                    )
 
             text, calls, _thinking = await self.runtime.llm.complete_with_tools(
                 llm_messages,
@@ -229,8 +235,11 @@ class RoleRunner:
     async def run(self, question: str, *, session_id: str = "") -> Handoff:
         """Run the role on one question and return the handoff it produced.
 
-        Never raises: a broken run comes back as an empty report (which renders
-        as "no findings"), exactly as the pre-P5 worker returned "".
+        Never raises into the turn. A run that genuinely failed is returned as a
+        *refused* handoff carrying a stable reason, not as an empty report: the
+        old behaviour rendered a crash as "no findings", which is how a critic
+        that could never reach a provider looked like a critic that approved
+        everything.
         """
         run = _Run()
         started = time.monotonic()
@@ -240,6 +249,7 @@ class RoleRunner:
         tokens_before = turnlog.usage_total()
         rounds = 0
         report = ""
+        failure = ""
         try:
             graph = self._build(run)
             result = await graph.ainvoke(
@@ -257,7 +267,8 @@ class RoleRunner:
             ]
             report = reports[-1] if reports else ""
         except Exception as exc:  # noqa: BLE001 - a role must never break a turn
-            log.warning("%s run failed: %s", self.role.name, exc)
+            failure = f"{type(exc).__name__}: {exc}"
+            log.warning("%s run failed: %s", self.role.name, failure)
 
         truncate_d = False
         text = report or ""
@@ -283,7 +294,11 @@ class RoleRunner:
             claims=claims,
             spend=spend,
             truncated=truncate_d,
+            refused=REFUSED_ERROR if failure else "",
         )
+        if failure:
+            with contextlib.suppress(Exception):
+                turnlog.record("handoff_error", role=self.role.name, error=failure)
         # Telemetry must never cost a reply. `turnlog.record` suppresses its own
         # failures, but a payload/key mismatch raises while *binding* the call,
         # before record runs — which is exactly how this line first broke the

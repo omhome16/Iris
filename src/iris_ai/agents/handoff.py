@@ -33,6 +33,9 @@ REFUSED_DISABLED = "multi_agent_disabled"
 REFUSED_BUDGET = "budget_exhausted"
 REFUSED_DEADLINE = "deadline_exceeded"
 REFUSED_NO_ROLE = "role_unavailable"
+# A specialist that raised. Surfaced, never swallowed: a critic that crashed
+# must not be mistaken for a critic that found nothing to object to.
+REFUSED_ERROR = "run_failed"
 
 _EMPTY_REPORT = "## Findings from {role}\nno findings — the researcher found nothing to report."
 

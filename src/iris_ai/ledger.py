@@ -115,6 +115,15 @@ class CostLedger:
             log.warning("cost ledger read failed: %s", exc)
         return out
 
+    def rows(self) -> list[dict]:
+        """Every recorded call, oldest first.
+
+        Public because a reader other than the rollups needs the raw lines —
+        `iris costs` groups by model, and re-deriving that from `daily_totals`
+        would be a lie about what was recorded.
+        """
+        return self._read()
+
     def daily_totals(self, days: int = 14) -> list[dict]:
         """[{day, cost, requests, prompt_tokens, completion_tokens, cached_tokens, cache_hit_rate}]."""
         per_day: dict[str, dict[str, Any]] = defaultdict(

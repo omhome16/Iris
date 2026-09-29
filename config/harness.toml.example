@@ -1,0 +1,42 @@
+# harness.toml — declarative Iris configuration (copy to config/harness.toml)
+#
+# Precedence:  defaults  <  .env  <  this file  <  environment  <  CLI flag
+#
+# A *real* env var always wins (so a container/CI override still works) and this
+# file wins over `.env`, because `.env` is where a copied sample's defaults live:
+# `WORKSPACE_DIR=./workspace` there must not silently defeat a profile that names
+# its own workspace. So: put the knobs you want a profile to own in this file, and
+# leave `.env` for secrets. This file is safe to commit; secrets are not.
+# SECRETS DO NOT BELONG HERE — keep API keys in .env.
+#
+# Every key is the lowercase name of a setting (see `iris doctor` / .env.example).
+# Unknown keys are logged and ignored, so a typo is visible rather than silent.
+
+# ── Channels (plug-and-play) ────────────────────────────────────────────────
+# Core ships `telegram`. Install a plugin that registers a channel (entry-point
+# group `iris_ai.channels`) and enable it here by name — no core edit.
+# Empty `enabled` means "every registered channel"; `disabled` always wins.
+[channels]
+enabled = ["telegram"]
+disabled = []
+
+# ── Capability backends (plug-and-play) ─────────────────────────────────────
+# Each capability is built through a registry, so a plugin that registers a
+# backend can be selected by name — no core edit. The values below are the
+# built-in defaults; uncomment to override.
+# model_backend  = "litellm"    # ModelBackend:  `litellm` ships in core
+# memory_backend = "sqlite"     # MemoryBackend: `sqlite` (default: one file, no daemon),
+#                               #                `pgvector` (a service), `null` degrades
+# judge_backend  = "jev"        # Judge:         `jev` ships in core
+
+# ── Examples of ordinary settings (uncomment to use) ────────────────────────
+# llm_provider = "auto"
+# tool_guard_enabled = true
+# tool_max_calls_per_turn = 8
+# computer_enabled = false
+# iriS_timezone = "UTC"
+#
+# ── External tools: MCP servers ─────────────────────────────────────────────
+# Servers are declared in their own file (the ecosystem's `.mcp.json` shape), not
+# here: they carry commands, URLs and per-server trust. See config/mcp.json.example.
+# mcp_servers_file = ".mcp.json"

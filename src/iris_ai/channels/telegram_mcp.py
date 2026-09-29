@@ -13,6 +13,7 @@ rather than raising through the agent loop.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass, field
@@ -24,9 +25,16 @@ log = logging.getLogger("iris.telegram")
 
 @dataclass(slots=True)
 class TelegramMCPClient:
-    """Thin MCP client wrapper. Connects lazily; callers use `connected`."""
+    """Thin MCP client wrapper. Connects lazily; callers use `connected`.
+
+    This is the Telegram implementation of the `Channel` protocol
+    (`iris_ai.channels.base`). It is one entry in the channel registry, not a
+    special case in the boot path — a second channel is another registry entry.
+    """
 
     url: str
+    name: str = "telegram"
+    timeout_s: float = 10.0
     _client: Client | None = field(default=None, init=False)
 
     @property
@@ -34,20 +42,29 @@ class TelegramMCPClient:
         return self._client is not None
 
     async def connect(self) -> bool:
-        """Open the MCP session and advertise the server's tools. Idempotent."""
+        """Open the MCP session and advertise the server's tools. Idempotent.
+
+        Bounded by `timeout_s` so a bridge that accepts a connection and then
+        hangs cannot stall boot waiting on it.
+        """
         if self._client is not None:
             return True
         try:
             client = Client(self.url)
-            await client.__aenter__()
-            await client.list_tools()
+            await asyncio.wait_for(client.__aenter__(), timeout=self.timeout_s)
+            await asyncio.wait_for(client.list_tools(), timeout=self.timeout_s)
             self._client = client
-            log.info("telegram MCP connected: %s", self.url)
+            log.info("%s MCP connected: %s", self.name, self.url)
             return True
         except (Exception, BaseExceptionGroup) as exc:
             # anyio raises BaseExceptionGroup (not Exception) on transport
-            # failures; boot must survive a down bridge.
-            log.warning("telegram MCP unavailable (%s): %s", self.url, exc, exc_info=True)
+            # failures; boot must survive a down bridge. This is an *expected*
+            # startup race (core boots before the bridge), so it is logged at
+            # debug with the traceback and surfaced to the operator as one
+            # concise warning — the full ExceptionGroup chain used to print four
+            # times and bury real errors.
+            log.debug("telegram MCP connect failed (%s)", self.url, exc_info=True)
+            log.warning("telegram MCP unavailable (%s): %s", self.url, exc)
             return False
 
     async def close(self) -> None:

@@ -28,11 +28,31 @@ def test_help_lists_only_real_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     names = {(cmd.name or cmd.callback.__name__) for cmd in app.registered_commands}
-    assert names == {"agents", "chat", "cron", "doctor", "guards", "skills", "tools", "version"}
+    assert names == {
+        "agents",
+        "chat",
+        "costs",
+        "cron",
+        "doctor",
+        "guards",
+        "init",
+        "mcp",
+        "migrate",
+        "plugins",
+        "policy",
+        "secrets",
+        "skills",
+        "tools",
+        "version",
+    }
     for name in names:
         assert name in result.stdout
+    # The stubs are checked against the *registered* names, not against the help
+    # text: prose legitimately contains these words ("a server is allowed to do"),
+    # and a substring search over help output cannot tell a command from a
+    # sentence.
     for stub in ("ask", "run", "shell", "serve", "tui"):
-        assert stub not in result.stdout
+        assert stub not in names
 
 
 @pytest.mark.parametrize("flag", ["--help", "-h"])

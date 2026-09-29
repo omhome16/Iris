@@ -115,7 +115,31 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
     else:
         checks.append(Check("TYPESAFE_API_KEY", "warn", "missing — JEV disabled (deterministic fallback)"))
 
+    checks.append(_secret_store_check(env))
     return checks
+
+
+def _secret_store_check(env: Mapping[str, str]) -> Check:
+    """What holds the secrets, and whether the choice is a weak one.
+
+    Names and locations only — the rule for this whole command. The `file`
+    backend is a `warn` rather than an `ok` because it is real isolation without
+    encryption, and an operator should know that from the doctor rather than from
+    the module docstring.
+    """
+    from iris_ai.secrets import available_backends
+
+    requested = (env.get("SECRET_STORE", "auto") or "auto").strip().lower()
+    if requested not in ("auto", "env", "keyring", "file"):
+        return Check("secret store", "fail", f"SECRET_STORE={requested!r} is not a known backend")
+    chosen = requested
+    if requested == "auto":
+        chosen = "keyring" if available_backends()["keyring"] else "file"
+    if chosen == "keyring":
+        return Check("secret store", "ok", "keyring (OS-encrypted)")
+    if chosen == "env":
+        return Check("secret store", "ok", "env (read-only; nothing stored by Iris)")
+    return Check("secret store", "warn", "file (0600, NOT encrypted — see `iris secrets backend`)")
 
 
 def exit_code(checks: list[Check]) -> int:

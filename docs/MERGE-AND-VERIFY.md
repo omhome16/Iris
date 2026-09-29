@@ -334,8 +334,17 @@ without the daemon running).
 
 ## 5. CI — what each check proves, and how to run it locally
 
-Five jobs (`.github/workflows/ci.yml`). The point of naming them separately is
-that a failure names itself instead of hiding inside a 900-test run.
+> **This section describes the runner as it was at the merge this runbook was
+> written for.** Two jobs have been added since (`onboarding`, which times the
+> no-database five-minute path, and `security`, which runs `pip-audit` and
+> `bandit`), the `test` job now syncs `--all-extras` so the optional ACP and
+> OTel tests are gates rather than skips, and the suite is larger than the
+> numbers quoted in §4 — see [`docs/support.md`](support.md#what-ci-verifies-and-where)
+> for the current list. The method is unchanged: every number below names the
+> command that produced it.
+
+Seven jobs (`.github/workflows/ci.yml`). The point of naming them separately is
+that a failure names itself instead of hiding inside a 1100-test run.
 
 | Job | Proves | Run it locally |
 |---|---|---|
@@ -344,6 +353,8 @@ that a failure names itself instead of hiding inside a 900-test run.
 | `package` | the wheel builds, installs, and its console entry works — including the *packaged* builtin skill | §4.5 |
 | `test` | the full suite against a real pgvector Postgres | §4.3 |
 | `build` | the production image builds and runs as a non-root user | §4.6 |
+| `onboarding` | clone → `iris init` → a reply in under 300 s, with **no Postgres service in the job** | `uv sync --frozen && uv run iris init --offline && uv run pytest tests/test_harness.py -q -k no_database` |
+| `security` | no known CVEs in the resolved lock, and no medium-and-up `bandit` findings in `src/` | `uv run --with pip-audit pip-audit`, `uv run --with bandit bandit -r src -q -ll -s B608,B108` |
 
 The workflow **no longer creates the scratch databases**: the fixtures do
 (`tests/db.py`). Reaching into the pgvector service container with
@@ -426,7 +437,7 @@ than a short one:
 
 | Next | Where |
 |---|---|
-| Publish (your steps, not an agent's) | `docs/NEXT-SESSION.md` §5 — trusted publisher, tag `v0.2.0`, release workflow |
+| Publish (your steps, not an agent's) | `docs/support.md` — trusted publisher, tag, release workflow |
 | What the vault recommends vs what Iris has | `docs/vault-review.md` (its backlog is empty) |
 | Module map, invariants, where state lives | `docs/architecture.md` |
 | Adding a tool / skill / channel / eval metric | `docs/extending.md` |

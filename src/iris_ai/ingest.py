@@ -149,7 +149,10 @@ async def web_search(query: str, max_results: int = 5) -> list[dict]:
 
 def import_path(workspace: Path, url: str) -> Path:
     """Deterministic import file path: imports/YYYY-MM-DD-<urlhash>.md"""
-    h = hashlib.sha1(url.encode()).hexdigest()[:8]
+    # `usedforsecurity=False`: this is a filename digest, not a signature. Saying
+    # so is what makes the weakness (SHA-1, 32 bits of it) a deliberate choice
+    # rather than an oversight a static scanner has to guess about.
+    h = hashlib.sha1(url.encode(), usedforsecurity=False).hexdigest()[:8]
     return workspace / "imports" / f"{date.today().isoformat()}-{h}.md"
 
 

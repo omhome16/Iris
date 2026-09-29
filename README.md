@@ -1,8 +1,11 @@
 # Iris — a personal AI assistant with a visible mind
 
-Iris is a production-grade personal AI assistant whose **memory is the product**,
+Iris is a production-grade **agent harness** whose **memory is the product**,
 packaged as a **library** (`import iris_ai`) with a thin **CLI** (`iris …`) as its
-face.
+face. The harness itself is general — no persona, no channel, no life is baked
+into `src/` — and the personal assistant it was written for ships as a reference
+app: [`examples/assistant/`](examples/assistant/README.md), assembled from a
+manifest and two Markdown files.
 
 Built to demonstrate four AI-engineering disciplines end to end:
 
@@ -59,6 +62,25 @@ Full scope and risk register: [`docs/blueprint.md`](docs/blueprint.md). Phase
 specs live in `docs/superpowers/specs/`, task plans in
 `docs/superpowers/plans/`, execution status in `docs/superpowers/progress/`.
 
+## Status: redesign Phases 0–7 — the harness, general and configurable
+
+P1–P8 built the assistant. The redesign turned the *same working brain* into a
+harness anything can be assembled from, in eight phases that never left `main`
+broken. The plan, with each phase's status and its gate, is
+[`docs/redesign/09-roadmap.md`](docs/redesign/09-roadmap.md); the design rationale
+is [`docs/redesign/README.md`](docs/redesign/README.md).
+
+| Phase | Deliverable | Where it landed |
+|---|---|---|
+| **0 — plug-and-play foundation** ✅ | one registry per capability kind, a hook bus with the guard chain as first subscriber, a config manifest, `iris plugins` | `registry.py`, `hooks.py`, `manifest.py`, `toolregistry.py`, `channels/registry.py` |
+| **1 — swappable backends** ✅ | `ModelBackend` / `MemoryBackend` / `Judge` Protocols and their registries, resolved by name at boot | `capabilities/{models,memory,judges}.py` |
+| **2 — SQLite default + one command** ✅ | one file, no daemon; `iris init` measures the setup; `iris migrate`; a timed clean-checkout CI job | `memory/sqlite_index.py`, `cli/{init,migrate}.py`, the `onboarding` CI job |
+| **3 — MCP as the capability pool** ✅ | declared servers, per-server trust, `server/tool` namespacing, stdio/http/sse, background reconnect | `mcp/`, `toolpolicy.declare_external` |
+| **4 — safety hardening** ✅ | three secret-store backends, `iris policy`, injection screening on `review`/`untrusted` output, a container sandbox level that fails closed | `secrets/`, `cli/{secrets,policy}.py`, `skills/runner.py` |
+| **5 — kernel + durability** ✅ | an explicit turn journal with replay detection, idempotent tool boundaries and durable approvals | `kernel/{turn,journal}.py`, `agent/chat.py` |
+| **6 — interfaces** ✅ | the ACP adapter (`iris-acp`), OTel GenAI spans through an optional extra, `iris costs` | `interfaces/acp/`, `observability/`, `cli/costs.py` |
+| **7 — reference app + release discipline** ✅ | the assistant as configuration under `examples/`, a neutral default profile, quickstart/plugin/compat docs, security scanning in CI | `examples/assistant/`, `src/iris_ai/templates/`, `docs/{quickstart,plugins}.md` |
+
 **What each phase actually changed.** P1 changed the Python-facing shape
 (library + CLI) and the docs; P2 moved the boot path into the library; P3 moved
 the bridge onto the library's client contract and fixed one real bug on the
@@ -106,6 +128,7 @@ The conformance audit that drove P6 and the P7/P8 scope lives in
 | `iris tools` | Every declared tool with its class, the policy that class resolves to, where the decision came from, and whether it is on the always-visible surface or deferrable |
 | `iris tools actions` | Recent computer-use actions from `config/actions.jsonl`: what, where, allowed or not — **never** what was typed |
 | `iris guards` | The pre-tool chain and today's token budget: every ceiling in force, the counters split by kind, and the policy version. Read-only, works with **no engine running** (`--json` for scripting). `GET /guards` adds live circuit state |
+| `iris plugins channels` / `tools` / `hooks` | Every registered capability and where it came from: channels (built-in vs an installed plugin), tool providers, and the lifecycle hook events with their built-in subscribers. Read-only, no engine needed |
 | `--debug` / `IRIS_DEBUG=1` | Re-raise instead of printing the friendly hint, so you get a real traceback |
 
 `doctor` never prints a secret **value** — only names and `set` / `missing`:
@@ -189,8 +212,7 @@ shipped skills, docs, eval scripts and `scripts/` live:
 ```bash
 git clone https://github.com/omhome16/Iris.git && cd Iris
 uv sync                      # install the library + CLI into .venv
-uv run iris --help           # the CLI shell
-uv run iris doctor           # what's configured, and what isn't
+uv run iris init             # write .env + config/harness.toml, then prove the setup
 uv run iris chat             # talk to her (add --once "hi" to script one turn)
 ```
 
@@ -200,11 +222,22 @@ not available — it is another project's on PyPI, and the `iris` import belongs
 to SciTools Iris — so the package had to be renamed before it could be shipped
 at all.
 
-To give her a brain, copy the env template and fill in one provider key (see
-[Providers](#providers)); `iris doctor` reports which key names it found:
+`iris init` writes `.env`, the harness manifest, and — only when the workspace
+has none — the shipped neutral `AGENTS.md`, then **measures** the result: one
+no-op completion against your model, one open of the memory store, and one walk
+of the thread-store ladder — so a setup that cannot answer says so instead of
+looking installed. The five-minute path, with its failure modes, is
+[`docs/quickstart.md`](docs/quickstart.md). **No database is needed**: the default memory backend is a
+single SQLite file under `config/`, and threads fall back to a second file, so
+there is nothing to start and nothing to wait for. Without an embedding
+provider, recall runs keyword-only, and the report names both ways to change
+that (a Gemini key, or a local Ollama model that needs no key at all).
+
+To give her a brain, put one provider key in the `.env` that `iris init` just
+wrote (see [Providers](#providers)); `iris doctor` reports which key names it
+found, and re-checks the environment any time:
 
 ```bash
-cp .env.example .env
 uv run iris doctor
 ```
 
@@ -221,6 +254,11 @@ docker compose up -d postgres                # just the DB (pgvector) on :5433
 uv run python scripts/run_core.py            # API on :8000
 uv run python scripts/run_bridge.py          # Telegram MCP bridge on :8100
 ```
+
+Postgres is here for the API and the bridge: the API keeps `postgres="require"`,
+so it refuses to boot on an unreachable database rather than serving half a
+system. `iris chat` needs none of this — a checkout with no services at all is a
+working assistant, which is the point of the SQLite defaults.
 
 Or the whole stack, including Postgres, in containers:
 
@@ -676,6 +714,31 @@ Since P3 the bridge is **a client of the library, not a second brain**:
   root) so the bridge and the core cannot drift apart; no agent-stack
   dependency (LangGraph, asyncpg, pgvector) enters it.
 
+### External tools: MCP servers are config, not code
+
+Any MCP server can be added to Iris by declaring it — no plugin, no core edit:
+
+```bash
+cp config/mcp.json.example .mcp.json    # then edit it
+uv run iris plugins mcp                 # declared, trust, and each tool's policy
+uv run iris plugins mcp --live          # connect and show what each one offers
+```
+
+```json
+{"mcpServers": {"wiki": {"url": "http://127.0.0.1:8100/mcp", "trust": "owner"}}}
+```
+
+Servers connect once at boot (concurrently, with a background reconnect for one
+that was not up yet), and every tool arrives namespaced `wiki/search` so two
+servers can both ship `search`. **Trust belongs to the server, not the tool:** a
+read-only hint buys reads, a non-read-only tool on an `untrusted` server (the
+default) is **denied**, and a trusted one asks you first — with `deny` as a floor
+that `approval: "never"` cannot re-open. A denied tool is missing from the tool
+list *and* refused at dispatch, and an unattended session (a scheduled task) is
+refused outright rather than pausing for an approval nobody can give. Tokens come
+from `${VAR}` in the environment, never from the file. See
+[`docs/extending.md`](docs/extending.md).
+
 ### Providers
 
 Two-tier brain via LiteLLM. Every provider lives in one table —
@@ -882,6 +945,14 @@ re-runs onboarding.
 | Document | What it covers |
 |---|---|
 | `README.md` (this file) | Pitch, architecture, status/roadmap, quickstart, operations |
+| [`docs/quickstart.md`](docs/quickstart.md) | Clone to a reply in five minutes: the path CI times, what `iris init` measured, and what each failure means |
+| [`docs/plugins.md`](docs/plugins.md) | Install or write a plugin: entry points, the Protocols, the manifest, and how to prove it works |
+| [`docs/acp.md`](docs/acp.md) | Iris in an editor: the ACP adapter, the four decisions it makes, and the Windows caveat |
+| [`docs/observability.md`](docs/observability.md) | Traces, GenAI-convention spans and the cost ledger — and what each one costs when unused |
+| [`docs/redesign/`](docs/redesign/README.md) | The redesign: per-capability deep-dives, the phased plan, and the decisions behind them |
+| [`examples/assistant/`](examples/assistant/README.md) | The reference app: a personal assistant as configuration |
+| [`docs/redesign/plugin-architecture.md`](docs/redesign/plugin-architecture.md) | The plug-and-play layer: the capability registry, the Channel/ToolProvider/Hook protocols, the config manifest, and how to add an integration without touching core |
+| [`docs/extending.md`](docs/extending.md) | Recipes: add a tool, skill, client, channel, role, guard, hook, eval metric or setting |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Setup, the verify commands, what a good change looks like, commit conventions |
 | [`docs/MERGE-AND-VERIFY.md`](docs/MERGE-AND-VERIFY.md) | The end-to-end runbook: merge to `main`, verify every stage with its expected output, reproduce the CI runner locally, and what is *not* covered |
 | [`docs/architecture.md`](docs/architecture.md) | Module map, the turn lifecycle, the twelve invariants, where state lives |

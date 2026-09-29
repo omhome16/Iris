@@ -348,10 +348,20 @@ def active_id() -> int:
 
 @contextmanager
 def collect() -> Iterator[TurnLog]:
-    """Start a fresh turn log. Nested calls isolate (the inner one wins)."""
+    """Start a fresh turn log. Nested calls isolate (the inner one wins).
+
+    The reset is guarded because a *streamed* turn can be abandoned. The CLI, an
+    SSE client that disconnects, and an ACP `session/cancel` all leave
+    `respond_stream`'s generator to be finalized by the event loop, and that
+    finalization runs in a different context — where `ContextVar.reset(token)`
+    raises `ValueError` instead of being a no-op. The value being restored
+    belongs to a context that is already gone, so leaving it set is the right
+    outcome; the alternative is a traceback logged for a turn nobody is reading.
+    """
     log = TurnLog(id=next(_turn_seq))
     token = _current.set(log)
     try:
         yield log
     finally:
-        _current.reset(token)
+        with contextlib.suppress(ValueError):
+            _current.reset(token)

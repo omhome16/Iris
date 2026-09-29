@@ -90,6 +90,19 @@ def test_supersede_in_text_falls_back_to_line_probe():
     assert out.count("Owner loves hiking") == 1
 
 
+def test_supersede_in_text_finds_a_flattened_chunk():
+    """A chunk of a small file is one whitespace-flattened line, so *no* file
+    line contains the hit. The entry must still be the line that is retired —
+    not the heading, and not a refusal."""
+    raw = "# MEMORY.md\n\n- [8] Omar prefers jasmine tea\n"
+    indexed = "# MEMORY.md - [8] Omar prefers jasmine tea"  # what chunk_text stores
+    out = supersede_in_text(raw, indexed, "(superseded 2026-09-29)")
+
+    assert out is not None
+    assert "- [8] Omar prefers jasmine tea (superseded 2026-09-29)" in out
+    assert "# MEMORY.md (superseded" not in out
+
+
 def test_supersede_in_text_refuses_when_entry_is_missing():
     """Never retire the wrong line: an unreachable match must abort."""
     assert supersede_in_text("# MEMORY.md\n- something else\n", "not in the file at all", "(x)") is None

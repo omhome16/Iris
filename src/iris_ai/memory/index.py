@@ -29,6 +29,7 @@ from iris_ai import turnlog
 from iris_ai.config import settings
 from iris_ai.memory.llm import LLMClient
 from iris_ai.memory.provenance import Origin, Provenance
+from iris_ai.memory.scoring import mmr_select
 
 log = logging.getLogger("iris_ai.memory.index")
 
@@ -491,35 +492,13 @@ class MemoryIndex:
 
     @staticmethod
     def _mmr(pairs: list[tuple[MemoryHit, np.ndarray]], *, top_k: int, lam: float = 0.7) -> list[MemoryHit]:
-        """Maximal Marginal Relevance: relevance minus redundancy against
-        already-selected candidates (cosine similarity). Deterministic, local,
-        no model calls — this is the MMR-diversity step from the recall lane."""
-        if not pairs:
-            return []
-        selected: list[tuple[MemoryHit, np.ndarray]] = []
-        pool = pairs[:]
-        # Embeddings are stored as-is; embeddings from different providers are
-        # not guaranteed unit-length, and dot product is only a cosine when
-        # both vectors are normalized. Normalize defensively.
-        pool = [(hit, emb / (np.linalg.norm(emb) or 1.0)) for hit, emb in pool]
-        while pool and len(selected) < top_k:
-            best: tuple[MemoryHit, np.ndarray] | None = None
-            best_val = -1.0
-            best_idx = -1
-            for i, (hit, emb) in enumerate(pool):
-                rel = hit.score
-                if selected:
-                    redundancy = max(float(np.dot(emb, s[1])) for s in selected)
-                else:
-                    redundancy = 0.0
-                value = lam * rel - (1 - lam) * redundancy
-                if value > best_val:
-                    best_val, best_idx, best = value, i, (hit, emb)
-            if best is None:
-                break
-            selected.append(best)
-            pool.pop(best_idx)
-        return [hit for hit, _ in selected]
+        """Maximal Marginal Relevance — see `iris_ai.memory.scoring.mmr_select`.
+
+        Kept as a method because it is called from both recall lanes here, and
+        shared with the SQLite backend through the module-level function rather
+        than by inheriting a store-specific class.
+        """
+        return mmr_select(pairs, top_k=top_k, lam=lam)
 
     async def forget_entry(self, path: str, chunk_index: int) -> None:
         self.clear_cache()

@@ -28,7 +28,13 @@ def main() -> None:
         loop="none",  # we own the loop
     )
     server = Server(config)
-    asyncio.run(server.serve(), loop_factory=lambda: asyncio.SelectorEventLoop(selectors.SelectSelector()))
+    try:
+        asyncio.run(server.serve(), loop_factory=lambda: asyncio.SelectorEventLoop(selectors.SelectSelector()))
+    except KeyboardInterrupt:
+        # Ctrl+C is how the operator stops a dev server, not a crash. Without
+        # this, asyncio re-raises and uvicorn prints a KeyboardInterrupt
+        # traceback that reads like a failure.
+        print("\niris-core stopped.")
 
 
 if __name__ == "__main__":

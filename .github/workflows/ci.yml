@@ -121,7 +121,12 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv sync --frozen
+      # `--all-extras` on purpose: the ACP adapter and the OTLP exporter are
+      # optional for the *harness* and required for their own tests, and a plain
+      # `uv sync` would turn Phase 6's gate into twelve skips that CI reports as
+      # green. The extras are what the project advertises, so CI installs what the
+      # project advertises and runs the tests that prove it works.
+      - run: uv sync --frozen --all-extras
       # No `CREATE DATABASE` steps: `iris_test` and `iris_eval` are the suite's own
       # *scratch* databases (the first is deliberately separate from real memory,
       # the second is the eval corpus), and both fixtures create them on demand
@@ -133,6 +138,72 @@ jobs:
         # laptop they only run when someone starts the container by hand —
         # which is how they stayed dark. CI is where they always run.
         run: uv run pytest tests -q
+
+  onboarding:
+    # Phase 2's gate: the five-minute claim, timed on a clean checkout — and
+    # deliberately with **no Postgres service in this job**, because "no daemon"
+    # is half of what is being claimed. `iris init` is expected to succeed
+    # against the SQLite defaults; if it ever needs a database again, this job
+    # fails here instead of passing quietly inside a service-enabled `test` run.
+    #
+    # There is no provider key in CI (`LLM_PROVIDER=ollama`, dead
+    # `OLLAMA_BASE_URL`), so the reply comes from the suite's deterministic model
+    # double rather than a network call. That is the stronger check: it proves the
+    # *engine* answers without a service, where a live key would mask a boot that
+    # could not. `--offline` skips init's two live probes for the same reason;
+    # the probes themselves are covered by `tests/test_onboarding.py`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Clean-checkout path (install + init + a reply), timed
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          uv sync --frozen          # install from the lockfile, as the README says
+          uv run iris init --offline
+          # A reply with no database anywhere: the Phase 2 claims are that the
+          # session boots full, keeps its threads, and still recalls a note.
+          uv run pytest tests/test_harness.py -q -k no_database
+          elapsed=$(( $(date +%s) - started ))
+          echo "clean-checkout path (install + init + reply): ${elapsed}s"
+          if [ "$elapsed" -gt 300 ]; then
+            echo "::error::clean-checkout path took ${elapsed}s; the budget is 300s"
+            exit 1
+          fi
+
+  security:
+    # Phase 7's release discipline: a pinned lockfile is not the same as a safe
+    # one. Two checks, neither of which needs a service:
+    #
+    # * **pip-audit** reads the *resolved* dependency set against the advisory
+    #   database. Not `--strict`: that fails when a dependency cannot be audited,
+    #   and `iris-personal-ai` is the local project (not on PyPI yet), so strict
+    #   mode would fail every run for a reason that has nothing to do with
+    #   security. It still exits non-zero on a real finding — this job earns its
+    #   keep: it caught `httpx2` 2.10.0 (three advisories, fixed in 2.13.1),
+    #   reached through the MCP SDK, which nothing else here would have noticed.
+    #
+    # * **bandit** for medium-and-up issues in `src/`. The two skipped rules are
+    #   named and justified rather than left implicit: `B608` fires on the
+    #   SQLite backend's f-strings, where the only interpolated text is
+    #   `?` placeholders and a module-level GLOB constant (values are bound as
+    #   parameters), and `B108` fires on the literal `--tmpfs /tmp:...` argument
+    #   the container sandbox passes to docker. Everything else is live, so an
+    #   `eval`, a `shell=True` or a weak hash added later fails here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Dependency audit (known CVEs)
+        run: uv run --with pip-audit pip-audit --progress-spinner off
+      - name: Static analysis (medium and up)
+        run: uv run --with bandit bandit -r src -q -ll -s B608,B108
 
   build:
     runs-on: ubuntu-latest

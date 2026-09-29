@@ -18,6 +18,13 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # The sample config is documentation, so it ships placeholders: after
+        # `cp .env.example .env` every key nobody filled in reads `KEY=`. Without
+        # this, that empty string is a *value* — pydantic-settings tried to parse
+        # `OWNER_CHAT_ID=` as an int and raised `SettingsError` while
+        # `iris_ai.config` was being imported, so every command died at once.
+        # Empty means "unset" here, which is what a placeholder has always meant.
+        env_ignore_empty=True,
     )
 
     # ── Model tiers ──────────────────────────────────────────────────────
@@ -54,6 +61,19 @@ class Settings(BaseSettings):
     # turn still runs on the fallback; doctor and /jev surface this instead of
     # it being a silent surprise.
     provider_warning: str = ""
+
+    # ── Capability backends (the plug-and-play seams) ────────────────────
+    # Which registered implementation each capability kind uses. Core ships one
+    # per kind; a plugin registers another under the same registry (entry-point
+    # groups `iris_ai.models`, `iris_ai.memory`, `iris_ai.judges`) and selects it
+    # here — no core edit. An unknown name fails at boot with the known list.
+    model_backend: str = "litellm"
+    # `sqlite` is the default because a fresh clone must be able to remember
+    # things without a database daemon. `pgvector` is the upgrade for a
+    # multi-process deployment; `null` is the honest degraded stand-in. An
+    # unknown name fails at boot naming the ones that exist.
+    memory_backend: str = "sqlite"
+    judge_backend: str = "jev"
 
     # ── Secrets ──────────────────────────────────────────────────────────
     # All credential-bearing fields are `repr=False`: Settings is a plain
@@ -274,9 +294,76 @@ class Settings(BaseSettings):
     postgres_dsn: str = Field(
         default="postgresql+psycopg://iris:iris_dev_password@localhost:5433/iris", repr=False
     )  # repr=False: the DSN embeds the database password
+    # Seconds to wait for the Postgres endpoint before calling it unreachable.
+    # psycopg's own default is 130s, and on Windows an unreachable server never
+    # shortens that: a refused connect is reported only in the *exceptional* fd
+    # set, which an asyncio selector loop does not watch, so the driver's poll
+    # runs to its deadline instead of failing at once. Five seconds is long
+    # enough for a slow local socket and short enough that a missing database
+    # degrades the boot rather than appearing to hang it. libpq clamps to 2.
+    postgres_connect_timeout: float = 5.0
+    # Where the `sqlite` memory backend keeps its file. One file, no daemon: the
+    # default store must be reachable on a fresh clone, and a path under
+    # `config/` sits beside the other runtime state (traces, budget, ledger).
+    sqlite_path: str = "config/memory.db"
+    # Which store keeps conversation threads (a separate choice from where
+    # recall lives): `auto` = Postgres when reachable, else the SQLite file,
+    # else in-memory with a warning. `postgres` also makes an unreachable
+    # database a boot error, which is what a multi-process deployment wants;
+    # `sqlite` or `memory` pins a tier so a missing one is a hard failure.
+    checkpointer_backend: str = "auto"
+    checkpointer_path: str = "config/checkpoints.db"
     telegram_bot_token: str = Field(default="", repr=False)
     telegram_mcp_url: str = "http://127.0.0.1:8100/mcp"
+    # Which registered channels are live. Names come from the channel registry
+    # (`iris_ai.channels.registry`), so a plugin channel is enabled by name here
+    # without a code change. Empty `channels_enabled` means "every registered
+    # channel"; `channels_disabled` always wins.
+    channels_enabled: str = "telegram"
+    channels_disabled: str = ""
+    channel_connect_timeout_s: float = 10.0
     owner_chat_id: int | None = None  # learned from the first /start if unknown
+    # Optional declarative manifest (TOML). Precedence: defaults < this file <
+    # environment. Secrets stay in .env; the manifest is committable.
+    harness_config: str = "config/harness.toml"
+    # Declared MCP servers, in the ecosystem's `{"mcpServers": {...}}` shape.
+    # A missing file means "no servers" (`iris_ai.mcp`); a malformed one raises,
+    # because a server the owner believes is connected but is not is worse than
+    # a startup error.
+    mcp_servers_file: str = ".mcp.json"
+    # Where a secret lives when it is not in the environment. `auto` picks the OS
+    # keychain when the optional `keyring` extra is installed and a 0600 file
+    # otherwise — chosen, not fallen back to, so "where is my token" is the same
+    # answer today as tomorrow. `iris secrets` reports the choice and its location.
+    # ── Telemetry (optional) ─────────────────────────────────────────────
+    # `none` (default) keeps a local single-user harness free of a telemetry
+    # stack. `otlp` emits GenAI-convention spans through the optional `[otel]`
+    # extra, and *fails the boot* if the extra is missing rather than leaving an
+    # operator looking at an empty dashboard. Trace content is never an
+    # attribute: tool arguments are hashed, exactly as the local traces hash them.
+    otel_exporter: str = "none"
+    otel_endpoint: str = ""
+    #: The name reported as `gen_ai.agent.name`. Rename the agent without renaming
+    #: the package — the harness is general, and this is what a backend groups by.
+    agent_name: str = "iris"
+    secret_store: str = "auto"
+    secrets_file: str = "config/secrets.json"  # under the workspace, with the other state
+    # Isolation level for a skill's script — the one place a stranger's code runs.
+    # `process` is the default and needs nothing installed: a real child process
+    # with a constructed environment (no secrets), no shell, a timeout and a
+    # capped output. `container` adds the guarantees a process cannot make (no
+    # network, read-only root, memory/PID caps) and **fails closed** when no
+    # runtime is on PATH — never a silent downgrade, because a level that
+    # degrades quietly is a level nobody can rely on.
+    #
+    # There is deliberately no `in_process`: running a skill's code in Iris's own
+    # interpreter is not a sandbox, and a key that turns a boundary off is a key
+    # that eventually is.
+    exec_sandbox: str = "process"
+    exec_container_runtime: str = "docker"
+    exec_container_image: str = "python:3.13-slim"
+    exec_container_memory: str = "512m"
+    exec_container_pids: int = 128
     workspace_dir: str = "./workspace"
     sandbox_dir: str = "./workspace/sandbox"  # the only file system Iris may touch
     iris_timezone: str = "UTC"

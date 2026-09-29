@@ -16,12 +16,19 @@ constraints that are enforced here rather than promised in docs:
    skill directory. A script cannot read a key that was never handed to it.
 4. **Bounds.** A timeout (the manifest's, capped by config) kills the process; the
    output is capped so a runaway loop cannot fill the trace or the prompt.
+5. **A chosen isolation level.** `EXEC_SANDBOX=process` (the default) is all of the
+   above: a real child process with no secrets and no shell. `container` runs the
+   same script inside a rootless container instead — no network, a read-only
+   root, capped memory and PIDs, the skill mounted read-only — and **fails
+   closed** if no container runtime is installed, because a level that silently
+   degrades to a weaker one is worse than no level at all.
 
-What this is *not*: kernel isolation. A Python process running as the same OS
-user can still read what that user can read, and can still open a socket. That
-is why the judgment gate and the approval sit on the path *before* execution,
-and why the environment carries no secrets. Stronger isolation is a deployment
-concern — see `docs/deployment.md`.
+What this is *not*, at the process level: kernel isolation. A Python process
+running as the same OS user can still read what that user can read, and can still
+open a socket. That is why the judgment gate and the approval sit on the path
+*before* execution, why the environment carries no secrets, and why the container
+level exists for anyone who needs the stronger guarantee — see
+`docs/deployment.md` for the residual risk.
 
 Two rules worth knowing from the industry guidance this follows (NVIDIA's
 sandboxing guidance, the OWASP agent cheat sheet, and Trail of Bits' 2025
@@ -36,6 +43,7 @@ import ast
 import asyncio
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -110,6 +118,13 @@ _FALLBACK_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\beval\s*\(|\bexec\s*\(|__import__|\bcompile\s*\("), "uses dynamic execution"),
     (re.compile(r"\brm\s+-rf\b|shutil\.rmtree|os\.remove|open\s*\(\s*['\"]/"), "touches the filesystem"),
 )
+
+
+#: The isolation levels a script may run under. Only these two: an "in-process"
+#: level is not offered, because running a stranger's code in Iris's own
+#: interpreter with Iris's own memory is not a sandbox — it is the absence of one,
+#: and a config key that can turn a boundary off will eventually be used to.
+EXEC_SANDBOX_LEVELS: tuple[str, ...] = ("process", "container")
 
 
 class ScriptError(Exception):
@@ -233,6 +248,77 @@ def _child_env(workdir: Path) -> dict[str, str]:
     return env
 
 
+def container_argv(
+    script: Path,
+    skill_root: Path,
+    args: Sequence[str] = (),
+) -> list[str]:
+    """The argv that runs one script inside a container.
+
+    Every guarantee the process level makes is kept — no shell, a wall-clock
+    timeout applied by the same `subprocess.run`, capped output — and the ones a
+    process cannot make are added:
+
+    - `--network none`: the socket a process level cannot take away.
+    - `--read-only` with the skill mounted `:ro`: the script cannot modify the
+      skill it came from, which is what makes an approved script stay approved.
+    - `--memory` / `--pids-limit`: a runaway loop dies at its own ceiling rather
+      than at the host's.
+    - `--user 65534:65534`: not root *inside* either — the rootless runtime keeps
+      root out of the host, and this keeps it out of the container.
+
+    `--rm` so a crashed run leaves nothing behind, and the skill directory is the
+    only host path that exists in there.
+    """
+    runtime = settings.exec_container_runtime
+    relative = script.relative_to(skill_root).as_posix()
+    return [
+        runtime,
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--memory",
+        settings.exec_container_memory,
+        "--pids-limit",
+        str(settings.exec_container_pids),
+        "--tmpfs",
+        "/tmp:rw,size=64m",
+        "--user",
+        "65534:65534",
+        "--workdir",
+        "/skill",
+        "--env",
+        "HOME=/tmp",
+        "--volume",
+        f"{skill_root}:/skill:ro",
+        settings.exec_container_image,
+        "python",
+        f"/skill/{relative}",
+        *[str(a) for a in args],
+    ]
+
+
+def _container_refusal() -> str | None:
+    """Why the container level cannot be honoured here, or `None` if it can.
+
+    Checked *before* anything runs, and the answer is a refusal rather than a
+    downgrade: `EXEC_SANDBOX=container` is a statement about what may run, and
+    quietly running it in a weaker sandbox would make the setting a lie.
+    """
+    runtime = settings.exec_container_runtime
+    if shutil.which(runtime) is None:
+        return (
+            f"EXEC_SANDBOX=container, but no {runtime!r} on PATH — refusing to run the "
+            "script rather than silently dropping to process isolation. Install a "
+            f"container runtime, or set EXEC_SANDBOX=process to accept process "
+            "isolation (no secrets in the environment, no shell, a timeout and a "
+            "capped output)."
+        )
+    return None
+
+
 def _cap(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -266,12 +352,28 @@ async def run_script(
     ceiling = max(0.1, float(ceiling))
     findings = pre_screen(path.read_text(encoding="utf-8", errors="replace"))
 
+    level = (settings.exec_sandbox or "process").strip().lower()
+    if level not in EXEC_SANDBOX_LEVELS:
+        return ScriptResult(
+            ok=False,
+            error=f"unknown EXEC_SANDBOX {level!r}; expected one of {', '.join(EXEC_SANDBOX_LEVELS)}",
+            findings=findings,
+        )
+    if level == "container":
+        refusal = _container_refusal()
+        if refusal is not None:
+            return ScriptResult(ok=False, error=refusal, findings=findings)
+
     # Deliberately a worker thread around `subprocess.run`, *not*
     # `asyncio.create_subprocess_exec`: the API process selects the Windows
     # Selector loop (psycopg cannot run on Proactor) where asyncio subprocess
     # support is unimplemented. Running a skill's script must not be the one
     # feature that only works in some event loops.
-    argv = [_python(), str(path), *[str(a) for a in args]]
+    argv = (
+        container_argv(path, workdir, args)
+        if level == "container"
+        else [_python(), str(path), *[str(a) for a in args]]
+    )
     try:
         completed = await asyncio.to_thread(
             subprocess.run,

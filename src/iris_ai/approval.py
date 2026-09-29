@@ -28,6 +28,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Protocol
 
 
 def effective_digest(args: object) -> str:
@@ -77,18 +78,50 @@ class ResumeVerdict:
         return not self.allowed
 
 
-class ReplayGuard:
-    """One `tool_call_id` grants once per thread."""
+class _GrantLog(Protocol):
+    """Where a spent approval is written down so it outlives the process.
 
-    def __init__(self) -> None:
+    Deliberately tiny — `iris_ai.kernel.journal.TurnJournal` satisfies it — because
+    the guard should not care what the backing store is, only that it can answer
+    "was this call_id already granted?" after a restart.
+    """
+
+    def granted(self, thread: str, call_id: str) -> bool:  # pragma: no cover - protocol
+        ...
+
+    def approval_granted(
+        self, thread: str, turn: str, *, call_id: str, action: str = ""
+    ) -> None:  # pragma: no cover - protocol
+        ...
+
+
+class ReplayGuard:
+    """One `tool_call_id` grants once per thread — **and across a restart**.
+
+    The in-memory set is the fast path. Without `log` the guard forgets on exit,
+    which is a real hole in a service that restarts: a resume delivered after a
+    restart would look like a first grant. With a journal behind it, "already
+    granted" survives the process, which is what the design doc means by durable
+    approvals.
+    """
+
+    def __init__(self, log: _GrantLog | None = None) -> None:
         self._granted: set[tuple[str, str]] = set()
+        self._log = log
 
     def granted(self, thread: str, call_id: str) -> bool:
-        return bool(call_id) and (thread, call_id) in self._granted
+        if not call_id:
+            return False
+        if (thread, call_id) in self._granted:
+            return True
+        return bool(self._log is not None and self._log.granted(thread, call_id))
 
     def grant(self, thread: str, call_id: str) -> None:
-        if call_id:
-            self._granted.add((thread, call_id))
+        if not call_id:
+            return
+        self._granted.add((thread, call_id))
+        if self._log is not None:
+            self._log.approval_granted(thread, "", call_id=call_id)
 
     def clear(self, thread: str) -> None:
         self._granted = {key for key in self._granted if key[0] != thread}

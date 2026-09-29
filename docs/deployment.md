@@ -91,6 +91,36 @@ safe. If you host skills you did not write, put the container itself behind the
 boundary — a per-deploy sandbox or a separate machine — rather than relying on
 the approval prompt.
 
+### The container level (`EXEC_SANDBOX=container`)
+
+When a stronger guarantee is needed, the same script runs inside a container
+instead of as a child process:
+
+| Flag | What it takes away |
+|---|---|
+| `--network none` | the socket a process level cannot take away |
+| `--read-only` + the skill mounted `:ro` | the ability to rewrite the script that was approved |
+| `--memory` / `--pids-limit` | the ability to take the host down with a runaway loop |
+| `--user 65534:65534` | root inside the container, too |
+| `--rm` | a crashed run leaving anything behind |
+
+The skill's own directory is the only host path that exists in there. Set
+`EXEC_CONTAINER_IMAGE` to an image you trust (the default is
+`python:3.13-slim`), and note that the image's contents are part of what runs —
+pin it by digest if that matters to you.
+
+**Fails closed, on purpose.** If `EXEC_SANDBOX=container` and no container
+runtime is on `PATH`, the script does **not** run and the refusal names both ways
+out. A level that quietly drops to a weaker one when its dependency is missing is
+a level nobody can rely on, and a test asserts the refusal happens *before* the
+subprocess is even attempted.
+
+**Residual risk, stated plainly:** a rootless container is a real boundary for
+what a script can *reach* (network, filesystem, resources), and it is not a
+hypervisor — a kernel exploit or a misconfigured runtime is still a kernel
+exploit. It is also only as good as the image: a `latest` tag that changes under
+you is a different program than the one you reviewed.
+
 ## Computer-use
 
 Screen control is **off by default** (`COMPUTER_ENABLED=false`), and off means

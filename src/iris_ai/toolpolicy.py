@@ -61,6 +61,12 @@ class ToolClass(StrEnum):
     CREDENTIALED = "credentialed"  # acts using a provider key (none today)
     DELIVERY = "delivery"  # sends to a human (Telegram, broadcast)
     CONTROL = "control"  # drives a browser or a desktop
+    # A tool that arrived from outside the core surface (an MCP server, a plugin).
+    # Its own source's verdict — see `ExternalTool` — is what actually decides;
+    # this class exists so `external=deny` is a one-line kill switch for every
+    # external tool at once, and so an external tool is a *known* name to the
+    # override parser instead of looking like a typo.
+    EXTERNAL = "external"
 
 
 class Policy(StrEnum):
@@ -80,6 +86,12 @@ CLASS_DEFAULTS: dict[ToolClass, Policy] = {
     ToolClass.DELIVERY: Policy.ALLOW,
     ToolClass.CREDENTIALED: Policy.ASK,
     ToolClass.CONTROL: Policy.ASK,
+    # Never reached for a tool whose source stated a verdict (it is always
+    # appended after this one, and it is more specific), and it must not be
+    # `deny`: that would close every external tool before its source could say
+    # anything. `ask` is the honest default for "someone else's tool, class
+    # unknown" — and it is the safe direction if a future declaration forgets.
+    ToolClass.EXTERNAL: Policy.ASK,
 }
 
 
@@ -153,6 +165,59 @@ class ToolDecision:
     @property
     def denied(self) -> bool:
         return self.policy is Policy.DENY
+
+
+# ── external tools — the ones that arrive with their own class ───────────────
+#
+# A plugin or an MCP server contributes tools whose names nobody can list ahead of
+# time. They deliberately do **not** go in `TOOL_DECLARATIONS`: a coverage test
+# asserts that table matches `TOOL_NAMES` in both directions, which is what makes
+# "every core tool is classified" a checkable claim. An external name in there
+# would have nothing to check it against and would quietly weaken that.
+#
+# So external tools declare themselves here, `declaration()` consults core first,
+# and a plugin that tries to reclassify a core tool is refused at registration.
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalTool:
+    """A tool from outside the core surface, plus the verdict its source reached.
+
+    The policy is carried rather than derived because the source is the only
+    thing that knows it: an MCP server's trust decides whether its non-read-only
+    tool is denied, asked about or allowed, and that is not a property of any
+    class of tools.
+    """
+
+    cls: ToolClass
+    policy: Policy
+    reason: str
+    source: str  # who contributed it, e.g. the MCP server's name
+    surface: str = "extended"
+
+
+EXTERNAL_TOOLS: dict[str, ExternalTool] = {}
+
+
+def declare_external(name: str, tool: ExternalTool) -> None:
+    """Register an externally-supplied tool. Core names are not up for grabs."""
+    if name in TOOL_DECLARATIONS:
+        raise PolicyError(f"{name!r} is a core tool; an external source may not redeclare it")
+    if name in EXTERNAL_TOOLS:
+        raise PolicyError(f"external tool {name!r} is already declared")
+    EXTERNAL_TOOLS[name] = tool
+
+
+def forget_external(prefix: str = "") -> int:
+    """Drop external declarations: all of them, or one `server/` prefix.
+
+    A reconnecting server re-declares what it has; without this its second
+    connection would look like a duplicate registration instead of a refresh.
+    """
+    doomed = [name for name in EXTERNAL_TOOLS if name.startswith(prefix)]
+    for name in doomed:
+        del EXTERNAL_TOOLS[name]
+    return len(doomed)
 
 
 # ── namespaces — the catalog the prompt gets instead of the schemas ─────────
@@ -232,7 +297,7 @@ def deferred_catalog(deferred: Sequence[str], *, loader: str = LOADER_TOOL) -> s
     actionable pointer rather than a haystack. Empty when nothing was deferred:
     a prompt section that says "nothing here" is pure per-turn cost.
     """
-    hidden = [name for name in deferred if name in TOOL_DECLARATIONS]
+    hidden = [name for name in deferred if name in TOOL_DECLARATIONS or name in EXTERNAL_TOOLS]
     if not hidden:
         return ""
     lines = [
@@ -253,15 +318,30 @@ def deferred_catalog(deferred: Sequence[str], *, loader: str = LOADER_TOOL) -> s
         # `iris tools` warns about the missing line.
         label = f"- {namespace} — {purpose}" if purpose else f"- {namespace}"
         lines.append(f"{label}: {', '.join(members)}")
+    # External tools group by their *source* rather than by a declared namespace:
+    # a connected server's tools are one capability the model either reaches for
+    # or does not, and "the wiki server" is the useful thing to say about them.
+    external = [name for name in hidden if name in EXTERNAL_TOOLS]
+    for source in dict.fromkeys(EXTERNAL_TOOLS[n].source for n in external):
+        members = [n for n in external if EXTERNAL_TOOLS[n].source == source]
+        lines.append(f"- {source} — tools contributed by that source: {', '.join(members)}")
     return "\n".join(lines)
 
 
 def declaration(name: str) -> Declaration:
-    """The declaration for a tool. An undeclared name is a programming error."""
-    try:
-        return TOOL_DECLARATIONS[name]
-    except KeyError:  # pragma: no cover - covered by the coverage test
-        raise PolicyError(f"tool {name!r} has no declared class") from None
+    """The declaration for a tool. An undeclared name is a programming error.
+
+    Core first, then whatever an external source declared: a plugin may add tools
+    but never reclassify a core one (`declare_external` refuses that at
+    registration), so this lookup never has to guess between two claims.
+    """
+    core = TOOL_DECLARATIONS.get(name)
+    if core is not None:
+        return core
+    external = EXTERNAL_TOOLS.get(name)
+    if external is not None:
+        return Declaration(external.cls, external.surface)
+    raise PolicyError(f"tool {name!r} has no declared class")
 
 
 def parse_overrides(
@@ -315,33 +395,40 @@ def resolve(name: str, overrides: str | Mapping[str, str | Policy] | None = None
 
     class_override = rules.get(decl.cls.value)
     tool_override = rules.get(name)
+    # What an external source decided for its own tool. It sits between the class
+    # default and the owner's overrides: the source knows more about its tool than
+    # the class does, and the owner knows more than both.
+    external = EXTERNAL_TOOLS.get(name)
 
     policies = [CLASS_DEFAULTS[decl.cls]]
+    if external is not None:
+        policies.append(external.policy)
     if class_override is not None:
         policies.append(class_override)
     if tool_override is not None:
         policies.append(tool_override)
 
     if Policy.DENY in policies:
-        source = (
-            "override:tool"
-            if tool_override is Policy.DENY
-            else "override:class"
-            if class_override is Policy.DENY
-            else "class-default"
-        )
-        return ToolDecision(
-            tool=name,
-            cls=decl.cls,
-            policy=Policy.DENY,
-            source=source,
-            reason=f"{decl.cls.value} is denied for {name!r} ({source})",
-        )
+        if tool_override is Policy.DENY:
+            source = "override:tool"
+            reason = f"{decl.cls.value} is denied for {name!r} (override:tool)"
+        elif class_override is Policy.DENY:
+            source = "override:class"
+            reason = f"{decl.cls.value} is denied for {name!r} (override:class)"
+        elif external is not None and external.policy is Policy.DENY:
+            source = "external"
+            reason = external.reason
+        else:
+            source = "class-default"
+            reason = f"{decl.cls.value} is denied for {name!r} (class-default)"
+        return ToolDecision(tool=name, cls=decl.cls, policy=Policy.DENY, source=source, reason=reason)
 
     if tool_override is not None:
         return ToolDecision(name, decl.cls, tool_override, "override:tool")
     if class_override is not None:
         return ToolDecision(name, decl.cls, class_override, "override:class")
+    if external is not None:
+        return ToolDecision(name, decl.cls, external.policy, "external", external.reason)
     return ToolDecision(name, decl.cls, CLASS_DEFAULTS[decl.cls], "class-default")
 
 
@@ -353,21 +440,22 @@ def unknown_overrides(overrides: str | Mapping[str, str] | None) -> list[str]:
     """
     parsed = parse_overrides(overrides)
     classes = {c.value for c in ToolClass}
-    return sorted(k for k in parsed if k not in TOOL_DECLARATIONS and k not in classes)
+    known = set(TOOL_DECLARATIONS) | set(EXTERNAL_TOOLS)
+    return sorted(k for k in parsed if k not in known and k not in classes)
 
 
 def policy_snapshot(overrides: str | Mapping[str, str | Policy] | None = None) -> list[dict]:
     """Every declared tool with its resolved policy — the CLI/API readout."""
     rows = []
-    for name, decl in TOOL_DECLARATIONS.items():
+    for name in (*TOOL_DECLARATIONS, *EXTERNAL_TOOLS):
         decision = resolve(name, overrides)
         rows.append(
             {
                 "tool": name,
-                "class": decl.cls.value,
+                "class": decision.cls.value,
                 "policy": decision.policy.value,
                 "source": decision.source,
-                "surface": decl.surface,
+                "surface": declaration(name).surface,
             }
         )
     return rows
@@ -393,10 +481,15 @@ def surface_order(
     `budget <= 0` means "no posting budget" (everything visible) rather than
     "hide everything", because the second is never what anyone means.
     """
-    declared = set(present) if present is not None else set(TOOL_DECLARATIONS)
+    # Core *and* external: an external tool is in `present` because something
+    # registered it, so leaving it out of both lists here would drop it from the
+    # visible set *and* from the deferred one — invisibly.
+    table = {**{name: Declaration(t.cls, t.surface) for name, t in EXTERNAL_TOOLS.items()}, **TOOL_DECLARATIONS}
+    declared = set(present) if present is not None else set(table)
+    declared &= set(table)
     promoted_set = set(promoted) & declared
-    core = [n for n, d in TOOL_DECLARATIONS.items() if d.surface == "core" and n in declared]
-    extended = [n for n, d in TOOL_DECLARATIONS.items() if d.surface == "extended" and n in declared]
+    core = [n for n, d in table.items() if d.surface == "core" and n in declared]
+    extended = [n for n, d in table.items() if d.surface == "extended" and n in declared]
 
     rest = [n for n in extended if n not in promoted_set]
     visible = list(core) + [n for n in extended if n in promoted_set]

@@ -38,6 +38,47 @@ class LLMError(RuntimeError):
     pass
 
 
+# LangChain names its message roles for its own graph, not for providers: a
+# `HumanMessage`/`AIMessage` arrives as type "human"/"ai". LiteLLM forwards the
+# role verbatim, so leaking those names reached Gemini/Groq/OpenRouter as
+# `{"role": "human"}` and failed on every provider at once — a crash whose
+# message named nothing in this repo. Normalise at the provider boundary so a
+# stray LangChain role can never escape again, and fail fast (with an
+# actionable error) on any role that is genuinely unknown.
+_ROLE_ALIASES = {"human": "user", "ai": "assistant"}
+_PROVIDER_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
+
+def _to_provider_messages(messages: Sequence[dict]) -> list[dict]:
+    """Map LangChain role aliases onto provider roles; reject anything unknown."""
+    out: list[dict] = []
+    for m in messages:
+        role = str(m.get("role", ""))
+        mapped = _ROLE_ALIASES.get(role, role)
+        if mapped not in _PROVIDER_ROLES:
+            raise LLMError(
+                f"message role {role!r} is not a provider role "
+                f"(expected one of {sorted(_PROVIDER_ROLES)})"
+            )
+        out.append({**m, "role": mapped} if mapped != role else m)
+    return out
+
+
+def _sampling_kwargs(model: str, temperature: float) -> dict[str, Any]:
+    """Sampling knobs, provider- and generation-aware.
+
+    Gemini 3+ deprecates `temperature`/`top_p`/`top_k`, and LiteLLM warns that a
+    temperature below 1.0 on those models can cause infinite loops and degraded
+    reasoning. Iris defaults to 0.2, so every Gemini-3 call both warned and ran
+    with the exact setting the provider says not to use. Omit it for those
+    models and let the provider default (1.0) stand; every other provider keeps
+    the configured temperature.
+    """
+    if model.startswith("gemini/") and "gemini-3" in model:
+        return {}
+    return {"temperature": temperature}
+
+
 def _cached_tokens(usage: Any) -> int:
     """Cache-hit tokens, provider-agnostic.
 
@@ -187,6 +228,7 @@ class LLMClient:
         timeout: float = 90.0,
         max_attempts: int = 4,
     ) -> str:
+        messages = _to_provider_messages(messages)
         candidates = settings.llm_candidates(tier)
         last_exc: Exception | None = None
         for idx, (provider, model, auth) in enumerate(candidates):
@@ -196,7 +238,7 @@ class LLMClient:
                 kwargs: dict[str, Any] = dict(
                     model=_model,
                     messages=list(messages),
-                    temperature=temperature,
+                    **_sampling_kwargs(_model, temperature),
                     timeout=timeout,
                     caching=settings.llm_caching,
                     **_auth,
@@ -242,6 +284,7 @@ class LLMClient:
         {"name": str, "args": dict} and thinking is any model reasoning
         (`reasoning_content` / `reasoning` on the message, provider-agnostic).
         """
+        messages = _to_provider_messages(messages)
         candidates = settings.llm_candidates(tier)
         last_exc: Exception | None = None
         for idx, (provider, model, auth) in enumerate(candidates):
@@ -251,7 +294,7 @@ class LLMClient:
                 kwargs: dict[str, Any] = dict(
                     model=_model,
                     messages=list(messages),
-                    temperature=temperature,
+                    **_sampling_kwargs(_model, temperature),
                     timeout=timeout,
                     caching=settings.llm_caching,
                     **_auth,
@@ -316,6 +359,7 @@ class LLMClient:
         Retries before the first chunk only; a mid-stream failure surfaces
         whatever was buffered so a partial reply is never lost.
         """
+        messages = _to_provider_messages(messages)
         candidates = settings.llm_candidates(tier)
         last: Exception | None = None
         for idx, (provider, model, auth) in enumerate(candidates):
@@ -326,7 +370,7 @@ class LLMClient:
                 kwargs: dict[str, Any] = dict(
                     model=model,
                     messages=list(messages),
-                    temperature=temperature,
+                    **_sampling_kwargs(model, temperature),
                     timeout=timeout,
                     caching=settings.llm_caching,
                     **auth,

@@ -1,0 +1,36 @@
+# The personal-assistant profile, as a manifest.
+#
+# Point the harness at it and the whole app changes — memory, identity and
+# channels — without touching a line of Python:
+#
+#     HARNESS_CONFIG=examples/assistant/harness.toml iris init
+#     HARNESS_CONFIG=examples/assistant/harness.toml iris chat
+#
+# Precedence is  defaults  <  this file  <  environment  <  CLI flag, so setting
+# WORKSPACE_DIR in the environment still wins. Nothing secret belongs here; keys
+# stay in .env.
+
+# Its own workspace, so the example's memory never mixes with yours.
+workspace_dir = "examples/assistant/workspace"
+sandbox_dir = "examples/assistant/workspace/sandbox"
+# Its own index files too: the workspace is the source of truth, and these are the
+# derived views beside it. Delete them and the next boot rebuilds them.
+sqlite_path = "examples/assistant/config/memory.db"
+checkpointer_path = "examples/assistant/config/checkpoints.db"
+# What a backend groups this agent's spans and traces by.
+agent_name = "iris"
+
+# ── Channels ────────────────────────────────────────────────────────────────
+# The assistant's front door is Telegram, over the bundled MCP bridge. Drop this
+# section (or set `enabled = []`) for a terminal-only agent.
+[channels]
+enabled = ["telegram"]
+disabled = []
+
+# ── Capability backends ─────────────────────────────────────────────────────
+# The example runs on the same zero-service defaults as everything else: one
+# SQLite file for recall, one for threads, no daemon. Uncomment to differ.
+# memory_backend       = "pgvector"   # a service; set POSTGRES_DSN too
+# checkpointer_backend = "sqlite"
+# model_backend        = "litellm"
+# judge_backend        = "jev"

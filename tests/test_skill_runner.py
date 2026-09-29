@@ -274,6 +274,100 @@ def test_the_interpreter_is_the_one_running_iris():
     assert _python() == sys.executable
 
 
+# ── the isolation level ─────────────────────────────────────────────────────
+
+
+def test_the_container_argv_keeps_every_guarantee_and_adds_the_hosts(tmp_path):
+    """Asserted at the argv level on purpose: this is what runs, and asserting it
+    needs no Docker — so the promise is tested even where the runtime is absent.
+    """
+    from iris_ai.skills.runner import container_argv
+
+    _files, _registry, skill = _install(tmp_path)
+    script = resolve_script(skill, "scripts/extract.py")
+    argv = container_argv(script, tmp_path / "skills" / "pdf-notes", ["arg one", "--flag"])
+
+    assert argv[0] == "docker" and argv[1] == "run"
+    assert "--network" in argv and argv[argv.index("--network") + 1] == "none"
+    assert "--read-only" in argv
+    assert "--rm" in argv
+    assert argv[argv.index("--memory") + 1] == "512m"
+    assert argv[argv.index("--pids-limit") + 1] == "128"
+    assert argv[argv.index("--user") + 1] == "65534:65534"  # not root inside either
+    # The skill is the only host path in there, and it is read-only: an approved
+    # script cannot rewrite itself into a different one.
+    mount = argv[argv.index("--volume") + 1]
+    assert mount.endswith(":/skill:ro")
+    assert str(tmp_path / "skills" / "pdf-notes") in mount
+    # No shell anywhere: the container runs the interpreter directly.
+    assert argv[argv.index("python:3.13-slim") + 1] == "python"
+    assert argv[-3:] == ["/skill/scripts/extract.py", "arg one", "--flag"]
+
+
+def test_the_default_level_is_process_and_runs_a_real_script(tmp_path):
+    from iris_ai.config import settings
+
+    assert settings.exec_sandbox == "process"
+
+
+async def test_the_container_level_fails_closed_without_a_runtime(tmp_path, monkeypatch):
+    """The whole point of a level: it may refuse, but it may not downgrade."""
+    from iris_ai.config import settings
+
+    monkeypatch.setattr(settings, "exec_sandbox", "container")
+    monkeypatch.setattr(settings, "exec_container_runtime", "iris-not-a-runtime")
+
+    called = {"ran": False}
+
+    def _never(*args, **kwargs):  # pragma: no cover - reaching this is the failure
+        called["ran"] = True
+        raise AssertionError("nothing may run when the level cannot be honoured")
+
+    monkeypatch.setattr("iris_ai.skills.runner.subprocess.run", _never)
+    _files, _registry, skill = _install(tmp_path, body="print('should not run')\n")
+    result = await run_script(skill, "scripts/extract.py")
+
+    assert called["ran"] is False
+    assert result.ok is False
+    assert "EXEC_SANDBOX=container" in result.error
+    assert "EXEC_SANDBOX=process" in result.error  # the two ways out, named
+
+
+async def test_the_container_level_runs_the_runtime_when_it_exists(tmp_path, monkeypatch):
+    """With a runtime present, the same `subprocess.run` path runs the container."""
+    import subprocess
+
+    from iris_ai.config import settings
+
+    monkeypatch.setattr(settings, "exec_sandbox", "container")
+    monkeypatch.setattr(settings, "exec_container_runtime", sys.executable)
+    seen: dict = {}
+
+    def _capture(argv, **kwargs):
+        seen["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, b"in container\n", b"")
+
+    monkeypatch.setattr("iris_ai.skills.runner.subprocess.run", _capture)
+    _files, _registry, skill = _install(tmp_path)
+    result = await run_script(skill, "scripts/extract.py")
+
+    assert result.ok is True
+    assert result.stdout.startswith("in container")
+    assert seen["argv"][1] == "run"
+    assert "--network" in seen["argv"]
+
+
+async def test_an_unknown_level_is_refused_by_name(tmp_path, monkeypatch):
+    from iris_ai.config import settings
+
+    monkeypatch.setattr(settings, "exec_sandbox", "in_process")
+    _files, _registry, skill = _install(tmp_path)
+    result = await run_script(skill, "scripts/extract.py")
+    assert result.ok is False
+    assert "in_process" in result.error
+    assert "container" in result.error
+
+
 def test_run_works_on_the_selector_loop_the_api_selects(tmp_path):
     """Regression, found by the full suite rather than by this file: `iris_ai.api`
     sets the Windows Selector event loop at import (psycopg needs it), and

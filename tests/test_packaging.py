@@ -59,6 +59,36 @@ def test_the_console_entry_point_is_declared():
     assert _pyproject()["project"]["scripts"]["iris"] == "iris_ai.cli.main:app"
 
 
+def test_the_default_profile_templates_are_the_tracked_workspace_files():
+    """One neutral default, two places it must exist.
+
+    The wheel carries it (so an installed `iris init` can seed a workspace) and the
+    repo tracks it (so a clone reads the same contract without installing
+    anything). Byte-equality is the cheap way to make drift impossible — a second
+    copy that says something different is worse than no copy.
+    """
+    templates = ROOT / "src" / "iris_ai" / "templates"
+    workspace = ROOT / "workspace"
+    pairs = {"AGENTS.md": "AGENTS.md", "WORKSPACE-README.md": "README.md"}
+    for packaged, tracked in pairs.items():
+        assert (templates / packaged).read_text(encoding="utf-8") == (
+            workspace / tracked
+        ).read_text(encoding="utf-8"), f"{packaged} and workspace/{tracked} have drifted"
+
+
+def test_the_neutral_default_does_not_claim_a_persona():
+    """Phase 7's other half: the *default* profile is neutral. The personal
+    assistant lives in `examples/assistant/`, and the harness's own default must
+    not assume Telegram, a name, or a life."""
+    text = (ROOT / "src" / "iris_ai" / "templates" / "AGENTS.md").read_text(encoding="utf-8")
+    lowered = text.lower()
+    for persona in ("telegram", "daily assistant", "morning briefing", "her owner"):
+        assert persona not in lowered, f"the default contract assumes {persona!r}"
+    assert (ROOT / "examples" / "assistant" / "workspace" / "AGENTS.md").is_file(), (
+        "the personal-assistant profile must live in examples/assistant/"
+    )
+
+
 def test_the_support_doc_exists_and_names_the_python_floor():
     doc = (ROOT / "docs" / "support.md").read_text(encoding="utf-8")
     assert "requires-python" in doc or "Python" in doc
@@ -102,6 +132,23 @@ def test_every_setting_is_documented_in_the_sample_config():
         if name.upper() not in keys and name.upper() not in INTERNAL_SETTINGS
     )
     assert not undocumented, f"settings missing from .env.example: {undocumented}"
+
+
+def test_the_sample_config_actually_loads():
+    """A sample config that cannot be parsed is worse than a missing one.
+
+    `cp .env.example .env` is the documented first step, and pydantic-settings
+    requires **JSON** for a complex-typed setting (list/tuple/dict) because it
+    decodes those *before* validation. The sample shipped
+    `DREAM_LIGHT_WEIGHTS=0.25,0.3,...`, which is the shape a human would write and
+    which raised `SettingsError` from `iris_ai.config` on *every* command — so
+    the quickstart was broken from the first line, and nothing caught it because
+    the tests never constructed `Settings` from the sample. Now one does.
+    """
+    from iris_ai.config import Settings
+
+    settings = Settings(_env_file=ENV_EXAMPLE)
+    assert settings.dream_light_weights == (0.25, 0.3, 0.1, 0.1, 0.25)
 
 
 def test_the_wheel_force_includes_the_shipped_skills():

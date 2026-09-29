@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "local-http-server-disabled": {
+      "url": "http://127.0.0.1:8100/mcp",
+      "trust": "owner",
+      "approval": "auto",
+      "enabled": false
+    },
+    "stdio-server-disabled": {
+      "command": "uvx",
+      "args": ["mcp-server-notes"],
+      "env": { "NOTES_TOKEN": "${MCP_NOTES_TOKEN}" },
+      "enabled": false
+    }
+  }
+}

@@ -1,0 +1,34 @@
+# Iris — assistant workspace
+
+This directory is the reference assistant's **memory workspace** — the source of
+truth. Everything it remembers lives here as plain, human-readable Markdown.
+There is no hidden state: if it's not on disk, it doesn't know it.
+
+```
+AGENTS.md              ← human-written instructions (identity contract, always injected)
+USER.md                ← who YOU are: profile, preferences, communication style (curated)
+MEMORY.md              ← durable facts & decisions about your life (curated by dreaming)
+DREAMS.md              ← the dream diary: what consolidation changed and why (human-readable)
+memory/YYYY-MM-DD.md   ← daily notes: everything that happened, dated, append-only (episodic)
+skills/*.md            ← procedures it wrote for itself (procedural memory)
+config/iris.json       ← identity born during onboarding (name, personality, tone, timezone)
+.dreams/               ← staging area for consolidation candidates (machine-facing)
+```
+
+**Rules**
+
+- MEMORY.md stays small and compact. Detail lives in `memory/`. Consolidation
+  enforces this budget.
+- Daily notes are append-only and never auto-injected into the prompt; they are
+  searched on demand.
+- Only MEMORY.md and USER.md are injected at session start (within a token
+  budget) — they are the curated core.
+- DREAMS.md is for reading, not for the prompt.
+
+The index (SQLite FTS, or Postgres + pgvector) is a *derived* view of these
+files. If you delete the database, it rebuilds the index from the files. Never
+the other way around.
+
+`MEMORY.md`, `USER.md`, `DREAMS.md`, `memory/` and `skills/` are personal data.
+The repository ignores them, so a `git add -A` in this example does not publish
+someone's life.

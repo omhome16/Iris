@@ -36,11 +36,18 @@ index, so the pgvector image is a hard requirement (see
 ## Verify
 
 ```bash
+uv sync --all-extras                                            # the optional surfaces matter here
 uv run ruff check .                                             # lint — CI fails on this
-uv run pytest tests -q --ignore=tests/test_memory_pipeline.py    # fast: no DB, no network
+uv run pytest tests -q --ignore=tests/test_memory_pipeline.py \
+  --ignore=tests/test_retrieval_gate.py                          # fast: no DB, no network
 uv run pytest tests -q                                           # everything, needs Postgres
 uv run iris --help                                               # if you touched the CLI
 ```
+
+`--all-extras` installs the ACP and OpenTelemetry extras. They are optional for
+the *harness* and required for their own tests, so without them those tests skip —
+and a suite that reports green while twelve tests never ran is the failure mode
+this line exists to prevent. CI syncs them for the same reason.
 
 The fast suite is genuinely offline: **no API calls, no database, no network**.
 If your change makes it need one, it belongs in `tests/test_memory_pipeline.py`
@@ -81,16 +88,20 @@ changes behaviour should say what the new behaviour is and what it replaced.
 
 | I want to… | Start here |
 |---|---|
-| add a tool | `src/iris_ai/toolpolicy.py` (the class declaration) + `src/iris_ai/agent/tools.py` |
+| add a tool | `src/iris_ai/toolpolicy.py` (the class declaration) + `src/iris_ai/agent/tools.py` — or *without* editing core, a package exposing the `iris_ai.tools` entry point |
 | add a skill | `skills/<name>/SKILL.md`, then `uv run iris skills validate` |
-| add a channel | `src/iris_ai/channels/brain.py` (`BrainClient`); the bridge is the worked example |
+| add a channel | `src/iris_ai/channels/base.py` (the `Channel` protocol) + `src/iris_ai/channels/registry.py` — or out of tree via the `iris_ai.channels` entry point; enable it in `CHANNELS_ENABLED` / `config/harness.toml` |
+| add a client (something that talks to Iris) | `src/iris_ai/channels/brain.py` (`BrainClient`); the bridge is the worked example |
 | add a specialist | `src/iris_ai/agents/roles.py`, with its bounds explicit |
-| add a guard | `src/iris_ai/guards.py` (it can only refuse) |
+| add a guard or a lifecycle hook | `src/iris_ai/guards.py` (a guard can only refuse); hooks register on the bus in `src/iris_ai/hooks.py` |
 | add a setting | `src/iris_ai/config.py` **and** `.env.example` (a test enforces both directions) |
 | add an eval metric | `iris/eval/stats.py` — with an interval, not a point estimate |
 
-[`docs/extending.md`](docs/extending.md) has the detailed version of each of
-these, including the test that will catch you.
+Run `uv run iris plugins channels|tools|hooks` to see what is registered and
+where it came from. [`docs/extending.md`](docs/extending.md) has the detailed
+version of each of these, including the test that will catch you, and
+[`docs/redesign/plugin-architecture.md`](docs/redesign/plugin-architecture.md)
+explains the plug-and-play layer as a whole.
 
 ## Project rules
 
@@ -117,7 +128,12 @@ these, including the test that will catch you.
 | `docs/extending.md` | recipes for extension points |
 | `docs/jev.md` | the judgment layer, every integration, the audit of model calls |
 | `docs/deployment.md` | hosting, volumes, secrets, guards/budgets, backups |
-| `docs/support.md` | support matrix, what CI verifies, how a release is cut |
+| `docs/support.md` | support matrix, the compatibility matrix, what CI verifies, how a release is cut |
+| `docs/quickstart.md` | the five-minute path, and what each failure means |
+| `docs/plugins.md` | installing or writing a plugin: entry points, Protocols, a worked example |
+| `docs/acp.md` | Iris in an editor, and the decisions the adapter makes |
+| `docs/observability.md` | traces, GenAI spans, the cost ledger |
+| `docs/redesign/` | the redesign's deep-dives, the phased plan, and the answers to its open questions |
 | `CHANGELOG.md` | per-phase notes, newest first, numbers grounded in a command |
 | `docs/superpowers/` | specs, plans and per-phase execution logs |
 

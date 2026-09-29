@@ -38,9 +38,11 @@ from iris_ai.agent.compaction import compact_turn, messages_tokens, trim_message
 from iris_ai.agent.context import ContextAssembler
 from iris_ai.agent.runtime import Runtime
 from iris_ai.agent.tools import dispatch, tool_schemas, tool_surface
-from iris_ai.approval import ApprovalGate, ApprovalPolicy
+from iris_ai.approval import ApprovalGate, ApprovalPolicy, ReplayGuard
 from iris_ai.config import settings
-from iris_ai.guards import GuardChain
+from iris_ai.guards import GuardChain, Verdict
+from iris_ai.hooks import HookBus
+from iris_ai.kernel import TurnKernel, side_effecting
 from iris_ai.memory.capture import condense, judge_capture, note_line, worth_capturing
 from iris_ai.memory.chunking import estimate_tokens
 from iris_ai.onboarding import OnboardingWizard
@@ -214,6 +216,11 @@ class ChatGraph:
         # The guard chain is per graph, and its lifetime is the point: the
         # turn-scoped detectors reset every turn, the day-scoped budget does not.
         self.guards = runtime.guards if runtime.guards is not None else GuardChain.from_settings()
+        # The lifecycle hook bus. The guard chain is its first subscriber — which
+        # is the whole point of the seam: policy, audit and instrumentation attach
+        # to a turn without the loop that runs it knowing about any of them.
+        self.hooks = runtime.hooks if runtime.hooks is not None else HookBus()
+        self._install_hooks()
         # Approval integrity (P8, audit G4): the gate remembers which call_ids
         # were granted, and `_pending` remembers what was shown so a resume can be
         # bound to it (`None` after a restart — the checkpoint is then the source).
@@ -221,10 +228,52 @@ class ChatGraph:
             policy=ApprovalPolicy(
                 bind_digest=settings.approval_bind_digest,
                 guard_replay=settings.approval_guard_replay,
-            )
+            ),
+            # Durable approvals: the journal is what keeps "already granted" true
+            # across a restart. In-memory only, a resume delivered after a restart
+            # would look like a first grant.
+            replay=ReplayGuard(runtime.journal),
         )
+        # Phase 5: the tool boundary. It exists so a turn that was killed mid-tool
+        # is not silently re-run: a settled call replays from the journal, and a
+        # side-effecting call that may or may not have happened is refused rather
+        # than repeated. `runtime.journal is None` makes it a no-op, which is what
+        # a library caller who built a bare Runtime gets.
+        self.kernel = TurnKernel(runtime.journal)
         self._pending: dict[str, dict] = {}
         self.graph = self._build()
+
+    def _install_hooks(self) -> None:
+        """Register Iris's built-in lifecycle hooks on the bus.
+
+        Today that is the pre-tool guard chain, re-expressed as an ordinary
+        subscriber rather than a special case in the loop — so a built-in policy
+        and a plugin hook run through the same ordered bus. Registration is
+        idempotent, so a bus shared across graphs never doubles the guards.
+        """
+        if "guards" in self.hooks.subscribers("pre_tool"):
+            return
+
+        def pre_tool(tool: str, args: object) -> Verdict:
+            verdict = self.guards.before(tool, args)
+            self.guards.record(verdict, tool, args)
+            return verdict
+
+        def post_tool(tool: str, ok: bool) -> None:
+            self.guards.after(tool, ok=ok)
+
+        def turn_start() -> None:
+            self.guards.reset_turn()
+
+        def turn_end(usage=None) -> None:
+            self.guards.end_turn(usage)
+
+        # Negative priority: built-in policy runs before an add-on hook can
+        # observe (or try to widen) a decision it did not make.
+        self.hooks.on("pre_tool", pre_tool, priority=-100, name="guards")
+        self.hooks.on("post_tool", post_tool, priority=-100, name="guards")
+        self.hooks.on("turn_start", turn_start, priority=-100, name="guards")
+        self.hooks.on("turn_end", turn_end, priority=-100, name="guards")
 
     async def _read_pending(self, config: dict) -> tuple[dict | None, object | None]:
         """`(pending_payload, snapshot)` read from the checkpoint.
@@ -437,14 +486,16 @@ class ChatGraph:
         scope_token = current_tool_scope.set((origin, active))
         try:
             for tc in last.tool_calls:
-                # The guard chain runs *before* dispatch, outside the tool, so a
-                # refusal costs nothing and never reaches a provider. Order is
-                # budget → circuit → spiral/dedup; see iris/guards.py.
-                verdict = self.guards.before(tc["name"], tc["args"])
-                self.guards.record(verdict, tc["name"], tc["args"])
-                if verdict.refused:
+                # The pre-tool hook chain runs *before* dispatch, outside the
+                # tool, so a refusal costs nothing and never reaches a provider.
+                # The built-in guard chain is its first subscriber (budget →
+                # circuit → spiral/dedup; see iris/guards.py), and a plugin hook
+                # can observe or refuse through the same ordered bus.
+                verdicts = await self.hooks.emit("pre_tool", tool=tc["name"], args=tc["args"])
+                refusal = next((v for v in verdicts if getattr(v, "refused", False)), None)
+                if refusal is not None:
                     out = json.dumps(
-                        {"ok": False, "error": verdict.reason, "guard": str(verdict.guard)},
+                        {"ok": False, "error": refusal.reason, "guard": str(refusal.guard)},
                         ensure_ascii=False,
                     )
                     results.append(
@@ -452,6 +503,37 @@ class ChatGraph:
                     )
                     continue
                 call_token = current_tool_call.set(tc["id"] or "")
+                # See `respond`: the call id is the identity; the turn label is
+                # only for reporting a stopped turn ("thread X, turn 1").
+                thread = state.get("session_id") or "default"
+                turn = "1"
+                decision = self.kernel.before_tool(
+                    thread=thread,
+                    turn=turn,
+                    call_id=tc["id"] or "",
+                    tool=tc["name"],
+                    args=tc["args"],
+                    side_effecting=side_effecting(tc["name"]),
+                )
+                if decision.replay is not None:
+                    # The call already settled this turn (the graph re-enters the
+                    # tools node after an approval resume). Replaying the journaled
+                    # reply is what makes the boundary exactly-once: a write must
+                    # not happen twice because a node ran twice.
+                    turnlog.record("tools", event="tool_replayed", tool=tc["name"], call_id=tc["id"] or "")
+                    results.append(
+                        {"type": "tool", "name": tc["name"], "content": decision.replay, "tool_call_id": tc["id"]}
+                    )
+                    current_tool_call.reset(call_token)
+                    continue
+                if decision.uncertain:
+                    out = self.kernel.uncertain_reply()
+                    turnlog.record("tools", event="tool_uncertain", tool=tc["name"], call_id=tc["id"] or "")
+                    results.append(
+                        {"type": "tool", "name": tc["name"], "content": out, "tool_call_id": tc["id"]}
+                    )
+                    current_tool_call.reset(call_token)
+                    continue
                 try:
                     # Timed per call, and accumulated by `turnlog`: a ReAct loop
                     # can run this node several times per turn, and the tool
@@ -466,15 +548,26 @@ class ChatGraph:
                             active_skills=state.get("active_skills") or (),
                         )
                 except GraphInterrupt:
+                    # A pause for the owner, *not* a crash: recorded as its own
+                    # status so a resume re-enters the step instead of treating it
+                    # as an action of unknown outcome.
+                    self.kernel.interrupted(thread=thread, turn=turn, call_id=tc["id"] or "")
                     raise  # human-in-the-loop: halt the graph, never swallow
                 except Exception as exc:  # noqa: BLE001 - tool errors must not kill the graph
                     # json.dumps: exception text with quotes previously broke
                     # the hand-rolled JSON string the model received.
                     out = json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
                     log.warning("tool %s failed: %s", tc["name"], exc)
-                    self.guards.after(tc["name"], ok=False)
+                    self.kernel.after_tool(
+                        thread=thread, turn=turn, call_id=tc["id"] or "", ok=False, reply=out, error=str(exc)
+                    )
+                    await self.hooks.emit("post_tool", tool=tc["name"], ok=False)
+                    await self.hooks.emit("on_error", tool=tc["name"], error=str(exc))
                 else:
-                    self.guards.after(tc["name"], ok=not _tool_failed(out))
+                    self.kernel.after_tool(
+                        thread=thread, turn=turn, call_id=tc["id"] or "", ok=not _tool_failed(out), reply=out
+                    )
+                    await self.hooks.emit("post_tool", tool=tc["name"], ok=not _tool_failed(out))
                 finally:
                     current_tool_call.reset(call_token)
                 results.append(
@@ -728,7 +821,7 @@ class ChatGraph:
 
     # ── entry ────────────────────────────────────────────────────────────
 
-    def _bank_turn(self) -> None:
+    async def _bank_turn(self) -> None:
         """Bank the finished turn's token spend into the day-scoped budget.
 
         Called from a `finally` inside the turn's `turnlog.collect()` block, and
@@ -736,8 +829,11 @@ class ChatGraph:
         a turn that spent tokens must be counted even when it did not finish. The
         per-day ceiling reads exactly these counters, so this call is what makes
         the cross-session bound real rather than a number in a config file.
+
+        The write goes through the hook bus (`turn_end`), so an audit or budget
+        plugin sees the same event the built-in guard chain acts on.
         """
-        self.guards.end_turn(turnlog.usage_snapshot())
+        await self.hooks.emit("turn_end", usage=turnlog.usage_snapshot())
 
     # ── Halting well ─────────────────────────────────────────────────────
     def _killed_reply(self) -> str:
@@ -805,7 +901,18 @@ class ChatGraph:
         # Named `turn`, not `log`: the module logger is `log`, and shadowing it
         # here broke error handling with an AttributeError.
         with turnlog.collect() as turn:
-            self.guards.reset_turn()
+            await self.hooks.emit("turn_start")
+            # The journal records what this turn runs with (prompt version + tool
+            # surface digest), so a trace and the journal agree about what the
+            # model could reach at the time. The *turn label* is deliberately
+            # coarse — a tool call's own id is the identity the boundary uses, and
+            # it is unique across a thread's whole history.
+            self.kernel.turn_start(
+                thread=session_id,
+                turn="1",
+                prompt_version=settings.prompt_version,
+                tools=sorted(t["function"]["name"] for t in tool_schemas(self.runtime, origin)),
+            )
             if settings.kill_switch:
                 # Refused before any provider call, and recorded, because a
                 # refusal nobody can see is indistinguishable from a failure.
@@ -836,7 +943,7 @@ class ChatGraph:
                 self._trace_turn(session_id, message, started, [], judgment=judgment)
                 return reply
             finally:
-                self._bank_turn()
+                await self._bank_turn()
             judgment = turn.to_trace() if settings.turnlog_enabled else None
             if result.get("__interrupt__"):
                 payload = result["__interrupt__"][0].value
@@ -889,7 +996,7 @@ class ChatGraph:
                 if verdict.refused:
                     log.warning("refused resume for %s: %s", session_id, verdict.reason)
                     return f"I can't resume that: {verdict.reason}."
-            self.guards.reset_turn()
+            await self.hooks.emit("turn_start")
             if settings.kill_switch:
                 turnlog.record("halt", reason="kill_switch", provider_calls=0)
                 return self._killed_reply()
@@ -900,7 +1007,7 @@ class ChatGraph:
                 turnlog.record("halt", reason="recursion_limit")
                 return await self._halt_reply(config)
             finally:
-                self._bank_turn()
+                await self._bank_turn()
             judgment = turn.to_trace() if settings.turnlog_enabled else None
             if result.get("__interrupt__"):
                 payload = result["__interrupt__"][0].value
@@ -929,7 +1036,18 @@ class ChatGraph:
         }
         started = time.monotonic()
         with turnlog.collect() as turn:
-            self.guards.reset_turn()
+            await self.hooks.emit("turn_start")
+            # The journal records what this turn runs with (prompt version + tool
+            # surface digest), so a trace and the journal agree about what the
+            # model could reach at the time. The *turn label* is deliberately
+            # coarse — a tool call's own id is the identity the boundary uses, and
+            # it is unique across a thread's whole history.
+            self.kernel.turn_start(
+                thread=session_id,
+                turn="1",
+                prompt_version=settings.prompt_version,
+                tools=sorted(t["function"]["name"] for t in tool_schemas(self.runtime, origin)),
+            )
             if settings.kill_switch:
                 turnlog.record("halt", reason="kill_switch", provider_calls=0)
                 yield "error", self._killed_reply()
@@ -948,15 +1066,20 @@ class ChatGraph:
                 ):
                     yield mode, data
                 snapshot = await self.graph.aget_state(config)
-                interrupts = snapshot.values.get("__interrupt__") if snapshot else None
+                # Read the interrupt the same way `resume` does. LangGraph no
+                # longer mirrors `__interrupt__` into `values` — it lives on the
+                # paused task — so reading it from `values` here silently turned
+                # every streamed approval into a normal turn end. One helper, one
+                # reading, or the two paths disagree about what is waiting.
+                pending = _interrupt_value(snapshot) if snapshot else None
                 judgment = turn.to_trace() if settings.turnlog_enabled else None
-                if snapshot and snapshot.next and interrupts:
-                    self._pending[session_id] = interrupts[0].value
+                if snapshot and snapshot.next and pending:
+                    self._pending[session_id] = pending
                     self._trace_turn(
                         session_id, message, started, snapshot.values.get("messages", []),
-                        pending=interrupts[0].value, judgment=judgment,
+                        pending=pending, judgment=judgment,
                     )
-                    yield "custom", {"kind": "approval", "payload": interrupts[0].value}
+                    yield "custom", {"kind": "approval", "payload": pending}
                 else:
                     messages = snapshot.values.get("messages", []) if snapshot else []
                     self._trace_turn(
@@ -974,4 +1097,4 @@ class ChatGraph:
                 self._trace_turn(session_id, message, started, [], judgment=judgment)
                 yield "error", await self._halt_reply(config)
             finally:
-                self._bank_turn()
+                await self._bank_turn()

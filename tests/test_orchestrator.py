@@ -23,6 +23,7 @@ from iris_ai.agents.handoff import (
     REFUSED_BUDGET,
     REFUSED_DEADLINE,
     REFUSED_DISABLED,
+    REFUSED_ERROR,
     REFUSED_NO_ROLE,
     Claim,
     Handoff,
@@ -211,8 +212,10 @@ async def test_the_role_runs_on_its_declared_tier(tmp_path: Path):
 
 
 async def test_an_unrunnable_role_cannot_break_the_turn(tmp_path: Path):
-    """A role that throws is a report, not an exception — the same contract the
-    pre-P5 worker had."""
+    """A role that throws never raises into the turn — but it comes back
+    *refused* with a stable reason, not as an empty report. The empty-report
+    contract is what let a critic that could never reach a provider pass as a
+    critic that found nothing to object to."""
 
     class ExplodingLLM(LLMClient):
         async def complete_with_tools(self, messages, tools=None, **kwargs):
@@ -220,8 +223,8 @@ async def test_an_unrunnable_role_cannot_break_the_turn(tmp_path: Path):
 
     orch, _ = _orchestrator(tmp_path, ExplodingLLM())
     handoff = await orch.delegate("researcher", "q")
-    assert handoff.refused == ""
-    assert handoff.claims == ()  # renders as "no findings"
+    assert handoff.refused == REFUSED_ERROR
+    assert handoff.claims == ()
 
 
 # ── fan-out ──────────────────────────────────────────────────────────────

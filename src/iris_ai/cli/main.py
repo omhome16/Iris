@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import typer
 
 from iris_ai.cli import agents as agents_mod
 from iris_ai.cli import art
 from iris_ai.cli import chat as chat_mod
+from iris_ai.cli import costs as costs_mod
 from iris_ai.cli import cron as cron_mod
 from iris_ai.cli import doctor as doctor_mod
 from iris_ai.cli import guards as guards_mod
+from iris_ai.cli import init as init_mod
+from iris_ai.cli import mcp as mcp_mod
+from iris_ai.cli import migrate as migrate_mod
+from iris_ai.cli import plugins as plugins_mod
+from iris_ai.cli import policy as policy_mod
+from iris_ai.cli import secrets as secrets_mod
 from iris_ai.cli import skills as skills_mod
 from iris_ai.cli import tools as tools_mod
 from iris_ai.cli import version as version_mod
@@ -134,6 +142,89 @@ def tools(
 ) -> None:
     """Inspect the tool surface and its policy (read-only): policy, actions."""
     raise typer.Exit(code=tools_mod.run(action, limit=limit))
+
+
+@app.command()
+def plugins(
+    action: str = typer.Argument("channels", help="channels | tools | hooks | mcp"),
+    live: bool = typer.Option(
+        False, "--live", help="For mcp: connect the declared servers and list their tools."
+    ),
+) -> None:
+    """Inspect registered capabilities (read-only): channels, tools, hooks, mcp."""
+    raise typer.Exit(code=plugins_mod.run(action, live=live))
+
+
+@app.command()
+def policy(action: str = typer.Argument("show", help="show (default) | classes | overrides | servers")) -> None:
+    """Show what every tool and server is allowed to do, and where that came from."""
+    raise typer.Exit(code=policy_mod.run(action))
+
+
+@app.command()
+def mcp(
+    action: str = typer.Argument("list", help="list | add | remove | test"),
+    name: str = typer.Argument("", help="Server name."),
+    url: str = typer.Option("", "--url", help="For add: an http/sse server's URL."),
+    command: str = typer.Option("", "--command", help="For add: a stdio server's command."),
+    args: str = typer.Option("", "--args", help="For add: comma-separated arguments."),
+    trust: str = typer.Option("untrusted", "--trust", help="untrusted | review | owner"),
+    approval: str = typer.Option("auto", "--approval", help="auto | always | never"),
+    enabled: bool = typer.Option(True, "--enabled/--disabled", help="Declare it now or park it."),
+) -> None:
+    """Declare MCP servers (list, add, remove, test) without hand-editing JSON."""
+    raise typer.Exit(
+        code=mcp_mod.run(
+            action,
+            name=name,
+            url=url,
+            command=command,
+            args=args,
+            trust=trust,
+            approval=approval,
+            enabled=enabled,
+        )
+    )
+
+
+@app.command()
+def costs(
+    action: str = typer.Argument("summary", help="summary | daily | weekly"),
+    days: int = typer.Option(14, "--days", "-n", help="How many days `daily` reports."),
+) -> None:
+    """What the model calls actually cost, from the append-only ledger."""
+    raise typer.Exit(code=costs_mod.run(action, days=days))
+
+
+@app.command()
+def secrets(
+    action: str = typer.Argument("backend", help="backend | list | set | rm"),
+    name: str = typer.Argument("", help="Secret name, e.g. the ${VAR} a server uses."),
+    value: str = typer.Argument("", help="Value (omit to be prompted, hidden)."),
+) -> None:
+    """Where secrets live, which are missing, and store or remove one (names only, never values)."""
+    raise typer.Exit(code=secrets_mod.run(action, name=name, value=value))
+
+
+@app.command()
+def init(
+    config: Path | None = typer.Option(
+        None, "--config", help="Where to write the harness manifest (default: HARNESS_CONFIG)."
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing .env or manifest."),
+    offline: bool = typer.Option(False, "--offline", help="Skip the model and embedding probes."),
+) -> None:
+    """Set up this checkout, then prove it: config, model check, memory, recall."""
+    raise typer.Exit(code=init_mod.run(config=config, force=force, offline=offline))
+
+
+@app.command()
+def migrate(
+    to: str = typer.Option("sqlite", "--to", help="Memory backend to move to (sqlite | pgvector)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report without writing anything."),
+) -> None:
+    """Move memory to another store: rebuild the index from the Markdown."""
+    raise typer.Exit(code=migrate_mod.run(to=to, dry_run=dry_run))
 
 
 @app.command()

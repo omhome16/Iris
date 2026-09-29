@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -38,6 +39,9 @@ from iris_ai.skills.policy import policy_for
 from iris_ai.skills.runner import ScriptError, pre_screen, resolve_script, run_script
 from iris_ai.toolpolicy import deferred_catalog, surface_order
 from iris_ai.toolpolicy import resolve as resolve_tool_policy
+from iris_ai.toolregistry import TOOL_PROVIDERS
+
+log = logging.getLogger("iris.tools")
 
 
 @dataclass(slots=True)
@@ -1121,10 +1125,29 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     return tools
 
 
+@dataclass(frozen=True, slots=True)
+class _CoreTools:
+    """The built-in toolset, exposed as a provider so the CLI can list it."""
+
+    name: str = "core"
+
+    def tools(self, runtime: Runtime) -> list[Tool]:
+        return build_tools(runtime)
+
+
+TOOL_PROVIDERS.register("core", _CoreTools, source="core")
+
+
 def get_tools(runtime: Runtime) -> list[Tool]:
     """Tools are pure functions of the runtime; rebuilt per call so a
     channel that connects *after* boot (e.g. the Telegram retry task) is
-    picked up immediately. Construction is just list building — cheap."""
+    picked up immediately. Construction is just list building — cheap.
+
+    Core tools are validated against ``TOOL_NAMES`` (the declared skill-manifest
+    surface must stay closed); plugin tools from a discovered provider are
+    appended and logged, because being outside that closed set is what makes
+    them a plugin.
+    """
     tools = build_tools(runtime)
     unknown = {t.name for t in tools} - TOOL_NAMES
     if unknown:
@@ -1132,6 +1155,27 @@ def get_tools(runtime: Runtime) -> list[Tool]:
         # manifest, so the skill policy would refuse it at call time. Fail
         # loudly here instead (in tests) rather than at the owner's expense.
         raise RuntimeError(f"tool(s) missing from TOOL_NAMES: {sorted(unknown)}")
+    for reg in TOOL_PROVIDERS.enabled():
+        if reg.name == "core":
+            continue
+        try:
+            extra = reg.build().tools(runtime)
+        except Exception as exc:  # noqa: BLE001 - a broken plugin must not break the surface
+            log.warning("tool provider %s failed: %s", reg.name, exc)
+            continue
+        if extra:
+            log.info("tool provider %s added: %s", reg.name, [t.name for t in extra])
+            tools.extend(extra)
+
+    # Phase 3: the MCP pool. Same append as a plugin provider, for the same
+    # reason — these are external tools, so they are outside the closed
+    # `TOOL_NAMES` set *on purpose*, and they are added after that check.
+    pool = runtime.mcp
+    if pool is not None:
+        external = pool.tools(runtime)
+        if external:
+            log.debug("mcp pool contributed: %s", [t.name for t in external])
+            tools.extend(external)
     return tools
 
 
@@ -1347,6 +1391,25 @@ async def dispatch(
             tool_class=class_decision.cls.value,
             source=class_decision.source,
         )
+        if origin != "owner":
+            # An unattended session (a scheduled task, a cron heartbeat) has
+            # nobody to answer that interrupt, and a turn that pauses forever is
+            # not a refusal — it is a hang that looks like work still happening.
+            # So the refusal happens here, where the origin is known, instead of
+            # inside a handler that cannot see it. `NON_OWNER_BLOCKED` covers the
+            # core tools that are dangerous this way; this covers every tool whose
+            # *class* asks, which is the general rule those four were examples of.
+            turnlog.record(
+                "tools",
+                event="tool_needs_approval_refused",
+                tool=name,
+                tool_class=class_decision.cls.value,
+                origin=origin,
+            )
+            return _err(
+                f"{name!r} needs the owner's approval and a {origin} session cannot ask "
+                "— run it from `iris chat` or the API"
+            )
     for tool in get_tools(runtime):
         if tool.name == name:
             return await tool.handler(**args)

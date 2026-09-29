@@ -13,6 +13,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from iris_ai.agent.chat import ApprovalRequired, ChatGraph
+from iris_ai.approval import effective_digest
 from test_agent_graph import ForgetLLM, _forget_runtime
 
 
@@ -66,6 +67,29 @@ async def test_an_unbound_side_effecting_approval_is_refused(tmp_path: Path):
     )
     assert verdict.refused
     assert "no argument digest" in verdict.reason
+
+
+async def test_the_digest_pins_the_arguments_the_action_actually_uses(tmp_path: Path):
+    """The "edited resume" threat, and why it is closed by construction.
+
+    The payload carries a digest of the *effective* arguments — the values the
+    handler computed before it interrupted, and the same ones it uses after the
+    resume — and a resume supplies only a decision string. So there is no argument
+    to edit in flight, and the digest is recomputable from what the owner was
+    shown, which is what makes the binding checkable rather than claimed.
+    """
+    _files, runtime = await _forget_runtime(tmp_path, ForgetLLM())
+    graph = ChatGraph(runtime, MemorySaver())
+    with pytest.raises(ApprovalRequired) as exc:
+        await graph.respond("forget about my lease", session_id="t-digest")
+    payload = exc.value.payload
+    shown = {"query": payload["query"], "path": payload["path"]}
+
+    assert payload["digest"] == effective_digest(shown)
+    # The other half of the property: any different argument set digests
+    # differently, so an approval cannot be stretched to cover another action.
+    assert payload["digest"] != effective_digest({**shown, "path": "SOMETHING-ELSE.md"})
+    assert graph.approvals.verify(pending=payload, decision="approved", thread="t-digest").allowed
 
 
 async def test_a_bound_forget_still_works_end_to_end(tmp_path: Path):

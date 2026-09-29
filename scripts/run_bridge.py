@@ -36,4 +36,8 @@ if __name__ == "__main__":
 
     import server
 
-    asyncio.run(server.main())
+    try:
+        asyncio.run(server.main())
+    except KeyboardInterrupt:
+        # Ctrl+C stops the bridge; it is not an error worth a traceback.
+        print("\ntelegram bridge stopped.")

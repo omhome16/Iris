@@ -95,6 +95,12 @@ class ForgettingEngine:
                 )
         return sorted(out, key=lambda e: e.retention)
 
+def _collapse(text: str) -> str:
+    """Whitespace-collapsed text, for comparing a chunk against the file it came
+    from: chunking flattens a chunk's line breaks into single spaces."""
+    return " ".join(text.split())
+
+
 def supersede_in_text(content: str, target: str, marker: str) -> str | None:
     """Retire one entry in a curated file by appending a supersession marker.
 
@@ -122,6 +128,22 @@ def supersede_in_text(content: str, target: str, marker: str) -> str | None:
         if target_line is None:
             continue
         new = content.replace(target_line, f"{target_line} {marker}")
+        if new != content:
+            return new
+    # The reverse direction, and the ordinary case for a *small* curated file:
+    # chunking joins a chunk's tokens with single spaces, so a chunk holding a
+    # heading and an entry arrives as one line that no file line contains. Ask
+    # the other question instead — which file line does the chunk contain —
+    # comparing with whitespace collapsed on both sides, and take the longest,
+    # which is the entry rather than the heading above it.
+    needle = _collapse(str(target))
+    best = max(
+        (line for line in content.splitlines() if line.strip() and _collapse(line) in needle),
+        key=lambda line: len(line),
+        default=None,
+    )
+    if best is not None:
+        new = content.replace(best, f"{best} {marker}")
         if new != content:
             return new
     return None
