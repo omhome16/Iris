@@ -16,6 +16,27 @@ No Postgres. No Docker. No daemon. One command to a reply.
 
 ---
 
+## What's in the box
+
+- **Memory** that is plain Markdown — indexed, provenance-tagged, decaying, and
+  consolidated by *dreaming* rather than on the write path
+- **Judgments** as typed probabilities, not vibes: recall relevance, skill choice,
+  injection screening, what to capture, and whether an answer is sufficient
+- **Safety** by construction: a deterministic guard chain that refuses first,
+  approvals bound to the digest of what they showed, and one gate for scripts
+- **Budgets** that refuse *before* the spend, with a per-call cost ledger behind
+  `iris costs`
+- **Durability** from an append-only turn journal, exactly-once tool boundaries,
+  and a checkpointer ladder that survives a restart
+- **Observability** as a trace per turn with stage timings, plus optional OTLP spans
+- **Tools, hooks and MCP servers** declared once and policed per tool
+- **Skills** in the Agent Skills format — validated, listed and approved from the CLI
+- **Channels and schedules**, so it can reach you rather than only answer you
+- **Roles** to delegate to, each with its own tier, tools and round bound
+- **Four faces** — library, CLI, HTTP API, editor adapter — over one turn pipeline
+- **Seams** everywhere: a model, store, judge, channel or secret backend is swapped
+  by configuration, never by a fork
+
 ## Why it is different
 
 Most agent frameworks give you a loop and a prompt. Iris is opinionated about the
@@ -33,18 +54,41 @@ stores are all Protocols behind registries, so a new integration is configuratio
 rather than a fork. SQLite is the default because a harness that needs a database
 before it will say hello is not a five-minute harness.
 
-## Four faces, one brain
+## How it fits together
 
-```
-  library   import iris_ai; async with iris_ai.harness() as brain: ...   <- the product
-  CLI       iris init · iris chat · iris doctor · iris policy · …
-  HTTP API  POST /chat, /chat/stream, /chat/resume, /mind, /costs, …
-  editor    iris-acp — the same kernel, driven by Zed / JetBrains / …
+```text
+FACES         library    import iris_ai; async with iris_ai.harness() as brain
+              CLI        iris init · chat · doctor · policy · guards · costs · migrate
+              HTTP API   POST /chat, /chat/stream, /chat/resume; GET /mind, /costs
+              editor     iris-acp — the same kernel, driven by Zed / JetBrains
+                        │
+                        │  one turn pipeline, so the faces cannot disagree
+                        ▼
+THE TURN      guards     deterministic, and first: refuse before anything is spent
+              recall     four tiers, four provenance levels, decay, diversity
+              judges     typed probabilities, deterministic fallbacks, latency budgets
+              model      a router, tiers, a cost ledger per call, enforced budgets
+              tools      one gate for every side effect; approvals bound to a digest
+              journal    exactly-once tool boundaries that survive a restart
+                        │
+                        │  every seam is a Protocol with a registry behind it
+                        ▼
+SEAMS         memory     SQLite (default) · pgvector · Markdown files
+              capability channels · tools · hooks · MCP servers
+              stores     secrets · the checkpointer ladder · the turn journal
+              models     providers · judges · embedders — each one swappable
 ```
 
-Everything above the library is a **client**, and they share one turn pipeline, so
-memory, judgments, approvals, budgets and traces behave identically whichever face
-you use. There is no second brain to keep in sync.
+Everything above the library is a **client**, and the library itself is the product.
+The four faces share one turn pipeline, so memory, judgments, approvals, budgets and
+traces behave identically whichever one you use — there is no second brain to keep in
+sync.
+
+The spine is the design: **a face may not reach past the turn, and the turn may not
+know which store it is talking to.** That is why adding a provider, swapping SQLite
+for pgvector, or putting an HTTP API in front of it are all configuration changes —
+and why a bug in the guard chain cannot be fixed only in the CLI, because the CLI
+never owned the decision in the first place.
 
 ## What `iris init` actually proves
 
@@ -73,8 +117,132 @@ command registry, so it can never list a command that does not exist.
 
 Inspection commands work with **no engine running** — they read declarations and
 files, so `iris policy`, `iris tools` and `iris guards` answer questions on a
-machine where nothing is up. Diagnostics are cp1252-clean and readable when piped;
-colour and the rounded frames are only drawn on a terminal.
+machine where nothing is up.
+
+## What it looks like
+
+`iris` with no arguments is the start screen: the mark, the tagline, and a command
+list read out of the registry, so it cannot advertise a command that does not exist.
+
+```console
+$ iris
+                          .:-==++****##****++==-:.
+                 .-=*#%%%#*+==--::::....::::--==+*#%%%#*=-.
+            :+#%%*+-:.                                .:-+*%%#+:
+        -*%#+-.                                              .-+#%*-
+    .+%#=.                                                        .=#%+.
+  =%*:                          .-*@@@@@@*-.                          :*%=
+-%=                            =@@+=:..:=+@@=                            =%-
++                            .%@===+=::-=-:-@#.                            +
+                            :#@%##*+=..:...:-@*
+                            :%@===-:    :-===@%:
+                             *@-:...:  :...:-@*
++                            .#@-:-=-..-=-:-@#.                            +
+-%=                            =@@+=:..:=+@@=                            =%-
+  =%*:                          .-*@@@@@@*-.                          :*%=
+    .+%#=.                                                        .=#%+.
+        -*%#+-.                                              .-+#%*-
+            :+#%%*+-:.                                .:-+*%%#+:
+                 .-=*#%%%#*+==--::::....::::--==+*#%%%#*=-.
+                          .:-==++****##****++==-:.
+  iris 0.2.0
+  memory · judgment · agents — one library, one kernel, four faces
+commands ———————————————————————————————————————————————————————————————————————
+  start
+    init  Set up this checkout, then prove it: config, model check,...
+    chat  Chat with Iris in the terminal (streaming; same pipeline...
+    doctor  Offline environment checks (names only — never secret...
+    version  Print version, Python, and install location.
+  configure
+    secrets  Where secrets live, which are missing, and store or...
+    mcp  Declare MCP servers (list, add, remove, test) without...
+    policy  Show what every tool and server is allowed to do, and...
+  inspect
+    tools  Inspect the tool surface and its policy (read-only):...
+    plugins  Inspect registered capabilities (read-only): channels,...
+    guards  The guard chain and today's token budget (read-only, no...
+    costs  What the model calls actually cost, from the append-only...
+    agents  Inspect the multi-agent layer (read-only): roles, show,...
+    skills  Inspect the skill registry: list, show, validate, approve.
+    cron  Time-triggered work: list, add, rm.
+  maintain
+    migrate  Move memory to another store: rebuild the index from the...
+
+┌─ next ─────────────────────────────────────────────┐
+│ the flags of one command: `iris <command> --help`  │
+│   › iris init  set up this checkout, then prove it │
+│   › iris chat  talk to it — no service, no daemon  │
+└────────────────────────────────────────────────────┘
+  docs: DOCS.md  ·  state lives in workspace/  ·  no server required
+```
+
+Every inspector has the same shape: a titled panel that says what the command *is*
+before it says what it found, quiet tables with no vertical rules, and one
+vocabulary for a result — `+ ok`, `! warn`, `x fail` — so a finding reads the same
+in `iris doctor`, `iris init` and `iris guards`.
+
+```console
+$ iris policy
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Policy                                                                      │
+│  what every tool and server is allowed to do, and where each decision came   │
+│  from                                                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+Capability classes —————————————————————————————————————————————————————————————
+
+ class          default   override   tools
+ ─────────────────────────────────────────
+ read           allow     -          9
+ filesystem     allow     -          2
+ memory_write   allow     -          9
+ network        allow     -          2
+ credentialed   ask       -          0
+ delivery       allow     -          2
+ control        ask       -          1
+ external       ask       -          0
+
+
+  precedence: class default < a tool's own source (an MCP server's trust) < a
+class override < a per-tool override. `deny` wins outright at every level, so an
+override can tighten and never loosen.
+Overrides ——————————————————————————————————————————————————————————————————————
+  no overrides set (TOOL_POLICY_OVERRIDES is empty)
+  No MCP servers declared in .mcp.json (see config/mcp.json.example).
+```
+
+Colour is never the only carrier of meaning, and it is never drawn where nobody is
+looking. Redirect the same command and it drops the styling and falls back to ASCII
+frames, because a Windows console and a CI log are destinations too — the exit code
+and the words do not change:
+
+```console
+$ iris policy > policy.txt
++-----------------------------------------------------------------------------+
+|  Policy                                                                     |
+|  what every tool and server is allowed to do, and where each decision came  |
+|  from                                                                       |
++-----------------------------------------------------------------------------+
+Capability classes ------------------------------------------------------------
++-----------------------------------------+
+|class        | default | override | tools|
+|-------------+---------+----------+------|
+|read         | allow   | -        | 9    |
+|filesystem   | allow   | -        | 2    |
+|memory_write | allow   | -        | 9    |
+|network      | allow   | -        | 2    |
+|credentialed | ask     | -        | 0    |
+|delivery     | allow   | -        | 2    |
+|control      | ask     | -        | 1    |
+|external     | ask     | -        | 0    |
++-----------------------------------------+
+
+  precedence: class default < a tool's own source (an MCP server's trust) < a
+class override < a per-tool override. `deny` wins outright at every level, so
+an override can tighten and never loosen.
+Overrides ---------------------------------------------------------------------
+  no overrides set (TOOL_POLICY_OVERRIDES is empty)
+  No MCP servers declared in .mcp.json (see config/mcp.json.example).
+```
 
 ## Configuration, in one breath
 
