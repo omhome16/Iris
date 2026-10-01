@@ -1,9 +1,9 @@
 # Iris
 
-**A neutral agent harness with a mind you can open.** The package and the `iris`
-command keep that name. There is no persona until you write one. Memory is plain
-Markdown, tools stop for approval before a side effect, and the CLI, the HTTP API,
-and the editor adapter share one turn loop.
+**A plug-and-play agent harness.** Pick a provider, then swap context, memory,
+persona, capture, consolidation, or a channel with one line of config. A new
+part is a folder next to `config/`. You can write it, or ask Iris to write it
+and approve it before it goes live.
 
 ```bash
 uv sync
@@ -11,356 +11,314 @@ uv run iris init
 uv run iris
 ```
 
-`iris init` lets you pick a provider with the arrow keys, checks the key with a
-live call, then asks for a model and whether memory should be keyword-only.
-`iris` opens the chat. The package is not on PyPI yet. For a global `iris`
-command: `uv tool install git+https://github.com/omhome16/Iris`.
-`iris init --yes` skips the questions, which is what CI uses.
-`iris init --provider groq --model openai/gpt-oss-120b --api-key-env GROQ_API_KEY`
-does the same without prompts.
+`iris init` walks provider, key, model, memory, and a short profile with the
+arrow keys, checks the key with one live call, then writes `.env` and
+`config/harness.toml` and measures the result. `iris` opens the chat. On a pipe, or with `--once`, the
+same turn loop prints plain text.
 
-![Setup wizard](docs/images/wizard.svg)
-![Full-screen chat](docs/images/chat.svg)
+Install a global `iris` from this repository:
 
-No Postgres. No Docker. No daemon. Postgres, the HTTP API, MCP, the scheduler,
-and the judge SDK are extras (`uv sync --extra all`).
+```bash
+uv tool install git+https://github.com/omhome16/Iris
+```
 
-The map of a session and of one message is [docs/architecture.md](docs/architecture.md).
-How to swap context or memory is [docs/harness.md](docs/harness.md).
+Skip the questions with flags. The value of the key stays in the environment
+and is never printed:
+
+```bash
+uv run iris init --provider groq --model openai/gpt-oss-120b --api-key-env GROQ_API_KEY
+uv run iris init --yes          # blank profile, what CI runs
+uv run iris init --offline      # skip the live probes
+```
+
+![The provider step of iris init](docs/images/setup.svg)
+
+SQLite is the memory and the thread store. Postgres, the HTTP API, MCP, the
+scheduler, and the judge SDK are extras: `uv sync --extra all`.
+
+The map of a session is [docs/architecture.md](docs/architecture.md).
+The swap recipe is [docs/harness.md](docs/harness.md).
+Component folders are [docs/components.md](docs/components.md).
+
+## Plug and play
+
+```mermaid
+flowchart LR
+  subgraph faces ["One turn, four faces"]
+    cli["iris"]
+    api["HTTP API"]
+    acp["Editor adapter"]
+    tg["Telegram"]
+  end
+  faces --> harness["harness()"]
+  harness --> parts["Components"]
+  parts --> context["context"]
+  parts --> memory["memory"]
+  parts --> persona["persona"]
+  parts --> capture["capture"]
+  parts --> consolidator["consolidator"]
+  parts --> channel["channel"]
+```
+
+A name in `iris components list` is a name that loads. A component that fails
+to import does not stop Iris. The previous choice, or the built-in, is used,
+and `iris doctor` names the fix.
+
+| Kind | Built in | What it does |
+|---|---|---|
+| context | `default`, `recall-first`, `minimal` | What the model sees before it answers |
+| memory | `sqlite`, `markdown`, `pgvector` | Where notes are indexed |
+| persona | `blank`, `file`, `assistant`, `coder`, `researcher`, `tutor` | The voice in the system prompt |
+| capture | `default`, `off` | Facts kept from a finished turn |
+| consolidator | `dreaming`, `off` | Promotion into `MEMORY.md` |
+| channel | `terminal`, `telegram`, `http` | Where a session is reached |
+
+`default` context reads `MEMORY.md` and `USER.md` and does not search the index.
+The model recalls with `memory_search`. `recall-first` searches every turn and
+puts the hits in front. `minimal` loads no memory. `blank` persona adds no
+voice. `file` reads `workspace/PERSONA.md`.
+
+```toml
+# config/harness.toml
+llm_provider = "groq"
+groq_strong_model = "openai/gpt-oss-120b"
+
+[components]
+context = "recall-first"
+persona = "researcher"
+capture = "default"
+consolidator = "dreaming"
+```
+
+Switch from the terminal, then apply it:
+
+```bash
+uv run iris components list
+uv run iris components use context recall-first
+```
+
+In chat, `/reload` re-reads the config and re-attaches components. `/components`
+lists the same options.
+
+![iris components list](docs/images/components.svg)
+
+### A component you own
+
+Three places a part can come from:
+
+1. **Built in**, shipped with Iris. `iris components eject context recall-first` copies one out so you can edit it.
+2. **A local folder** next to `config/`, imported by file path. The directory you run `iris` from does not matter.
+3. **A class path**, `pkg.module:Class`, from your own package.
+
+```text
+components/context/graph-rag/
+  component.toml
+  component.py
+  test_component.py
+```
+
+```toml
+# component.toml
+kind = "context"
+name = "graph-rag"
+entry = "component:GraphRag"
+description = "Put a graph walk in front of the prompt."
+```
+
+```bash
+uv run iris new context graph-rag
+uv run iris components check context graph-rag
+uv run iris components use context graph-rag
+```
+
+`check` runs `test_component.py` in a separate process. `use` writes the choice
+into `config/harness.toml` and remembers it in `components.lock`.
+`iris components rollback context` returns to the previous choice. A local
+component that fails its first few calls rolls back on its own.
+
+The constructor is `Class(ctx, **options)`. `ctx` is `iris_ai.sdk.ComponentContext`:
+`llm`, `memory`, `files`, and `options`.
+
+| Kind | Method |
+|---|---|
+| context | `async def assemble_turn(self, user_message, *, session_id) -> tuple[str, list[str]]` |
+| memory | `async def search(self, query, **kwargs)`, plus `connect` and `close` |
+| persona | `def text(self) -> str` |
+| capture | `async def maybe_capture(self, *, user_message, reply, known_context) -> str` |
+| consolidator | `async def sleep(self)` |
+
+### Ask Iris to add one
+
+Say "implement this context technique in yourself." Iris writes into
+`components/.staging`, checks the code in a separate process, and calls
+`component_activate` only after showing you the result. That call waits for
+approval. Iris does not edit its own package, so an upgrade does not collide
+with a part you or Iris added. Then type `/reload`.
+
+Components run in-process. The protection is the staging folder, the separate
+check, and your approval. Read a component before you activate it.
+The skill Iris follows is [`skills/component-author/SKILL.md`](skills/component-author/SKILL.md).
+
+## Use it as a library
+
+The library is the product. The CLI, the HTTP API, and the editor adapter are
+clients of one `harness()`.
+
+```python
+import asyncio
+import os
+
+import iris_ai
+
+
+async def main() -> None:
+    async with iris_ai.harness(
+        provider="groq",
+        model="openai/gpt-oss-120b",
+        api_key=os.environ["GROQ_API_KEY"],
+    ) as iris:
+        print(await iris.respond("Say hello in one sentence."))
+
+
+asyncio.run(main())
+```
+
+`provider`, `model`, `api_key`, and `memory` win over `.env` and
+`config/harness.toml`. The same call is in
+[`examples/quickstart.py`](examples/quickstart.py).
 
 ## A session
 
 ```mermaid
 flowchart TD
-  install["uv tool install"] --> init["iris init"]
-  init --> wizard["Provider, key, model, parts, MCP"]
-  wizard --> chat["iris"]
+  sync["uv sync"] --> init["iris init"]
+  init --> measure["Write config, probe model, memory, threads"]
+  measure --> chat["iris"]
   chat --> tty{"Real terminal?"}
   tty -->|yes| tui["Full-screen chat"]
-  tty -->|pipe or --once| plain["Plain text"]
+  tty -->|pipe or iris chat --once| plain["Plain text"]
 ```
 
-`iris init` writes the files and measures them: a cheap model call, the memory
-store, and which thread store a conversation would use. On a terminal it also
-walks the setup wizard. `iris config` reopens that wizard, and `iris config model`
-starts at the model step. Leave the persona blank and the assistant has no voice
-of its own.
+`iris config` reopens setup. `iris config model` starts at the model step.
+Sections are `provider`, `key`, `model`, `embeddings`, `parts`, `mcp`, and
+`profile`. Re-running init keeps a file you already edited.
+`--force` replaces `.env` and the manifest.
 
 ## One message
 
 ```mermaid
 flowchart TD
-  msg["Your message"] --> route{"Profile exists?"}
-  route -->|no| setupReply["Reply: run iris init"]
-  route -->|yes| assemble["Read MEMORY.md, USER.md, skills"]
+  msg["Your message"] --> profile{"Profile exists?"}
+  profile -->|no| setupReply["Reply points at iris init"]
+  profile -->|yes| assemble["Active context component"]
   assemble --> agent["Model"]
   agent --> tools{"Tool call?"}
   tools -->|needs approval| pause["Allow or Deny, saved on the thread"]
   pause --> agent
   tools -->|allowed| run["Run the tool"]
   run --> agent
-  tools -->|no| save["Daily note, capture, save the thread"]
+  tools -->|none| save["Daily note, capture, save the thread"]
 ```
 
-Assemble does not search the index. The model recalls with `memory_search`.
-A tool that returns `"ok": false` is a failure, and the model is told not to
-claim the write succeeded. `/dream` in chat runs consolidation. There is no
+A tool result with `"ok": false` is a failure, and the model is told not to
+claim the write succeeded. `/dream` runs consolidation. There is no
 `iris dream` command.
 
-## How it fits together
+In chat: `/reload` and `/components` for parts, `/model` and `/provider` for
+the model, `/team` and `/parallel` for roles, `/mcp` for servers, `/help` for
+the rest.
 
-```mermaid
-flowchart LR
-  subgraph faces ["Faces, one turn"]
-    cli["iris chat"]
-    api["HTTP API"]
-    acp["Editor adapter"]
-    tg["Telegram"]
-  end
-  faces --> harness["harness()"]
-  harness --> loop["Turn loop"]
-  loop --> model["LiteLLM"]
-  loop --> tools["Tools and policy"]
-  loop --> threads["SQLite threads"]
-  tools --> memory["Markdown memory"]
-  memory --> index["SQLite index"]
+## The CLI
+
+`iris` on a terminal opens the chat. `iris --help` is the command list, read
+from the registry, so a command that exists is a command that is listed.
+
+![iris --help](docs/images/commands.svg)
+
+| | |
+|---|---|
+| **Start** | `init` · `chat` · `serve` · `config` · `doctor` · `version` |
+| **Configure** | `secrets` · `mcp` · `models` · `components` · `policy` · `new` |
+| **Inspect** | `tools` · `plugins` · `guards` · `costs` · `agents` · `skills` · `cron` |
+| **Maintain** | `migrate` |
+
+`serve` starts a face: `terminal`, `telegram`, or `http`. Inspection commands
+read declarations and files, so `iris policy`, `iris tools`, and `iris guards`
+answer with no engine running.
+
+`iris doctor` uses one vocabulary everywhere: `+ ok`, `! warn`, `x fail`, and
+`~` for an optional extra. `iris doctor --fix` copies `.env.example` to `.env`
+when `.env` is missing. Secret values are never printed. Key names are.
+
+Colour is not the only carrier of meaning. Pipe a command and the styling
+drops. The exit code and the words stay.
+
+## Configuration
+
+```text
+defaults  <  .env  <  config/harness.toml  <  real environment  <  library or CLI override
 ```
 
-| Piece | Default | Swap |
-|---|---|---|
-| Context | `MEMORY.md` and `USER.md` | `[components] context = "pkg.mod:Class"` |
-| Capture | Daily-note facts | `capture = "off"` or a class |
-| Consolidation | Dreaming, and `/dream` | `consolidator = "off"` or a class |
-| Threads | `workspace/threads.db` | `postgres` extra |
-| Index | SQLite, keyword-only without an embedding key | `postgres` extra |
-| Persona | Empty `PERSONA.md` | `iris config` |
-
-```bash
-uv run iris new component context
-uv run iris new component memory
-```
+`.env` holds secrets. `config/harness.toml` is the committable manifest.
+`.mcp.json` declares MCP servers, with `${VAR}` resolved through the secret
+store. `HARNESS_CONFIG=examples/assistant/harness.toml` selects another
+manifest, which is how [`examples/assistant/`](examples/assistant/README.md) works.
 
 | File | Holds |
 |---|---|
 | `workspace/USER.md` | Profile from setup |
 | `workspace/MEMORY.md` | Facts consolidation promoted |
-| `workspace/memory/YYYY-MM-DD.md` | Daily note, one line per finished turn |
-| `workspace/PERSONA.md` | Optional voice |
+| `workspace/memory/YYYY-MM-DD.md` | Daily note |
+| `workspace/PERSONA.md` | Optional voice, when persona is `file` |
 | `workspace/sandbox/` | The only place file tools may write |
 | `workspace/logs/iris.log` | Provider failover and harness logs |
+| `components/<kind>/<name>/` | A local component |
+| `components.lock` | The last choice, so rollback has somewhere to return |
 
----
+## Extras
 
-## What's in the box
+The core install is the chat, SQLite memory, and the CLI.
 
-- **Memory** that is plain Markdown — indexed, provenance-tagged, decaying, and
-  consolidated by *dreaming* rather than on the write path
-- **Judgments** as typed probabilities, not vibes: recall relevance, skill choice,
-  injection screening, what to capture, and whether an answer is sufficient
-- **Safety** by construction: a deterministic guard chain that refuses first,
-  approvals bound to the digest of what they showed, and one gate for scripts
-- **Budgets** that refuse *before* the spend, with a per-call cost ledger behind
-  `iris costs`
-- **Durability** from an append-only turn journal, exactly-once tool boundaries,
-  and a thread store that survives a restart
-- **Observability** as a trace per turn with stage timings, plus optional OTLP spans
-- **Tools, hooks and MCP servers** declared once and policed per tool
-- **Skills** in the Agent Skills format — validated, listed and approved from the CLI
-- **Channels and schedules**, so it can reach you rather than only answer you
-- **Roles** to delegate to, each with its own tier, tools and round bound
-- **Four faces** — library, CLI, HTTP API, editor adapter — over one turn pipeline
-- **Seams** everywhere: a model, store, judge, channel or secret backend is swapped
-  by configuration, never by a fork
-
-## Why it is different
-
-Most agent frameworks give you a loop and a prompt. Iris is opinionated about the
-four things that actually decide whether an assistant is useful a month later:
-
-| | |
+| Extra | What it adds |
 |---|---|
-| **Memory you can read** | `MEMORY.md`, `USER.md` and daily notes are the source of truth. The index is derived and rebuildable, so nothing you care about lives only in a database. Four tiers, four provenance levels, decay, diversity, and consolidation by *dreaming* rather than by the write path |
-| **Judgment, not vibes** | Every decision that is a *question over supplied text* — recall relevance, skill choice, injection screening, capture, answer sufficiency — is a typed probability from a System One model, with a deterministic fallback and a latency budget. Code owns every threshold |
-| **Safe by construction** | A deterministic guard chain refuses before dispatch, approvals are bound to the digest of what they showed, untrusted content is screened, and a skill's script runs in a constructed environment through one gate |
-| **Durable and observable** | An append-only turn journal gives exactly-once tool boundaries and approvals that survive a restart. Every turn leaves a trace with stage timings; every model call leaves a cost ledger |
+| `postgres` | pgvector memory and shared threads |
+| `api` | `iris serve http` |
+| `mcp` | MCP servers and the Telegram channel |
+| `schedule` | nightly consolidation and reminders |
+| `judge` | typed probability judgments |
+| `secrets` | the OS keychain |
+| `acp` | the editor adapter, `iris-acp` |
+| `otel` | OTLP traces |
+| `all` | every extra above |
 
-And it is a **harness**: models, memory, judges, channels, tools, hooks and secret
-stores are all Protocols behind registries, so a new integration is configuration
-rather than a fork. SQLite is the default because a harness that needs a database
-before it will say hello is not a five-minute harness.
-
-Everything above the library is a client. The library is the product. A face
-does not reach past the turn, and the turn does not know which store it is
-talking to, so a guard bug cannot be fixed only in the CLI.
-
-## What `iris init` actually proves
-
-It writes `.env` and `config/harness.toml`, seeds a neutral `workspace/`, and then
-**measures** the result rather than assuming it: one no-op completion on the cheap
-tier (a provider key that works, with its latency), the configured memory store
-opened and counted, and the real thread store walked so the report says which
-tier a conversation would land in. Recall is reported honestly — with no embedding
-provider it says **keyword-only** and names both fixes instead of printing a green
-tick.
-
-`iris init` itself does not ask questions. The profile screen is `iris config`.
-Re-running init reports `kept (already exists)` rather than overwriting a file
-you edited. `--force` replaces `.env` and the manifest.
-
-## The CLI
-
-Run `iris` with no arguments for the start screen; the help is generated from the
-command registry, so it can never list a command that does not exist.
-
-| | |
-|---|---|
-| **Start** | `init` · `chat` · `config` · `doctor` · `version` |
-| **Configure** | `secrets` · `mcp` · `policy` · `new` |
-| **Inspect** | `tools` · `plugins` · `guards` · `costs` · `agents` · `skills` · `cron` |
-| **Maintain** | `migrate` |
-
-Inspection commands work with **no engine running** — they read declarations and
-files, so `iris policy`, `iris tools` and `iris guards` answer questions on a
-machine where nothing is up.
-
-## What it looks like
-
-`iris` with no arguments is the start screen: the mark, the tagline, and a command
-list read out of the registry, so it cannot advertise a command that does not exist.
-
-```console
-$ iris
-                          .:-==++****##****++==-:.
-                 .-=*#%%%#*+==--::::....::::--==+*#%%%#*=-.
-            :+#%%*+-:.                                .:-+*%%#+:
-        -*%#+-.                                              .-+#%*-
-    .+%#=.                                                        .=#%+.
-  =%*:                          .-*@@@@@@*-.                          :*%=
--%=                            =@@+=:..:=+@@=                            =%-
-+                            .%@===+=::-=-:-@#.                            +
-                            :#@%##*+=..:...:-@*
-                            :%@===-:    :-===@%:
-                             *@-:...:  :...:-@*
-+                            .#@-:-=-..-=-:-@#.                            +
--%=                            =@@+=:..:=+@@=                            =%-
-  =%*:                          .-*@@@@@@*-.                          :*%=
-    .+%#=.                                                        .=#%+.
-        -*%#+-.                                              .-+#%*-
-            :+#%%*+-:.                                .:-+*%%#+:
-                 .-=*#%%%#*+==--::::....::::--==+*#%%%#*=-.
-                          .:-==++****##****++==-:.
-  iris 0.3.0
-  memory · judgment · agents — one library, one kernel, four faces
-commands ———————————————————————————————————————————————————————————————————————
-  start
-    init  Set up this checkout, then prove it: config, model check,...
-    chat  Chat with Iris in the terminal (streaming; same pipeline...
-    doctor  Offline environment checks (names only — never secret...
-    version  Print version, Python, and install location.
-  configure
-    secrets  Where secrets live, which are missing, and store or...
-    mcp  Declare MCP servers (list, add, remove, test) without...
-    policy  Show what every tool and server is allowed to do, and...
-  inspect
-    tools  Inspect the tool surface and its policy (read-only):...
-    plugins  Inspect registered capabilities (read-only): channels,...
-    guards  The guard chain and today's token budget (read-only, no...
-    costs  What the model calls actually cost, from the append-only...
-    agents  Inspect the multi-agent layer (read-only): roles, show,...
-    skills  Inspect the skill registry: list, show, validate, approve.
-    cron  Time-triggered work: list, add, rm.
-  maintain
-    migrate  Move memory to another store: rebuild the index from the...
-
-┌─ next ─────────────────────────────────────────────┐
-│ the flags of one command: `iris <command> --help`  │
-│   › iris init  set up this checkout, then prove it │
-│   › iris chat  talk to it — no service, no daemon  │
-└────────────────────────────────────────────────────┘
-  docs: DOCS.md  ·  state lives in workspace/  ·  no server required
+```bash
+uv sync --extra mcp
+uv sync --extra all
 ```
-
-Every inspector has the same shape: a titled panel that says what the command *is*
-before it says what it found, quiet tables with no vertical rules, and one
-vocabulary for a result — `+ ok`, `! warn`, `x fail` — so a finding reads the same
-in `iris doctor`, `iris init` and `iris guards`.
-
-```console
-$ iris policy
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Policy                                                                      │
-│  what every tool and server is allowed to do, and where each decision came   │
-│  from                                                                        │
-└──────────────────────────────────────────────────────────────────────────────┘
-Capability classes —————————————————————————————————————————————————————————————
-
- class          default   override   tools
- ─────────────────────────────────────────
- read           allow     -          9
- filesystem     allow     -          2
- memory_write   allow     -          9
- network        allow     -          2
- credentialed   ask       -          0
- delivery       allow     -          2
- control        ask       -          1
- external       ask       -          0
-
-
-  precedence: class default < a tool's own source (an MCP server's trust) < a
-class override < a per-tool override. `deny` wins outright at every level, so an
-override can tighten and never loosen.
-Overrides ——————————————————————————————————————————————————————————————————————
-  no overrides set (TOOL_POLICY_OVERRIDES is empty)
-  No MCP servers declared in .mcp.json (see config/mcp.json.example).
-```
-
-Colour is never the only carrier of meaning, and it is never drawn where nobody is
-looking. Redirect the same command and it drops the styling and falls back to ASCII
-frames, because a Windows console and a CI log are destinations too — the exit code
-and the words do not change:
-
-```console
-$ iris policy > policy.txt
-+-----------------------------------------------------------------------------+
-|  Policy                                                                     |
-|  what every tool and server is allowed to do, and where each decision came  |
-|  from                                                                       |
-+-----------------------------------------------------------------------------+
-Capability classes ------------------------------------------------------------
-+-----------------------------------------+
-|class        | default | override | tools|
-|-------------+---------+----------+------|
-|read         | allow   | -        | 9    |
-|filesystem   | allow   | -        | 2    |
-|memory_write | allow   | -        | 9    |
-|network      | allow   | -        | 2    |
-|credentialed | ask     | -        | 0    |
-|delivery     | allow   | -        | 2    |
-|control      | ask     | -        | 1    |
-|external     | ask     | -        | 0    |
-+-----------------------------------------+
-
-  precedence: class default < a tool's own source (an MCP server's trust) < a
-class override < a per-tool override. `deny` wins outright at every level, so
-an override can tighten and never loosen.
-Overrides ---------------------------------------------------------------------
-  no overrides set (TOOL_POLICY_OVERRIDES is empty)
-  No MCP servers declared in .mcp.json (see config/mcp.json.example).
-```
-
-## Configuration, in one breath
-
-```
-defaults  <  .env  <  config/harness.toml  <  real environment  <  CLI flag
-```
-
-`.env` holds secrets and machine-local overrides; `config/harness.toml` is the
-committable manifest (channels, capability backends, ordinary settings); `.mcp.json`
-declares external MCP servers, with `${VAR}` resolved through the secret store so a
-token never sits in a committable file. A profile can ship its own manifest and be
-selected with `HARNESS_CONFIG=…`, which is how `examples/assistant/` works.
 
 ## Docs
 
 | | |
 |---|---|
-| **[`docs/architecture.md`](docs/architecture.md)** | the map: a session, one message, the faces, the files |
-| **[`docs/harness.md`](docs/harness.md)** | how to swap context, capture, and consolidation |
-| **[`DOCS.md`](DOCS.md)** | the manual: install, commands, settings, memory, safety, interfaces, testing |
-| [`CHANGELOG.md`](CHANGELOG.md) | what changed, per phase, with the numbers and the method that produced them |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, the gates to run, and the house rules |
-| [`examples/assistant/`](examples/assistant/README.md) | a reference profile: a persona, a workspace and a channel, with no core edits |
-| [`workspace/AGENTS.md`](workspace/AGENTS.md) | the neutral operating contract a fresh workspace starts from |
-| [`skills/web-page-to-notes/`](skills/web-page-to-notes/SKILL.md) | the builtin skill that proves the Agent Skills format: a stdlib-only script, no network, no environment reads |
-
-New here? Read [`DOCS.md` §1](DOCS.md#1-what-iris-is) and
-[§2](DOCS.md#2-install-and-first-run). Changing something? Go straight to
-[§18.3](DOCS.md#183-where-to-start-reading).
+| [docs/architecture.md](docs/architecture.md) | a session, one message, the faces, the files |
+| [docs/harness.md](docs/harness.md) | how to swap a part |
+| [docs/components.md](docs/components.md) | folders, checks, approval, rollback |
+| [DOCS.md](DOCS.md) | the manual: install, commands, settings, memory, safety |
+| [CHANGELOG.md](CHANGELOG.md) | what changed, per phase |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | setup, the gates, the house rules |
+| [examples/assistant/](examples/assistant/README.md) | a reference profile: persona, workspace, channel |
+| [examples/quickstart.py](examples/quickstart.py) | ten lines, one reply |
+| [skills/component-author/SKILL.md](skills/component-author/SKILL.md) | the procedure Iris follows when you ask it to add a part |
 
 ## Requirements
 
 | | |
 |---|---|
 | Python | 3.12 or 3.13 |
-| A provider key | **optional to start** — without one, recall is keyword-only and model calls degrade |
-| Postgres | **not needed** (SQLite is the default; pgvector is the scale-up option) |
-| Docker | **not needed** (only for Postgres, the full API + bridge stack, or the `container` script sandbox) |
-| Optional extras | `postgres`, `api`, `mcp`, `schedule`, `judge`, `acp`, `otel`, or `all`. A missing extra names itself instead of failing boot |
+| A provider key | optional to start. Without one, use Ollama, or stay on keyword recall |
+| Postgres | optional. SQLite is the default. pgvector is the scale-up |
+| Docker | optional. Postgres, the full API stack, or the container script sandbox |
 
-```bash
-pip install iris-personal-ai                 # chat, SQLite, CLI
-pip install "iris-personal-ai[all]"          # every extra
-pip install "iris-personal-ai[postgres,api]" # one or more, by name
-```
-
-## Status
-
-Version **0.3.0**. The turn loop lives in `iris_ai.kernel`.
-**1143 tests passed**, 1 skipped, `ruff` clean, on this tree. The two
-pgvector-backed files run when Postgres is up and are part of that count in CI.
-The wheel installs into a clean venv and the CLI runs with no daemon.
-
-Still outside this release: native provider SDK backends (LiteLLM is the
-router), an MCP *server* mode, and `sqlite-vec` as the vector extension.
-
+Version **0.3.0**. The turn loop lives in `iris_ai.kernel`. CI runs the suite
+on Ubuntu, including Postgres, and the no-database path on Windows.
 MIT licensed.
