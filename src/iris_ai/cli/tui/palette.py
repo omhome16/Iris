@@ -15,6 +15,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/parallel", "fan out: /parallel role: task | role: task"),
     ("/roles", "list agent roles"),
     ("/components", "list plug-and-play options"),
+    ("/reload", "re-read config and components"),
     ("/persona", "show the persona file"),
     ("/config", "open setup again"),
     ("/memory", "where memory lives"),

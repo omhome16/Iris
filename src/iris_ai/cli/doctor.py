@@ -42,7 +42,7 @@ def stale_model_checks(env: Mapping[str, str]) -> list[Check]:
             "model ids",
             "warn",
             f"dead model id in config ({listed}). Remove the line so the current default is used.",
-            fix="iris config model",
+            fix=cli_cmd("config", "model"),
         )
     ]
 
@@ -65,9 +65,21 @@ def _resolve_provider(requested: str, env: Mapping[str, str]) -> str:
 @dataclass(frozen=True)
 class Check:
     name: str
-    level: Literal["ok", "warn", "fail"]
+    level: Literal["ok", "warn", "fail", "opt"]
     detail: str
     fix: str = ""
+
+
+def cli_cmd(*parts: str) -> str:
+    """How to invoke iris from this environment.
+
+    A clone does not put `iris` on PATH. Doctor used to print `iris doctor`,
+    which then failed with "not recognized".
+    """
+    import shutil
+
+    tool = "iris" if shutil.which("iris") else "uv run iris"
+    return " ".join((tool, *parts))
 
 
 def _package_location() -> Path:
@@ -102,7 +114,9 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
     env_path = root / ".env"
     file_vars: dict[str, str] = {}
     if not env_path.exists():
-        checks.append(Check(".env", "warn", "missing — cp .env.example .env", fix="cp .env.example .env"))
+        checks.append(
+            Check(".env", "warn", "missing — cp .env.example .env", fix=cli_cmd("doctor", "--fix"))
+        )
     else:
         try:
             env_path.read_text(encoding="utf-8")
@@ -125,7 +139,7 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
     if present:
         checks.append(Check("provider keys", "ok", ", ".join(present)))
     else:
-        checks.append(Check("provider keys", "warn", "none set — set a provider key", fix="iris init"))
+        checks.append(Check("provider keys", "warn", "none set — set a provider key", fix=cli_cmd("init")))
 
     requested = (env.get("LLM_PROVIDER", "auto") or "auto").strip().lower()
     resolved = _resolve_provider(requested, env)
@@ -137,7 +151,7 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
                 "LLM_PROVIDER",
                 "warn",
                 f"{requested!r} is not a known provider — falling back to {resolved}",
-                fix="iris config provider",
+                fix=cli_cmd("config", "provider"),
             )
         )
     # A provider can only be used once a model id exists for it. The registry
@@ -150,7 +164,7 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
                 "strong model",
                 "warn",
                 f"{model_env} is unset — {spec.label} cannot be used yet",
-                fix="iris config model",
+                fix=cli_cmd("config", "model"),
             )
         )
 
@@ -160,9 +174,9 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
         checks.append(
             Check(
                 "TYPESAFE_API_KEY",
-                "warn",
-                "missing — JEV disabled (deterministic fallback)",
-                fix="uv sync --extra judge",
+                "opt",
+                "optional — JEV stays on the deterministic fallback until a key is set",
+                fix=cli_cmd("config", "extras"),
             )
         )
 
@@ -197,14 +211,26 @@ def _secret_store_check(env: Mapping[str, str]) -> Check:
         return Check("secret store", "ok", "env (read-only; nothing stored by Iris)")
     return Check(
         "secret store",
-        "warn",
-        "file (0600, NOT encrypted — see `iris secrets backend`)",
-        fix="iris secrets backend",
+        "opt",
+        "file (0600, not encrypted). Optional: `uv sync --extra secrets` then the OS keychain.",
+        fix=cli_cmd("secrets", "backend"),
     )
 
 
 def exit_code(checks: list[Check]) -> int:
     return 1 if any(c.level == "fail" for c in checks) else 0
+
+
+def apply_safe_fixes(env_dir: Path | None = None) -> list[str]:
+    """Fixes that cannot destroy a config: create a missing `.env` from the sample."""
+    root = Path.cwd() if env_dir is None else env_dir
+    done: list[str] = []
+    env_path = root / ".env"
+    example = root / ".env.example"
+    if not env_path.exists() and example.is_file():
+        env_path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+        done.append("created .env from .env.example")
+    return done
 
 
 def render(checks: list[Check]) -> None:

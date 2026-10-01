@@ -170,7 +170,7 @@ class ChatApp(App):
         self.query_one("#status", Static).update(
             render_status(
                 name=assistant_name(self._root()),
-                provider=settings.llm_provider,
+                provider=getattr(settings, "_resolved_provider", None) or settings.llm_provider,
                 model=settings.strong_model or settings.cheap_model or "auto",
                 session=self.session,
                 note=note,
@@ -363,6 +363,13 @@ class ChatApp(App):
         if head == "/roles":
             roles = getattr(getattr(self._brain.runtime, "orchestrator", None), "roles", {}) or {}
             await self._write(note_line(", ".join(roles) or "(no roles)"))
+            return
+        if head == "/reload":
+            if self._brain is None:
+                await self._write(note_line("still starting"))
+                return
+            await self._write(note_line(await self._brain.reload()))
+            self._set_status("reloaded")
             return
         if head == "/components":
             from iris_ai.components import OPTIONS

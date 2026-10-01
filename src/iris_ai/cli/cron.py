@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
@@ -36,6 +35,7 @@ from iris_ai.tasks import (
     parse_every,
     parse_when,
 )
+from iris_ai.timeutil import zone
 
 BUILTIN_HINT = (
     "the nightly sleep and morning brief are configured in iris/config.py "
@@ -58,7 +58,7 @@ def _when(task: Task, now: datetime) -> str:
 
 def render_list(store: TaskStore) -> int:
     out = console()
-    now = datetime.now(ZoneInfo(settings.iris_timezone))
+    now = datetime.now(zone(settings.iris_timezone))
     jobs = store.list()
     if not jobs:
         ui.warn(out, "no scheduled jobs")
@@ -130,7 +130,7 @@ def render_add(
             task = store.add(instruction=instruction, run_at=when)
         elif every:
             delta = parse_every(every)
-            now = datetime.now(ZoneInfo(settings.iris_timezone))
+            now = datetime.now(zone(settings.iris_timezone))
             task = store.add(
                 instruction=instruction,
                 run_at=now + delta,
@@ -140,7 +140,7 @@ def render_add(
             )
         else:
             hour, minute, _days = parse_calendar(at or "")
-            now = datetime.now(ZoneInfo(settings.iris_timezone))
+            now = datetime.now(zone(settings.iris_timezone))
             candidate = datetime(now.year, now.month, now.day, hour, minute, tzinfo=now.tzinfo)
             if candidate <= now:
                 candidate += timedelta(days=1)

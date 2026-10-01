@@ -295,6 +295,7 @@ class ChatGraph:
                 self.runtime.files.root,
                 today=self.runtime.files.today().isoformat(),
                 timezone=settings.iris_timezone,
+                persona=getattr(self.runtime, "persona_choice", "") or "",
             )
             + f"\n\nContext:\n{state['memory_context']}"
         )

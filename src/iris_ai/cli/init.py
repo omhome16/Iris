@@ -220,8 +220,10 @@ async def _memory_checks(llm, *, offline: bool) -> list[Check]:
     )
     if offline:
         return [store, Check("recall", "warn", "embeddings not probed (--offline)")]
+    if not (settings.embedding_model or "").strip():
+        return [store, Check("recall", "ok", "keyword-only (embeddings off)")]
     try:
-        await llm.embed_one("iris embedding probe")
+        await llm.embed_one("iris embedding probe", max_attempts=1)
     except Exception as exc:  # noqa: BLE001 — a missing embedder is a warn, not a fail
         return [store, Check("recall", "warn", f"keyword-only ({type(exc).__name__}: {str(exc)[:90]})")]
     return [store, Check("recall", "ok", "hybrid — keyword search plus embeddings")]
@@ -300,7 +302,17 @@ def _next_steps() -> None:
     )
 
 
-def run(*, config: Path | None = None, force: bool = False, offline: bool = False, yes: bool = False) -> int:
+def run(
+    *,
+    config: Path | None = None,
+    force: bool = False,
+    offline: bool = False,
+    yes: bool = False,
+    provider: str = "",
+    model: str = "",
+    api_key_env: str = "",
+    memory_mode: str = "",
+) -> int:
     """Create the sample config, probe the setup, and report what it can do."""
     config_path = Path(config) if config is not None else Path(settings.harness_config)
     # The manifest is applied **first**, before anything is written: it can name the
@@ -309,14 +321,28 @@ def run(*, config: Path | None = None, force: bool = False, offline: bool = Fals
     # inside `_verify`, which meant `iris init` reported one configuration and set
     # up another — visible the moment a profile shipped its own `workspace_dir`.)
     apply_manifest(settings, load_manifest(config_path))
-    if yes:
+    if provider or (yes and model):
+        from iris_ai.setup.flow import SetupPlan, apply_plan
+
+        apply_plan(
+            SetupPlan(
+                provider=provider or "auto",
+                model=model,
+                api_key=os.environ.get(api_key_env, "") if api_key_env else "",
+                embeddings=memory_mode or "none",
+            )
+        )
+    elif yes:
         from iris_ai.cli.setup import apply_setup
 
         apply_setup(Path(settings.workspace_dir))
     elif sys.stdout.isatty() and not os.environ.get("IRIS_PLAIN"):
-        from iris_ai.cli.tui.wizard import run_wizard
+        from iris_ai.cli.ask import prompter_for
+        from iris_ai.setup.flow import apply_plan, collect
 
-        run_wizard(Path(settings.workspace_dir))
+        plan = collect(prompter_for(), skip_verify=offline)
+        if plan is not None:
+            apply_plan(plan)
     files = _write_samples(config_path, force=force) + _workspace_checks()
     checks, recall_ok = asyncio.run(_verify(offline=offline))
     _render(files, checks, recall_ok=recall_ok)

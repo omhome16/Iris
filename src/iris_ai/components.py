@@ -88,14 +88,60 @@ _CONTEXT = {
 
 
 def list_options(kind: str) -> list[str]:
-    """Built-in names for one seam. A dotted path is always allowed as well."""
-    return list(OPTIONS.get(kind, ()))
+    """Built-in names plus local folders. A dotted path is always allowed too."""
+    from iris_ai.plug import list_local
+
+    names = list(OPTIONS.get(kind, ()))
+    for info in list_local(kind):
+        if info.name not in names:
+            names.append(info.name)
+    return names
 
 
 def _builtin(kind: str, name: str) -> Any:
     if kind == "context":
         return _CONTEXT.get(name)
     return None
+
+
+def _resolve_class(kind: str, name: str) -> Any:
+    """Built-in, local folder, or dotted path. None when this name is a mode."""
+    from iris_ai.plug import load_class, local_folder
+
+    folder = local_folder(kind, name)
+    if folder is not None:
+        return load_class(folder), "local"
+    builtin = _builtin(kind, name)
+    if builtin is not None:
+        return builtin, "builtin"
+    if ":" in name:
+        return load_symbol(name), "dotted"
+    return None
+
+
+def _install(runtime: Any, kind: str, name: str, *, fallback: Any = None) -> Any:
+    """Build one component. A failure logs one line and returns the fallback."""
+    from iris_ai.plug import Guarded, construct
+
+    resolved = None
+    try:
+        resolved = _resolve_class(kind, name)
+    except Exception as exc:  # noqa: BLE001 - a bad component must not stop boot
+        log.warning("%s %s failed to load (%s). Using the built-in.", kind, name, exc)
+        return fallback
+    if resolved is None:
+        return fallback
+    cls, source = resolved
+    try:
+        inner = construct(cls, runtime)
+    except Exception as exc:  # noqa: BLE001 - construction errors are reported, not fatal
+        log.warning("%s %s failed to start (%s). Using the built-in.", kind, name, exc)
+        return fallback
+    # Local components are the ones Iris or the owner just added. Watch those.
+    # A dotted path stays the class the caller constructed.
+    if source == "local" and fallback is not None and kind != "persona":
+        return Guarded(inner, fallback, kind=kind, name=name)
+    return inner
 
 
 def attach(runtime: Any, manifest: dict) -> None:
@@ -107,18 +153,21 @@ def attach(runtime: Any, manifest: dict) -> None:
 
     context = str(section.get("context") or "default")
     if context not in ("default", ""):
-        builtin = _builtin("context", context)
-        try:
-            cls = builtin if builtin is not None else load_symbol(context)
-        except ValueError as exc:
-            log.warning("context %s: %s", context, exc)
-            cls = None
-        if cls is not None:
-            runtime.context_builder = cls(runtime)
+        from iris_ai.agent.context import ContextAssembler
+
+        built = _install(runtime, "context", context, fallback=ContextAssembler(runtime))
+        if built is not None:
+            runtime.context_builder = built
             log.info("context builder: %s", context)
+        else:
+            log.warning("context %s is not available. Using the built-in assembler.", context)
 
     persona = str(section.get("persona") or "file")
     runtime.persona_choice = persona
+    if (persona not in ("file", "blank", "") and ":" in persona) or _looks_local("persona", persona):
+        built = _install(runtime, "persona", persona)
+        if built is not None:
+            runtime.persona_source = built
     log.info("persona: %s", persona)
 
     capture = str(section.get("capture") or "default")
@@ -126,15 +175,25 @@ def attach(runtime: Any, manifest: dict) -> None:
         runtime.capture_policy = OffCapture()
         log.info("capture: off")
     elif capture not in ("default", ""):
-        cls = load_symbol(capture)
-        runtime.capture_policy = cls(runtime)
-        log.info("capture: %s", capture)
+        built = _install(runtime, "capture", capture, fallback=None)
+        if built is not None:
+            runtime.capture_policy = built
+            log.info("capture: %s", capture)
+        else:
+            log.warning("capture %s is not available. Using the built-in.", capture)
 
     consolidator = str(section.get("consolidator") or "dreaming")
     if consolidator == "off":
         runtime.dreams = OffConsolidator()
         log.info("consolidator: off")
     elif consolidator not in ("dreaming", "default", ""):
-        cls = load_symbol(consolidator)
-        runtime.dreams = cls(runtime)
-        log.info("consolidator: %s", consolidator)
+        built = _install(runtime, "consolidator", consolidator, fallback=runtime.dreams)
+        if built is not None:
+            runtime.dreams = built
+            log.info("consolidator: %s", consolidator)
+
+
+def _looks_local(kind: str, name: str) -> bool:
+    from iris_ai.plug import local_folder
+
+    return local_folder(kind, name) is not None

@@ -140,6 +140,10 @@ TOOL_DECLARATIONS: dict[str, Declaration] = {
     "get_chat_history": Declaration(ToolClass.READ, "extended"),
     "send_message": Declaration(ToolClass.DELIVERY, "extended"),
     "send_photo": Declaration(ToolClass.DELIVERY, "extended"),
+    "component_write": Declaration(ToolClass.FILESYSTEM, "extended"),
+    "component_check": Declaration(ToolClass.READ, "extended"),
+    "component_activate": Declaration(ToolClass.CONTROL, "extended"),
+    "component_rollback": Declaration(ToolClass.CONTROL, "extended"),
 }
 
 
@@ -247,6 +251,12 @@ NAMESPACES: dict[str, tuple[str, ...]] = {
     "dreaming": ("dream_now",),
     "history": ("get_chat_history",),
     "tools": ("find_tools",),
+    "components": (
+        "component_write",
+        "component_check",
+        "component_activate",
+        "component_rollback",
+    ),
 }
 
 # What each group is *for*, in one line. Written for the model, not for the
@@ -262,6 +272,7 @@ NAMESPACE_PURPOSE: dict[str, str] = {
     "dreaming": "consolidate memory now instead of waiting for the nightly sweep",
     "history": "read the raw record of past conversations",
     "tools": "load the schema of a tool that is over this turn's surface budget",
+    "components": "stage, check, activate or roll back a plug-in component",
 }
 
 # The tool the catalog tells the model to reach for. Named here so the prompt and

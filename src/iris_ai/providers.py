@@ -252,3 +252,20 @@ KEY_ENV_VARS: tuple[str, ...] = tuple(p.key_env for p in KEYED_PROVIDERS)
 def spec(name: str) -> Provider | None:
     """Look up a provider by name, case-insensitively. None = unknown."""
     return PROVIDERS.get(name.strip().lower())
+
+
+def qualify(provider: str, model: str) -> str:
+    """Add the provider prefix when the model id does not already have it.
+
+    Groq's ids look like `openai/gpt-oss-120b`. Stored that way, LiteLLM sends
+    them to OpenAI. The prefixed form is `groq/openai/gpt-oss-120b`. An id that
+    already starts with this provider's prefix is left alone, so this never
+    doubles it.
+    """
+    found = spec(provider)
+    text = (model or "").strip()
+    if found is None or not text or not found.prefix:
+        return text
+    if text.startswith(found.prefix):
+        return text
+    return f"{found.prefix}{text}"

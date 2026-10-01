@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from iris_ai.config import settings
@@ -201,12 +201,9 @@ class LightPhase:
         """Parse agent-written `(note)` lines from recent daily notes into
         staged signals. Dated by filename (episodic evidence, AGENT origin)."""
         signals: list[StagedSignal] = []
-        try:
-            from zoneinfo import ZoneInfo
+        from iris_ai.timeutil import now as zoned_now
 
-            today = datetime.now(ZoneInfo(settings.iris_timezone)).date()
-        except Exception:  # noqa: BLE001 - bad tz config, fall back to UTC
-            today = date.today()
+        today = zoned_now(settings.iris_timezone).date()
         for i in range(max(1, scan_days)):
             day = today - timedelta(days=i)
             path = daily_dir / f"{day.isoformat()}.md"

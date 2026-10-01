@@ -69,6 +69,9 @@ def persona_text(root: Path, choice: str = "") -> str:
     picked = (choice or _persona_choice(root)).strip() or "file"
     if picked == "blank":
         return ""
+    custom = _custom_persona(picked)
+    if custom:
+        return custom
     if picked in _PRESETS:
         path = Path(__file__).resolve().parent / "templates" / "personas" / f"{picked}.md"
         if path.is_file():
@@ -76,6 +79,25 @@ def persona_text(root: Path, choice: str = "") -> str:
     path = root / "PERSONA.md"
     if path.is_file():
         return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _custom_persona(picked: str) -> str:
+    """A local folder or `pkg:Class` persona. Empty when this name is not one."""
+    if picked in {"file", "blank", *_PRESETS}:
+        return ""
+    try:
+        from iris_ai.plug import construct, load_class, local_folder
+
+        folder = local_folder("persona", picked)
+        if folder is not None:
+            return str(construct(load_class(folder), None).text())
+        if ":" in picked:
+            from iris_ai.components import load_symbol
+
+            return str(construct(load_symbol(picked), None).text())
+    except Exception:  # noqa: BLE001 - a bad persona falls through to PERSONA.md
+        return ""
     return ""
 
 
@@ -99,10 +121,10 @@ def _persona_choice(root: Path) -> str:
     return str(section.get("persona") or "file")
 
 
-def render_system(root: Path, *, today: str, timezone: str) -> str:
+def render_system(root: Path, *, today: str, timezone: str, persona: str = "") -> str:
     name = assistant_name(root)
     text = CONTRACT.format(name=name, date=today, tz=timezone)
-    extra = persona_text(root)
+    extra = persona_text(root, persona)
     if extra:
         text += "\n\n## Persona\n" + extra
     return text

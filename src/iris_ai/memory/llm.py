@@ -486,7 +486,9 @@ class LLMClient:
                 f"all providers failed ({[c[0] for c in candidates]}): {last}"
             ) from last
 
-    async def embed(self, texts: Sequence[str], *, timeout: float = 60.0) -> list[list[float]]:
+    async def embed(
+        self, texts: Sequence[str], *, timeout: float = 60.0, max_attempts: int = 4
+    ) -> list[list[float]]:
         async def call():
             kwargs: dict[str, Any] = dict(
                 model=self.embedding_model,
@@ -500,7 +502,7 @@ class LLMClient:
             self._record(self.embedding_model, "embedding", getattr(resp, "usage", None))
             return [item["embedding"] for item in resp.data]
 
-        return await _with_retries(call)
+        return await _with_retries(call, max_attempts=max_attempts)
 
-    async def embed_one(self, text: str) -> list[float]:
-        return (await self.embed([text]))[0]
+    async def embed_one(self, text: str, *, max_attempts: int = 4) -> list[float]:
+        return (await self.embed([text], max_attempts=max_attempts))[0]

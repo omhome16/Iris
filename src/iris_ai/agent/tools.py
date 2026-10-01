@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -1206,7 +1207,133 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         )
     )
 
+    tools.extend(component_tools(runtime))
     return tools
+
+
+def component_tools(runtime: Runtime) -> list[Tool]:
+    """Write a component into staging, check it, and activate it after approval."""
+
+    async def component_write(kind: str, name: str, filename: str, content: str) -> str:
+        from iris_ai.plug import staging_dir
+
+        try:
+            folder = staging_dir(kind, name)
+        except ValueError as exc:
+            return _err(str(exc))
+        allowed = {"component.py", "component.toml", "test_component.py"}
+        if filename not in allowed:
+            return _err(f"filename must be one of {', '.join(sorted(allowed))}")
+        folder.mkdir(parents=True, exist_ok=True)
+        target = (folder / filename).resolve()
+        if not target.is_relative_to(folder.resolve()):
+            return _err("path escapes the staging directory")
+        target.write_text(content, encoding="utf-8")
+        return _ok(path=str(target.relative_to(folder.parent.parent.parent)))
+
+    async def component_check(kind: str, name: str) -> str:
+        import json as _json
+        import subprocess
+
+        from iris_ai.plug import local_folder, staging_dir
+
+        folder = staging_dir(kind, name)
+        if not (folder / "component.py").is_file():
+            found = local_folder(kind, name)
+            if found is None:
+                return _err(f"no staged or local component {kind}/{name}")
+            folder = found
+        code = (
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "from iris_ai.plug import check_folder\n"
+            "ok, detail = check_folder(Path(sys.argv[1]))\n"
+            "print(json.dumps({'ok': ok, 'detail': detail}))\n"
+        )
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", code, str(folder)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return _err("component check timed out")
+        if proc.returncode != 0 and not proc.stdout.strip():
+            return _err(proc.stderr.strip()[:300] or "check failed")
+        try:
+            payload = _json.loads(proc.stdout.strip().splitlines()[-1])
+        except (IndexError, _json.JSONDecodeError):
+            return _err(proc.stderr.strip()[:300] or proc.stdout.strip()[:300] or "check failed")
+        if not payload.get("ok"):
+            return _err(str(payload.get("detail") or "check failed"))
+        return _ok(detail=payload.get("detail"))
+
+    async def component_activate(kind: str, name: str) -> str:
+        from iris_ai.plug import activate
+
+        try:
+            return _ok(detail=activate(kind, name))
+        except Exception as exc:  # noqa: BLE001 - the tool reports why activation stopped
+            return _err(f"{type(exc).__name__}: {exc}")
+
+    async def component_rollback(kind: str) -> str:
+        from iris_ai.plug import rollback
+
+        return _ok(detail=rollback(kind))
+
+    del runtime  # tools jail writes to components/.staging, not the sandbox
+    return [
+        Tool(
+            "component_write",
+            "Write one file of a new component into components/.staging. "
+            "Allowed files: component.py, component.toml, test_component.py. "
+            "Nothing outside that folder can be written.",
+            {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"},
+                    "name": {"type": "string"},
+                    "filename": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["kind", "name", "filename", "content"],
+            },
+            component_write,
+        ),
+        Tool(
+            "component_check",
+            "Import a staged component in a separate process and report whether it matches its contract.",
+            {
+                "type": "object",
+                "properties": {"kind": {"type": "string"}, "name": {"type": "string"}},
+                "required": ["kind", "name"],
+            },
+            component_check,
+        ),
+        Tool(
+            "component_activate",
+            "After the owner approves, move a staged component into components/ and select it. "
+            "Then tell them to type /reload.",
+            {
+                "type": "object",
+                "properties": {"kind": {"type": "string"}, "name": {"type": "string"}},
+                "required": ["kind", "name"],
+            },
+            component_activate,
+        ),
+        Tool(
+            "component_rollback",
+            "Switch a component kind back to the previous selection.",
+            {
+                "type": "object",
+                "properties": {"kind": {"type": "string"}},
+                "required": ["kind"],
+            },
+            component_rollback,
+        ),
+    ]
 
 
 @dataclass(frozen=True, slots=True)

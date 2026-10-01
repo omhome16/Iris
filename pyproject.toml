@@ -30,6 +30,9 @@ dependencies = [
     "typer>=0.12",
     "rich>=13",
     "textual>=1.0",
+    # Windows has no system time-zone database. Without this, ZoneInfo("UTC")
+    # raises on every chat turn.
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.scripts]
@@ -63,6 +66,9 @@ schedule = [
 judge = [
     "typesafe-sdk>=0.5.7",
 ]
+secrets = [
+    "keyring>=25",
+]
 acp = [
     "agent-client-protocol>=0.12.1",
 ]
@@ -78,6 +84,7 @@ all = [
     "mcp>=2.0",
     "apscheduler>=3.10",
     "typesafe-sdk>=0.5.7",
+    "keyring>=25",
     "agent-client-protocol>=0.12.1",
     "opentelemetry-exporter-otlp-proto-http>=1.27",
     "opentelemetry-sdk>=1.27",

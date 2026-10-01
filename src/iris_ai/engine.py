@@ -104,6 +104,15 @@ def _checkpointer_dsn(dsn: str) -> str:
     return f"{plain}{'&' if '?' in plain else '?'}connect_timeout={seconds}"
 
 
+def _postgres_driver_installed() -> bool:
+    """True when the optional Postgres driver can be imported."""
+    try:
+        import asyncpg  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _postgres_endpoint(dsn: str) -> tuple[str, int] | None:
     """The DSN's TCP endpoint, or None when it has none to probe."""
     parts = urlsplit(dsn.replace("postgresql+psycopg://", "postgresql://"))
@@ -212,6 +221,20 @@ class Harness:
         return self.graph.respond_stream(message, session_id=session_id, image=image)
 
     # ── shutdown ─────────────────────────────────────────────────────────
+    async def reload(self) -> str:
+        """Re-read config and swap components without leaving the process.
+
+        Threads stay in the checkpointer. A component that fails to load is
+        left on the previous one; `attach` reports that instead of crashing.
+        """
+        from iris_ai.components import attach
+        from iris_ai.config import reload as reload_settings
+        from iris_ai.manifest import load_manifest
+
+        reload_settings()
+        attach(self.runtime, load_manifest(Path(settings.harness_config)))
+        return "reloaded config and components"
+
     async def aclose(self) -> None:
         """Stop everything this harness started, in dependency order.
 
@@ -244,6 +267,21 @@ class Harness:
         await self.jev.close()
 
 
+def _memory_index(llm: LLMClient, _jev: JevClient, reranker: JevReranker):
+    """The configured store: a local component, a dotted class, or the registry."""
+    from iris_ai.plug import construct, load_class, local_folder
+
+    name = settings.memory_backend
+    folder = local_folder("memory", name)
+    if folder is not None:
+        return construct(load_class(folder), None)
+    if ":" in name:
+        from iris_ai.components import load_symbol
+
+        return construct(load_symbol(name), None)
+    return MEMORY_BACKENDS.build(name, dsn=settings.postgres_dsn, llm=llm, reranker=reranker)
+
+
 async def _build_index(
     llm: LLMClient, jev: JevClient, postgres: PostgresMode
 ) -> tuple[MemoryIndex | NullIndex, str | None]:
@@ -255,9 +293,7 @@ async def _build_index(
     falls back to the ``null`` backend and names the reason.
     """
     reranker = JevReranker(jev)
-    index = MEMORY_BACKENDS.build(
-        settings.memory_backend, dsn=settings.postgres_dsn, llm=llm, reranker=reranker
-    )
+    index = _memory_index(llm, jev, reranker)
     try:
         await index.connect()
     except Exception as exc:
@@ -303,12 +339,17 @@ async def _open_checkpointer(
     # (`CHECKPOINTER_BACKEND=postgres`) or the API's contract (`postgres=require`)
     # still goes straight to the driver, where the driver's own error is the
     # answer the caller is owed.
-    if (
+    # A fresh install has no Postgres extra and no server. Trying the default
+    # DSN only to report "asyncpg is not installed" is noise, not a failure.
+    postgres_ready = _postgres_driver_installed()
+    if want == "auto" and postgres == "auto" and not postgres_ready:
+        log.debug("checkpointer: asyncpg is not installed; skipping Postgres")
+    elif (
         want == "auto"
         and postgres == "auto"
         and not await _postgres_accepts_connections(settings.postgres_dsn)
     ):
-        log.warning(
+        log.debug(
             "checkpointer: nothing listening at %s — skipping the Postgres tier",
             settings.postgres_dsn,
         )
@@ -323,7 +364,7 @@ async def _open_checkpointer(
                 # An explicit request, or the API's contract: a missing database
                 # is a boot failure, exactly as it always was.
                 raise
-            log.warning(
+            log.debug(
                 "checkpointer: Postgres unreachable (%s: %s); falling back",
                 type(exc).__name__,
                 exc,
@@ -418,12 +459,49 @@ async def _start_services(
         brain._retry_task = asyncio.create_task(_retry_channels())
 
 
+def _apply_harness_overrides(
+    *,
+    provider: str | None,
+    model: str | None,
+    api_key: str | None,
+    memory: str | None,
+) -> None:
+    """Library callers pass these instead of editing `.env`. They win over files."""
+    if not any((provider, model, api_key, memory)):
+        return
+    from iris_ai.config import reload as reload_settings
+    from iris_ai.providers import PROVIDERS, qualify
+
+    overrides: dict[str, object] = {}
+    chosen = (provider or "").strip().lower()
+    if chosen:
+        overrides["llm_provider"] = chosen
+    if memory:
+        overrides["memory_backend"] = memory
+    if model:
+        qualified = qualify(chosen, model) if chosen else model.strip()
+        overrides["strong_model"] = qualified
+        spec = PROVIDERS.get(chosen)
+        if spec is not None:
+            overrides[spec.strong_field] = qualified
+    if api_key and chosen:
+        spec = PROVIDERS.get(chosen)
+        if spec is not None and spec.key_field:
+            overrides[spec.key_field] = api_key
+    if overrides:
+        reload_settings(**overrides)
+
+
 @asynccontextmanager
 async def harness(
     *,
     workspace_dir: Path | None = None,
     postgres: PostgresMode = "auto",
     services: bool = True,
+    provider: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    memory: str | None = None,
 ) -> AsyncIterator[Harness]:
     """Boot the engine and yield it.
 
@@ -431,6 +509,9 @@ async def harness(
     contract). `postgres="auto"` degrades instead (the CLI's contract).
     `services=True` also starts the scheduler, the scheduled-task store and the
     Telegram channel.
+
+    `provider`, `model`, `api_key` and `memory` override the files for this
+    process. One process has one configuration.
     """
     # Declarative config, applied before anything reads a setting. Precedence is
     # defaults < .env < manifest < environment, so a real env var always wins, a
@@ -440,6 +521,7 @@ async def harness(
     applied = apply_manifest(settings, load_manifest(manifest_path))
     if applied:
         log.info("harness manifest applied (%s): %s", manifest_path, applied)
+    _apply_harness_overrides(provider=provider, model=model, api_key=api_key, memory=memory)
 
     # A malformed tool-policy override is a security knob that failed to parse,
     # so it fails the boot rather than being skipped silently. An override that

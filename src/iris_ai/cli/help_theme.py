@@ -72,4 +72,4 @@ def console(stderr: bool = False) -> Console:
     return Console(theme=THEME, stderr=stderr, highlight=False, emoji=False)
 
 
-LEVEL_STYLE = {"ok": "iris.ok", "warn": "iris.warn", "fail": "iris.fail"}
+LEVEL_STYLE = {"ok": "iris.ok", "warn": "iris.warn", "fail": "iris.fail", "opt": "iris.sub"}

@@ -174,6 +174,21 @@ jobs:
             exit 1
           fi
 
+  onboarding-windows:
+    # The same no-database path, on Windows, where a missing tz database used
+    # to crash every chat turn.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Clean-checkout path on Windows
+        run: |
+          uv sync --frozen
+          uv run iris init --offline
+          uv run pytest tests/test_harness.py -q -k no_database
+
   security:
     # Phase 7's release discipline: a pinned lockfile is not the same as a safe
     # one. Two checks, neither of which needs a service:

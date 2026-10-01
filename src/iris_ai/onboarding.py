@@ -16,11 +16,11 @@ import logging
 import re
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from iris_ai.config import settings
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.text import text_of
+from iris_ai.timeutil import try_zone
 
 log = logging.getLogger("iris_ai.onboarding")
 
@@ -370,11 +370,10 @@ class OnboardingWizard:
         were written to USER.md but never applied."""
         tz = (self.state.timezone or "").strip()
         if tz:
-            try:
-                ZoneInfo(tz)
-                settings.iris_timezone = tz
-            except Exception:  # noqa: BLE001 - bad tz string, keep default
+            if try_zone(tz) is None:
                 log.warning("ignoring invalid timezone from onboarding: %r", tz)
+            else:
+                settings.iris_timezone = tz
         hour = (self.state.sleep_pref or "").strip()
         if hour:
             try:

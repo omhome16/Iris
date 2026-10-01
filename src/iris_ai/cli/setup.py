@@ -68,7 +68,7 @@ def apply_wizard(
 ) -> None:
     """Write the profile, the provider, and the chosen parts. Never prints the key."""
     from iris_ai.cli.toml_edit import upsert
-    from iris_ai.providers import PROVIDERS
+    from iris_ai.providers import PROVIDERS, qualify
 
     apply_setup(
         root,
@@ -84,7 +84,7 @@ def apply_wizard(
     if provider and provider != "auto":
         upsert(manifest, "llm_provider", provider.strip().lower())
     if spec is not None and model.strip():
-        upsert(manifest, spec.strong_field, model.strip())
+        upsert(manifest, spec.strong_field, qualify(spec.name, model.strip()))
     if spec is not None and spec.key_env and api_key:
         write_env_key(env_path or Path(".env"), spec.key_env, api_key)
     if embeddings == "none":
@@ -109,6 +109,11 @@ def run_config(*, yes: bool = False, section: str = "") -> int:
     if yes:
         apply_setup(root)
         return 0
-    from iris_ai.cli.tui.wizard import run_wizard
+    from iris_ai.cli.ask import prompter_for
+    from iris_ai.setup.flow import apply_plan, collect
 
-    return run_wizard(root, start=section or "provider")
+    plan = collect(prompter_for(), section=section or "")
+    if plan is None:
+        return 1
+    apply_plan(plan, root=str(root))
+    return 0

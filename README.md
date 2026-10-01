@@ -6,15 +6,18 @@ Markdown, tools stop for approval before a side effect, and the CLI, the HTTP AP
 and the editor adapter share one turn loop.
 
 ```bash
-uv tool install iris-personal-ai
-iris init
-iris
+uv sync
+uv run iris init
+uv run iris
 ```
 
-`iris init` asks for a provider, an API key, and a model, then optional memory,
-persona, and MCP servers. `iris` opens the full-screen chat. From a clone,
-`uv sync` then `uv run iris init` and `uv run iris` do the same thing.
-`iris init --yes` skips the screen, which is what CI uses.
+`iris init` lets you pick a provider with the arrow keys, checks the key with a
+live call, then asks for a model and whether memory should be keyword-only.
+`iris` opens the chat. The package is not on PyPI yet. For a global `iris`
+command: `uv tool install git+https://github.com/omhome16/Iris`.
+`iris init --yes` skips the questions, which is what CI uses.
+`iris init --provider groq --model openai/gpt-oss-120b --api-key-env GROQ_API_KEY`
+does the same without prompts.
 
 ![Setup wizard](docs/images/wizard.svg)
 ![Full-screen chat](docs/images/chat.svg)

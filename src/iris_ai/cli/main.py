@@ -297,10 +297,29 @@ def init(
     force: bool = typer.Option(False, "--force", help="Overwrite an existing .env or manifest."),
     offline: bool = typer.Option(False, "--offline", help="Skip the model and embedding probes."),
     yes: bool = typer.Option(False, "--yes", help="Write a blank identity and skip the setup screen."),
+    provider: str = typer.Option("", "--provider", help="Provider name. Skips the questions."),
+    model: str = typer.Option("", "--model", help="Model id. The provider prefix is added if missing."),
+    api_key_env: str = typer.Option(
+        "", "--api-key-env", help="Env var that already holds the key. The value is not printed."
+    ),
+    memory_mode: str = typer.Option(
+        "", "--memory", help="none for keyword memory, semantic for embeddings."
+    ),
 ) -> None:
     """Set up this checkout, then prove it: config, model check, memory, recall."""
     init_mod = _load("init")
-    raise typer.Exit(code=init_mod.run(config=config, force=force, offline=offline, yes=yes))
+    raise typer.Exit(
+        code=init_mod.run(
+            config=config,
+            force=force,
+            offline=offline,
+            yes=yes,
+            provider=provider,
+            model=model,
+            api_key_env=api_key_env,
+            memory_mode=memory_mode,
+        )
+    )
 
 
 @app.command()
@@ -324,8 +343,8 @@ def models(
 
 @app.command()
 def components(
-    action: str = typer.Argument("list", help="list | use"),
-    kind: str = typer.Argument("", help="context | memory | persona | channel"),
+    action: str = typer.Argument("list", help="list | use | eject | check | rollback | add"),
+    kind: str = typer.Argument("", help="context | memory | persona | capture | consolidator | channel"),
     option: str = typer.Argument("", help="The option to switch to."),
 ) -> None:
     """List plug-and-play options, or switch one."""
@@ -357,11 +376,21 @@ def new(
         path = scaffold_mod.write_component(name, dest / name / "component.py")
         console().print(f"wrote {path}")
         return
-    if kind not in {"context", "memory", "persona", "role", "channel"} or not name:
-        _fail("usage: iris new context|memory|persona|role|channel <name>")
+    if kind == "role":
+        if not name:
+            _fail("usage: iris new role <name>")
+            return
+        path = scaffold_mod.write_new(kind, name, dest)
+        console().print(f"wrote {path}")
         return
-    path = scaffold_mod.write_new(kind, name, dest)
-    console().print(f"wrote {path}")
+    if kind not in {"context", "memory", "persona", "capture", "consolidator", "channel"} or not name:
+        _fail("usage: iris new context|memory|persona|capture|consolidator|channel|role <name>")
+        return
+    from iris_ai.plug import scaffold
+
+    folder = scaffold(kind, name, root=dest if str(dest) != "examples" else None)
+    console().print(f"wrote {folder}")
+    console().print(f"check it with `iris components check {kind} {name}`, then `iris components use {kind} {name}`")
 
 
 @app.command()
@@ -388,10 +417,15 @@ def version() -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    fix: bool = typer.Option(False, "--fix", help="Apply the safe fixes (create a missing .env)."),
+) -> None:
     """Offline environment checks (names only — never secret values)."""
     doctor_mod = _load("doctor")
     try:
+        if fix:
+            for note in doctor_mod.apply_safe_fixes():
+                console().print(note)
         checks = doctor_mod.run_checks()
     except Exception as exc:  # noqa: BLE001 — doctor must survive any crash and report it
         _fail(f"doctor crashed: {exc}", _debug_flag, cause=exc)

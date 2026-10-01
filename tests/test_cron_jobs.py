@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -32,8 +31,9 @@ from iris_ai.tasks import (
     parse_calendar,
     parse_every,
 )
+from iris_ai.timeutil import zone
 
-TZ = ZoneInfo("UTC")
+TZ = zone("UTC")
 
 
 # ── parsing ──────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from iris_ai.providers import AUTO_ORDER, PROVIDERS
+from iris_ai.providers import AUTO_ORDER, PROVIDERS, qualify
 
 
 class Settings(BaseSettings):
@@ -238,15 +238,33 @@ class Settings(BaseSettings):
                 return self._auth_for_provider(name)
         return {}
 
-    def model_post_init(self, __context) -> None:
-        # Keep the per-provider model names before resolution overwrites
-        # `strong_model`/`cheap_model` — the failover chain needs them.
-        self._models_strong = {
-            name: getattr(self, spec.strong_field, "") for name, spec in PROVIDERS.items()
-        }
-        self._models_cheap = {
-            name: getattr(self, spec.cheap_field, "") for name, spec in PROVIDERS.items()
-        }
+    def resolve(self) -> None:
+        """Rebuild provider, model and embedding choices from the current fields.
+
+        Called after construction and again after a manifest is applied. A
+        manifest used to `setattr` model ids onto a Settings that had already
+        resolved, so the failover chain kept the old ids.
+        """
+        self.provider_warning = ""
+        # `strong_model` is both Gemini's id and the resolved id of whoever is
+        # active. A second resolve must not read the resolved id back as Gemini's.
+        gemini_strong = str(self.strong_model or "")
+        gemini_cheap = str(self.cheap_model or "")
+        if gemini_strong.startswith("gemini/") or not getattr(self, "_gemini_strong_source", ""):
+            self._gemini_strong_source = gemini_strong
+        else:
+            gemini_strong = str(self._gemini_strong_source)
+        if gemini_cheap.startswith("gemini/") or not getattr(self, "_gemini_cheap_source", ""):
+            self._gemini_cheap_source = gemini_cheap
+        else:
+            gemini_cheap = str(self._gemini_cheap_source)
+        self._models_strong = {}
+        self._models_cheap = {}
+        for name, spec in PROVIDERS.items():
+            raw_strong = gemini_strong if spec.strong_field == "strong_model" else getattr(self, spec.strong_field, "")
+            raw_cheap = gemini_cheap if spec.cheap_field == "cheap_model" else getattr(self, spec.cheap_field, "")
+            self._models_strong[name] = qualify(name, raw_strong or "")
+            self._models_cheap[name] = qualify(name, raw_cheap or "")
 
         requested = self.llm_provider.strip().lower() or "auto"
         provider = self._autodetect_provider() if requested == "auto" else requested
@@ -272,11 +290,17 @@ class Settings(BaseSettings):
         # a value; an explicit STRONG_MODEL in .env must survive.
         self.strong_model = self._models_strong.get(provider, "") or self.strong_model
         self.cheap_model = self._models_cheap.get(provider, "") or self.cheap_model
-        # Embeddings stay Gemini when a key exists; otherwise fall back to
-        # Ollama nomic-embed-text so a chat-only provider still indexes.
-        if not self.gemini_api_key:
+        # An explicit empty embedding model means keyword-only. Do not invent an
+        # Ollama embedder the owner just turned off. The Gemini default falls
+        # back to Ollama only when no Gemini key is configured.
+        if not (self.embedding_model or "").strip():
+            self.embedding_model = ""
+        elif not self.gemini_api_key and str(self.embedding_model).startswith("gemini/"):
             self.embedding_model = self.ollama_embedding_model
             self.embedding_dim = self.ollama_embedding_dim
+
+    def model_post_init(self, __context) -> None:
+        self.resolve()
 
     def llm_candidates(self, tier: str = "strong") -> list[tuple[str, str, dict]]:
         """Provider failover chain for a model tier.
@@ -718,6 +742,39 @@ class Settings(BaseSettings):
     # Retention below this fraction marks a memory as rot (flagged in dreams,
     # owner decides; nothing is hard-deleted silently).
     rot_threshold: float = 0.2
+
+
+def load(overrides: dict | None = None) -> Settings:
+    """A Settings built from defaults, `.env`, the harness file, then overrides.
+
+    Overrides win over the file, which is how `harness(provider=...)` and a
+    fresh `iris init` both see the values that were just written.
+    """
+    from pathlib import Path
+
+    from iris_ai.manifest import apply_manifest, load_manifest
+
+    fresh = Settings(**(overrides or {}))
+    apply_manifest(fresh, load_manifest(Path(fresh.harness_config)))
+    if overrides:
+        fields = type(fresh).model_fields
+        for key, value in overrides.items():
+            if value is not None and key in fields:
+                setattr(fresh, key, value)
+        fresh.resolve()
+    return fresh
+
+
+def reload(**overrides: object) -> Settings:
+    """Rebuild the process settings from disk and swap them into `settings`.
+
+    Modules import `settings` by name. Replacing the object would leave them
+    holding the old one, so the new values are copied onto the existing object.
+    """
+    fresh = load({key: value for key, value in overrides.items() if value is not None} or None)
+    settings.__dict__.clear()
+    settings.__dict__.update(fresh.__dict__)
+    return settings
 
 
 settings = Settings()

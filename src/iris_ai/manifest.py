@@ -117,4 +117,9 @@ def apply_manifest(settings: Any, data: dict[str, Any], *, environ: dict | None 
             continue
         setattr(settings, name, _coerce(getattr(settings, name, None), value))
         applied.append(name)
+    # Model ids and the provider chain are derived. A bare setattr leaves them
+    # pointing at whatever was true at import time.
+    resolve = getattr(settings, "resolve", None)
+    if applied and callable(resolve):
+        resolve()
     return applied

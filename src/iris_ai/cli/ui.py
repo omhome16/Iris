@@ -42,7 +42,7 @@ from iris_ai.cli.help_theme import LEVEL_STYLE
 #: leading character of every pasted-into-an-issue diagnostic line, so it has to
 #: survive a codepage the console chose rather than one we picked. (A `↑` here
 #: once ended a command with a traceback instead of printing a table.)
-MARK = {"ok": "+", "warn": "!", "fail": "x"}
+MARK = {"ok": "+", "warn": "!", "fail": "x", "opt": "~"}
 
 BULLET = "•"
 CHEVRON = "›"

@@ -44,7 +44,8 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+from iris_ai.timeutil import zone
 
 try:  # reminders are the [schedule] extra
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -88,7 +89,7 @@ _WEEKDAY_NAMES = {
 def parse_when(when: str) -> datetime:
     """Parse an owner/agent-provided time into an aware datetime.
     Raises ValueError for anything unparseable."""
-    tz = ZoneInfo(settings.iris_timezone)
+    tz = zone(settings.iris_timezone)
     now = datetime.now(tz)
     text = when.strip()
     if not text:
@@ -376,7 +377,7 @@ class TaskStore:
             raise ValueError(
                 f"too many scheduled jobs ({settings.cron_max_jobs} max) — remove one first"
             )
-        now = datetime.now(ZoneInfo(settings.iris_timezone))
+        now = datetime.now(zone(settings.iris_timezone))
         task = Task(
             id=uuid.uuid4().hex[:12],
             run_at=run_at.isoformat(),
@@ -433,7 +434,7 @@ class TaskScheduler:
         missed window counted and the run/skip decision taken by
         `missed_decision()`.
         """
-        tz = ZoneInfo(settings.iris_timezone)
+        tz = zone(settings.iris_timezone)
         now = datetime.now(tz)
         for task in self.store.list():
             if task.disabled:
@@ -478,7 +479,7 @@ class TaskScheduler:
         firing N times; combined with the explicit `missed_decision()`, the
         policy is one late run or one recorded skip — never a burst.
         """
-        tz = run_at.tzinfo or ZoneInfo(settings.iris_timezone)
+        tz = run_at.tzinfo or zone(settings.iris_timezone)
         if task.kind == INTERVAL:
             delta = parse_every(task.every)
             trigger: object = IntervalTrigger(seconds=int(delta.total_seconds()), timezone=tz)
@@ -518,7 +519,7 @@ class TaskScheduler:
         down for a day must not replay its backlog.
         """
         delta = parse_every(every)
-        now = datetime.now(ZoneInfo(settings.iris_timezone))
+        now = datetime.now(zone(settings.iris_timezone))
         task = self.store.add(
             instruction=instruction,
             run_at=now + delta,
@@ -535,7 +536,7 @@ class TaskScheduler:
     ) -> Task:
         """A job at a time of day, optionally only on given weekdays."""
         hour, minute, _days = parse_calendar(at, weekdays)
-        now = datetime.now(ZoneInfo(settings.iris_timezone))
+        now = datetime.now(zone(settings.iris_timezone))
         candidate = datetime(now.year, now.month, now.day, hour, minute, tzinfo=now.tzinfo)
         if candidate <= now:
             candidate += timedelta(days=1)
@@ -588,7 +589,7 @@ class TaskScheduler:
 
     def _record_run(self, task: Task, *, ok: bool) -> None:
         """Persist the outcome of one run and decide whether to keep the job."""
-        now = datetime.now(ZoneInfo(settings.iris_timezone)).isoformat(timespec="seconds")
+        now = datetime.now(zone(settings.iris_timezone)).isoformat(timespec="seconds")
         if not task.recurring:
             self.store.remove(task.id)
             return

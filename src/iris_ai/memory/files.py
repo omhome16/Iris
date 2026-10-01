@@ -15,12 +15,12 @@ from __future__ import annotations
 import hashlib
 import os
 import threading
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from iris_ai.config import settings
 from iris_ai.memory.chunking import estimate_tokens
+from iris_ai.timeutil import now as zoned_now
 
 
 class ConcurrencyError(RuntimeError):
@@ -70,10 +70,7 @@ class WorkspaceFiles:
     def today(self) -> date:
         """The owner's *today* — daily notes, traces, and dreams must all be
         dated in the timezone gathered during onboarding, not the server's."""
-        try:
-            return datetime.now(ZoneInfo(settings.iris_timezone)).date()
-        except Exception:  # noqa: BLE001 - bad tz config, fall back to UTC
-            return datetime.now(ZoneInfo("UTC")).date()
+        return zoned_now(settings.iris_timezone).date()
 
     def daily_note(self, day: date | None = None) -> Path:
         return self.root / "memory" / f"{(day or self.today()).isoformat()}.md"
@@ -137,7 +134,7 @@ class WorkspaceFiles:
         # separately could interleave with the other writer's line.
         block = ""
         if stamp:
-            block += f"\n## {datetime.now(ZoneInfo(settings.iris_timezone)).isoformat(timespec='seconds')}\n"
+            block += f"\n## {zoned_now(settings.iris_timezone).isoformat(timespec='seconds')}\n"
         block += text.rstrip() + "\n"
         path.parent.mkdir(parents=True, exist_ok=True)
         with _path_lock(path), path.open("a", encoding="utf-8") as fh:

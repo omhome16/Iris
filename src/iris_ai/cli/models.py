@@ -9,7 +9,7 @@ from iris_ai.cli import ui
 from iris_ai.cli.help_theme import console
 from iris_ai.cli.toml_edit import upsert
 from iris_ai.config import settings
-from iris_ai.providers import PROVIDERS
+from iris_ai.providers import PROVIDERS, qualify
 
 
 def manifest_path() -> Path:
@@ -40,6 +40,8 @@ def switch_model(model_id: str) -> str:
         return "usage: /model <id>"
     provider = getattr(settings, "_resolved_provider", None) or settings.llm_provider
     spec = PROVIDERS.get(str(provider).strip().lower())
+    if spec is not None:
+        model = qualify(spec.name, model)
     field = spec.strong_field if spec is not None else "strong_model"
     setattr(settings, field, model)
     settings.strong_model = model
