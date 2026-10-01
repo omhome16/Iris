@@ -121,6 +121,12 @@ class KeyringStore:
 
     @staticmethod
     def _backend():
+        if not KeyringStore.available():
+            raise SecretStoreError(
+                "the keyring backend needs the optional extra: "
+                "`pip install 'iris-personal-ai[secrets]'` (or set SECRET_STORE=file "
+                "to keep secrets in a 0600 file instead)"
+            )
         try:
             import keyring
         except Exception as exc:

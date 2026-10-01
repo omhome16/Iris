@@ -221,7 +221,7 @@ async def _memory_checks(llm, *, offline: bool) -> list[Check]:
     if offline:
         return [store, Check("recall", "warn", "embeddings not probed (--offline)")]
     if not (settings.embedding_model or "").strip():
-        return [store, Check("recall", "ok", "keyword-only (embeddings off)")]
+        return [store, Check("recall", "warn", "keyword-only (embeddings off)")]
     try:
         await llm.embed_one("iris embedding probe", max_attempts=1)
     except Exception as exc:  # noqa: BLE001 — a missing embedder is a warn, not a fail

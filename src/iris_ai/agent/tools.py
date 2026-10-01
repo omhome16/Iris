@@ -1424,6 +1424,10 @@ TOOL_NAMES: frozenset[str] = frozenset(
         "send_message",
         "get_chat_history",
         "send_photo",
+        "component_write",
+        "component_check",
+        "component_activate",
+        "component_rollback",
     }
 )
 

@@ -365,6 +365,10 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "deep_dive",
         "verify_answer",
         "run_parallel",
+        "component_write",
+        "component_check",
+        "component_activate",
+        "component_rollback",
     }
     for s in schemas:
         assert s["function"]["parameters"]["type"] == "object"
