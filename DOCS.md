@@ -147,7 +147,7 @@ It writes files, then **measures** the result rather than assuming it.
 |---|---|
 | one no-op completion on the cheap tier | a provider key that works, reported with its latency |
 | the configured memory store opened for `stats()` | the no-service claim holds, and the chunk count is real |
-| the real checkpointer ladder walked | which tier a conversation would land in (`postgres` → `sqlite` → in-memory, with a warning when it is the last one) |
+| the real thread store walked | which tier a conversation would land in (`postgres` → `sqlite` → in-memory, with a warning when it is the last one) |
 
 Recall is reported separately and honestly: with no embedding provider the report
 says **keyword-only**, names the fix (`GEMINI_API_KEY`, the default embedding
@@ -155,9 +155,9 @@ model) and the keyless alternative (`LLM_PROVIDER=ollama` with
 `ollama/nomic-embed-text`). A working install that under-reports is worse than a
 warning — so it is a warning.
 
-`iris init` is deliberately **not interactive**: everything a wizard would ask has
-a right answer that can be detected, and a prompt would only make this page slower
-and the command untestable. `--offline` skips the two live probes (CI and
+`iris init` does not ask questions. `--yes` writes a blank profile for CI.
+The profile screen is `iris config` (owner, assistant name, tone, timezone,
+sleep hour, persona). `--offline` skips the two live probes (CI and
 pre-commit use it); `iris doctor` re-checks the environment any time.
 
 It is also safe to re-run: it reports `kept (already exists)` rather than
@@ -173,14 +173,17 @@ uv run iris chat --session work           # a separate thread (memory continuity
 uv run iris chat --no-banner              # skip the start-screen art
 ```
 
-First contact runs the onboarding wizard — name, tone, timezone — and writes
-`workspace/USER.md` and `workspace/config/iris.json`. Nothing about identity is
-hard-coded: a fresh workspace has no name until it is told one.
+First contact does not ask questions in the chat. Set the profile with
+`iris config` (owner, assistant name, tone, timezone, sleep hour, persona).
+That writes `workspace/USER.md`, `workspace/PERSONA.md`, and
+`workspace/config/iris.json`. A fresh workspace has no name until that screen
+is saved. `iris chat` on a real terminal is the full-screen UI; `--once` and
+a pipe stay plain text.
 
 ### Verify the pieces yourself
 
 ```bash
-uv run iris doctor        # environment: providers, store, recall, checkpointer, secret store
+uv run iris doctor        # environment: providers, store, recall, threads, secret store
 uv run iris plugins       # which channels, tools, hooks and MCP servers are live
 uv run iris costs         # what the model calls cost, from the ledger
 uv run iris guards        # the ceilings, on the record
@@ -413,13 +416,13 @@ async with iris_ai.harness() as brain:
 application, the workspace, the memory backend through its registry, the model
 backend through its registry, the judge, the tool surface, the guard chain, the
 hook bus (with plugin hooks discovered and attached), the MCP pool, the
-checkpointer ladder, the journal, and — only when asked — the scheduler and
+thread store, the journal, and — only when asked — the scheduler and
 channels.
 
 | Argument | Effect |
 |---|---|
 | `services=False` | do not start the scheduler or connect channels (what `iris chat` uses: the CLI is a client, not a service) |
-| `postgres="auto"` | walk the checkpointer ladder instead of requiring a database |
+| `postgres="auto"` | walk the thread-store ladder instead of requiring a database |
 
 ### 5.1 Interface-agnostic clients
 
@@ -441,7 +444,7 @@ Iris prefers to boot and under-report over refusing to start:
 | No provider key | deterministic paths still run; model-backed features degrade. `iris doctor` names the missing keys |
 | No embedding provider | recall is **keyword-only**, and the report says so instead of looking broken |
 | Postgres unreachable | memory degrades to `null` (loudly: `mode`/`degraded_reason` say why), threads fall to SQLite |
-| No checkpointer available at all | in-memory threads, with a warning that they will not survive exit |
+| No thread store available at all | in-memory threads, with a warning that they will not survive exit |
 | JEV unavailable | every judgment falls back deterministically, and the trace records that nothing was checked |
 | An MCP server down | skipped, retried in the background; the session continues |
 | A channel down | skipped, never fatal |
@@ -465,7 +468,7 @@ Iris prefers to boot and under-report over refusing to start:
                                  iris/engine.py :: harness()
                        builds and owns: workspace · memory · model · judge
                                         · tools · guards · hooks
-                                        · MCP pool · checkpointer · journal
+                                        · MCP pool · thread store · journal
                                             │
                                             ▼
                                  iris/agent/chat.py :: ChatGraph
@@ -477,16 +480,17 @@ job.
 
 ### 6.2 What happens on a turn
 
-`ChatGraph` is a LangGraph `StateGraph` with seven nodes:
+The turn is a native loop in `iris_ai.kernel.loop` (`TurnLoop` / `NativeGraph`).
+`ChatGraph` still owns the nodes. There is no graph framework in the dependency list.
 
 ```
-START → onboarding? → assemble_context → (compact) → agent ⇄ tools → journal → capture → END
+START → profile? → assemble_context → (compact) → agent ⇄ tools → journal → capture → END
 ```
 
 | Node | Does | Cost |
 |---|---|---|
-| `onboarding` | first-run wizard (profile questions) | one cheap call per answer, once ever |
-| `assemble_context` | bootstrap tiers (`MEMORY.md`, `USER.md`), the skills block, recall | one judgment (skill suggestion) |
+| `onboarding` | asks the owner to run `iris init` when no profile exists | none |
+| `assemble_context` | bootstrap tiers (`MEMORY.md`, `USER.md`) and the skills block. It does not search the index; the model recalls with the `memory_search` tool | one judgment (skill suggestion) |
 | `compact` | summarise history past the trigger budget | one strong call, only when over budget |
 | `agent` | the ReAct loop; may call tools | the real reply |
 | `tools` | dispatches tool calls **through the guard chain and the policy** | varies |
@@ -518,7 +522,7 @@ client goes away, the turn is cancelled rather than left running.
 | `security.py` | bearer auth: the one definition of the header | who is allowed to do what |
 | `redact.py` | credential scrubbing for anything written to disk | deciding what to log |
 | `trace.py` / `turnlog.py` | the turn trace and its content policy | the decisions being recorded |
-| `kernel/` | the turn journal and the exactly-once tool boundary | the loop itself |
+| `kernel/` | the turn loop, the thread store, the journal, and the exactly-once tool boundary | which store implementation is configured |
 | `registry.py` | names, sources, conflicts, entry-point discovery | what a plugin does |
 | `hooks.py` | the lifecycle bus and its priority order | built-in policy (guards subscribe) |
 | `manifest.py` | reading and applying `harness.toml`, and env precedence | what the settings mean |
@@ -1412,7 +1416,7 @@ The CLI is documented command by command in [§3](#3-the-cli).
 | `GET /jev` | judgment-layer health: enabled or not, *why not*, counters, last latency and error |
 | `POST /chat` · `POST /chat/stream` · `POST /chat/resume` | one turn as JSON, as SSE, or a resumed approval |
 | `POST /voice` | a Telegram voice note → transcript → turn |
-| `GET /onboarding` | onboarding wizard state |
+| `GET /onboarding` | whether a profile has been saved |
 | `POST /sleep` | run the dream cycle now |
 | `GET /mind` · `GET /skills` · `GET /tasks` | memory snapshot, learned skills, scheduled jobs |
 | `GET /rot` · `GET /retention` | forgetting report |
@@ -1498,7 +1502,7 @@ is a log line instead of a JSON-RPC parse error.
 **Windows caveat.** The protocol's stdio transport needs `connect_write_pipe`,
 which the selector event loop does not implement — so `iris-acp` leaves the event
 loop on the platform default. psycopg wants the selector loop, and the two cannot
-both win, so **on Windows an ACP session uses the SQLite checkpointer even when
+both win, so **on Windows an ACP session stores threads in SQLite even when
 Postgres is configured**. Threads still survive a restart; they live in a file.
 
 Where the tests are: `tests/test_acp_adapter.py` covers the mapping decisions and,
@@ -1853,7 +1857,7 @@ Two things, in this order:
    off-host is a complete backup. Restoring is unpacking it; the index rebuilds on
    the next boot.
 2. **The database**, if you use Postgres — `pg_dump` on the same schedule. It is
-   *derived*, so losing it costs a reindex rather than data, but the checkpointer
+   *derived*, so losing it costs a reindex rather than data, but the thread
    tables hold in-flight conversations and pending approvals.
 
 **A restore that only restores the database is not a restore.**

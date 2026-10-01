@@ -6,11 +6,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from langgraph.checkpoint.memory import MemorySaver
-
 from iris_ai.agent.chat import ChatGraph
 from iris_ai.agent.subagents import ResearchSubagent
 from iris_ai.agent.tools import get_tools
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.memory.llm import LLMClient
 from iris_ai.onboarding import OnboardingWizard

@@ -45,11 +45,10 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from langgraph.types import interrupt
-
 from iris_ai.config import settings
 from iris_ai.jev import GuardAction, screen_untrusted
 from iris_ai.jev.guard import UNTRUSTED_BANNER
+from iris_ai.kernel.pause import interrupt
 from iris_ai.mcp import (
     McpServerSpec,
     McpToolInfo,

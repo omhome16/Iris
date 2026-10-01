@@ -6,9 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from langgraph.checkpoint.memory import MemorySaver
-
 from iris_ai.agent.chat import ChatGraph, _to_llm_messages
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.memory.llm import LLMClient
 from iris_ai.onboarding import OnboardingWizard
@@ -69,11 +68,11 @@ async def test_plain_message_stays_a_string(tmp_path: Path):
 
 
 def test_to_llm_messages_preserves_content_blocks():
-    from langchain_core.messages import HumanMessage
+    from iris_ai.kernel.messages import Msg
 
     blocks = [
         {"type": "text", "text": "look at this"},
         {"type": "image_url", "image_url": {"url": DATA_URI}},
     ]
-    out = _to_llm_messages([HumanMessage(content=blocks)])
+    out = _to_llm_messages([Msg(type="human", content=blocks)])
     assert out[0]["content"] == blocks

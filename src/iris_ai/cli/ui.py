@@ -24,6 +24,8 @@ did exactly that once. The marks here are `•`, `!` and `x`; the separators are
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -53,6 +55,34 @@ TABLE_BOX = box.SIMPLE_HEAD
 PANEL_BOX = box.ROUNDED
 
 
+def _unicode_frames(out: Console) -> bool:
+    """Pretty frames only where the destination can actually encode them.
+
+    `FORCE_COLOR` (any value, including `0`) makes rich report `is_terminal`
+    on a captured stream, and a Windows console that is cp1252 then raises
+    `UnicodeEncodeError` on the box-drawing characters. A real terminal whose
+    encoding can hold `┌` gets the designed frame; everything else gets ASCII.
+    """
+    force = os.environ.get("FORCE_COLOR", "").strip().lower()
+    if (force in {"0", "false", "no"} or os.environ.get("TERM") == "dumb") and not getattr(
+        out, "_force_terminal", None
+    ):
+        return False
+    file = getattr(out, "file", None) or sys.stdout
+    isatty = getattr(file, "isatty", None)
+    try:
+        if not (callable(isatty) and isatty()):
+            return False
+    except OSError:
+        return False
+    encoding = getattr(file, "encoding", None) or "utf-8"
+    try:
+        chr(0x250C).encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return True
+
+
 def frame(out: Console, kind: str = "table") -> box.Box:
     """The frame to draw with: designed on a terminal, portable everywhere else.
 
@@ -63,7 +93,7 @@ def frame(out: Console, kind: str = "table") -> box.Box:
     does on Windows. So a non-terminal gets the ASCII frame, and the pretty one
     is reserved for the place a person is actually looking.
     """
-    if out.is_terminal:
+    if _unicode_frames(out):
         return TABLE_BOX if kind == "table" else PANEL_BOX
     return box.ASCII
 

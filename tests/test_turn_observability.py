@@ -17,11 +17,11 @@ import json
 from pathlib import Path
 
 import pytest
-from langgraph.checkpoint.memory import MemorySaver
 
 from iris_ai import background, turnlog
 from iris_ai.agent.chat import ChatGraph
 from iris_ai.config import settings
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.trace import TraceLogger
 from test_agent_graph import make_runtime
 from test_capture import _NoopReindexer, _onboarded
@@ -219,16 +219,16 @@ class _SlowReflectLLM:
 
 def _state_with_retrieval(user: str, reply: str) -> dict:
     """State as the journal node sees it: one memory_search tool result."""
-    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from iris_ai.kernel.messages import Msg
 
     return {
         "session_id": "obs",
         "origin": "owner",
         "messages": [
-            HumanMessage(content=user),
-            AIMessage(content="", tool_calls=[{"name": "memory_search", "id": "c1", "args": {"query": "lease"}}]),
-            ToolMessage(content="the owner pays rent on the 1st", tool_call_id="c1"),
-            AIMessage(content=reply),
+            Msg(type="human", content=user),
+            Msg(type="ai", content="", tool_calls=[{"name": "memory_search", "id": "c1", "args": {"query": "lease"}}]),
+            Msg(type="tool", content="the owner pays rent on the 1st", tool_call_id="c1"),
+            Msg(type="ai", content=reply),
         ],
     }
 
@@ -272,10 +272,10 @@ async def test_no_retrieval_means_no_reflection_call(tmp_path: Path):
     llm = _SlowReflectLLM()
     graph = ChatGraph(make_runtime(files, llm), MemorySaver())
 
-    from langchain_core.messages import AIMessage, HumanMessage
+    from iris_ai.kernel.messages import Msg
 
     with turnlog.collect() as log:
-        await graph._journal({"session_id": "obs", "origin": "owner", "messages": [HumanMessage(content="hi"), AIMessage(content="hello")]})
+        await graph._journal({"session_id": "obs", "origin": "owner", "messages": [Msg(type="human", content="hi"), Msg(type="ai", content="hello")]})
 
     assert llm.started == 0
     assert next(e for e in log.judgments if e["kind"] == "reflection")["mode"] == "skipped"

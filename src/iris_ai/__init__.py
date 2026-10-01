@@ -1,20 +1,16 @@
-"""Iris — a personal AI assistant with a visible mind.
+"""Iris — a neutral agent harness.
 
-Memory engineering, agent graph engineering, and context engineering,
-built as one production-grade system.
-
-The library's public surface in P2 is deliberately small: `__version__`,
-`harness()` and `Harness`. The boot wiring lives in `iris_ai.engine` (that name,
-not `iris_ai.harness`, because a submodule and a package attribute cannot share
-one) and pulls in LangGraph, asyncpg and the rest — so it is re-exported lazily,
-keeping `import iris_ai` (and therefore `iris_ai.cli`) cheap.
+The library's public surface is `__version__`, `harness()` and `Harness`.
+The boot wiring lives in `iris_ai.engine` (that name, not `iris_ai.harness`,
+because a submodule and a package attribute cannot share one) and is
+re-exported lazily, so `import iris_ai` stays cheap.
 """
 
 from __future__ import annotations
 
 import os as _os
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 #: The process environment as it was *before* Iris imported anything.
 #:

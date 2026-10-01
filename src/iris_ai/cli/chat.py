@@ -24,10 +24,8 @@ from iris_ai.cli.doctor import PROVIDER_KEY_NAMES, _load_dotenv
 from iris_ai.cli.help_theme import console
 from iris_ai.engine import Harness, harness
 
-# psycopg async (used by the LangGraph PostgresSaver) cannot run on
-# Windows' ProactorEventLoop; select the selector loop before any loop exists.
-# Same guard as iris_ai.api and scripts/run_core.py — without it `iris chat`
-# crashes against a reachable Postgres on Windows instead of talking to it.
+# Windows: the selector loop is the one async database connects can finish on.
+# Same guard as iris_ai.api and scripts/run_core.py.
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -94,10 +92,11 @@ async def _render_turn(brain: Harness, text: str, session: str) -> None:
                 call = payload.get("call") or {}
                 name = call.get("name", "?")
                 args = call.get("args", {})
-                if not printed:
+                if printed:
+                    out.print("")
+                    printed = False
+                else:
                     out.print("", end="\r")
-                # One dim line per call, prefix indented to sit under the reply
-                # header rather than in the reply text.
                 out.print(
                     f"[iris.sub]  {ui.CHEVRON} {name}({json.dumps(args, ensure_ascii=False)})[/iris.sub]"
                 )
@@ -106,6 +105,10 @@ async def _render_turn(brain: Harness, text: str, session: str) -> None:
         elif kind == "updates" and isinstance(payload, dict):
             for _node, update in payload.items():
                 for message in (update or {}).get("messages", []):
+                    mtype = message.get("type") if isinstance(message, dict) else getattr(message, "type", "")
+                    calls = message.get("tool_calls") if isinstance(message, dict) else getattr(message, "tool_calls", None)
+                    if mtype != "ai" or calls:
+                        continue
                     content = message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
                     if content and not printed:
                         out.print(str(content), end="")
@@ -188,6 +191,14 @@ async def _run_chat(*, session: str, once: str | None, debug: bool, no_banner: b
             if text == "/help":
                 out.print(REPL_HELP)
                 continue
+            if text == "/dream":
+                dreams = getattr(brain.runtime, "dreams", None)
+                if dreams is None or not hasattr(dreams, "sleep"):
+                    ui.note(out, "consolidation is off")
+                    continue
+                record = await dreams.sleep()
+                ui.note(out, getattr(record, "summary", None) or "consolidation finished")
+                continue
             try:
                 await _render_turn(brain, text, session)
             except Exception as exc:  # same contract as --once
@@ -197,10 +208,24 @@ async def _run_chat(*, session: str, once: str | None, debug: bool, no_banner: b
                 ui.hint(out, "hint: re-run with --debug for a traceback")
 
 
+def _want_tui(*, once: str | None) -> bool:
+    """The full-screen chat is for a real terminal. Pipes and `--once` stay plain."""
+    if once is not None or os.environ.get("IRIS_PLAIN"):
+        return False
+    return sys.stdout.isatty()
+
+
 def run_chat(
     *, session: str = "cli", once: str | None = None, debug: bool = False, no_banner: bool = False
 ) -> int:
     """Entry point used by the typer command (and by the tests)."""
+    if _want_tui(once=once):
+        try:
+            from iris_ai.cli.tui.app import run_tui
+        except ImportError:
+            run_tui = None  # type: ignore[assignment]
+        if run_tui is not None:
+            return run_tui(session=session)
     try:
         return asyncio.run(_run_chat(session=session, once=once, debug=debug, no_banner=no_banner))
     except KeyboardInterrupt:

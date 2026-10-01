@@ -21,9 +21,14 @@ import time
 from dataclasses import dataclass, field
 from datetime import date
 
-import asyncpg
 import numpy as np
-from pgvector.asyncpg import register_vector
+
+try:  # Postgres is the [postgres] extra; SQLite is the default and needs neither
+    import asyncpg
+    from pgvector.asyncpg import register_vector
+except ImportError:  # pragma: no cover - exercised when the extra is absent
+    asyncpg = None  # type: ignore[assignment]
+    register_vector = None  # type: ignore[assignment]
 
 from iris_ai import turnlog
 from iris_ai.config import settings
@@ -151,6 +156,8 @@ class MemoryIndex:
         self._cache.clear()
 
     async def connect(self) -> None:
+        if asyncpg is None or register_vector is None:
+            raise RuntimeError("Postgres memory needs the postgres extra: uv sync --extra postgres")
         if self._pool is None:
             dsn = self.dsn.replace("postgresql+psycopg://", "postgresql://")
 

@@ -10,10 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from langgraph.checkpoint.memory import MemorySaver
 
 from iris_ai.agent.chat import ApprovalRequired, ChatGraph
 from iris_ai.approval import effective_digest
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from test_agent_graph import ForgetLLM, _forget_runtime
 
 

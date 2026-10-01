@@ -33,9 +33,15 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from mcp.client import Client
-from mcp.client.sse import sse_client
-from mcp.client.stdio import StdioServerParameters, stdio_client
+try:  # MCP servers are the [mcp] extra
+    from mcp.client import Client
+    from mcp.client.sse import sse_client
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+except ImportError:  # pragma: no cover
+    Client = None  # type: ignore[assignment,misc]
+    sse_client = None  # type: ignore[assignment]
+    StdioServerParameters = None  # type: ignore[assignment,misc]
+    stdio_client = None  # type: ignore[assignment]
 
 from iris_ai.mcp import McpServerSpec, McpToolInfo, namespaced
 
@@ -191,6 +197,8 @@ async def open_server(
     refused URL, a failed handshake — is the same outcome to the caller, which is
     what "degraded, not fatal" requires.
     """
+    if Client is None or stdio_client is None or sse_client is None:
+        raise McpUnavailable(f"{spec.name}: MCP needs the mcp extra: uv sync --extra mcp")
     if server is None and spec.transport == "stdio" and _stdio_blocked():
         raise McpUnsupported(
             f"{spec.name}: the stdio transport cannot run under this event loop — "

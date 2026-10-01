@@ -11,7 +11,7 @@ MEMORY.md              ← durable facts and decisions (curated)
 DREAMS.md              ← the consolidation diary: what changed and why (for reading)
 memory/YYYY-MM-DD.md   ← daily notes: everything that happened, dated, append-only
 skills/*.md            ← procedures the agent wrote for itself (procedural memory)
-config/iris.json       ← identity captured during onboarding
+config/iris.json       ← profile from `iris config` (name, tone, timezone, persona)
 config/llm_calls.jsonl ← the cost ledger: one line per model call
 config/traces.jsonl    ← one line per turn: stages, tools, judgments
 .dreams/               ← staging area for consolidation candidates

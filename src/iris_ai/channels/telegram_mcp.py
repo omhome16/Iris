@@ -18,7 +18,10 @@ import contextlib
 import logging
 from dataclasses import dataclass, field
 
-from mcp.client.client import Client
+try:  # Telegram rides the [mcp] extra
+    from mcp.client.client import Client
+except ImportError:  # pragma: no cover
+    Client = None  # type: ignore[assignment,misc]
 
 log = logging.getLogger("iris.telegram")
 

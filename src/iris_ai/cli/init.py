@@ -16,7 +16,7 @@ is **measured, not asserted** — three probes, one per thing a session needs:
   result rather than a hope;
 - **an index** — the configured store is opened and asked for its stats, which is
   also the check that the no-service claim holds (SQLite needs no daemon);
-- **a thread store** — the real checkpointer ladder is walked, so the report says
+- **a thread store** — SQLite, Postgres, then memory, so the report says
   which tier a conversation would actually land in, and warns when that tier is
   the in-memory one (threads that do not survive exit).
 
@@ -26,10 +26,9 @@ not a broken one — but a keyword-only index that does not say so is exactly ho
 one gets mistaken for the other, so this command names the fix and the
 alternatives instead of printing a green tick.
 
-Deliberately **not interactive**. Everything a wizard would ask has a right
-answer that can be detected — which provider has a key, where the workspace is,
-which store is configured — and a prompt would only make the five-minute path
-slower and the command untestable. `iris doctor` stays the read-only inspection;
+Deliberately **not a questionnaire**. Which provider has a key, where the
+workspace is, and which store is configured can all be detected, and a prompt
+would only make the five-minute path slower and the command untestable. `iris doctor` stays the read-only inspection;
 `iris init` is the setup, and both use the same names and the same ok/warn/fail
 vocabulary.
 """
@@ -163,7 +162,11 @@ def _provider_checks(env: dict[str, str]) -> list[Check]:
         )
     requested = (env.get("LLM_PROVIDER", "") or "auto").strip().lower() or "auto"
     resolved = _resolve_provider(requested, env)
-    return [keys, Check("provider", "ok", f"{PROVIDERS[resolved].label} (LLM_PROVIDER={requested})")]
+    checks = [keys, Check("provider", "ok", f"{PROVIDERS[resolved].label} (LLM_PROVIDER={requested})")]
+    from iris_ai.cli.doctor import stale_model_checks
+
+    checks.extend(stale_model_checks(env))
+    return checks
 
 
 async def _model_check(llm) -> Check:
@@ -224,7 +227,7 @@ async def _memory_checks(llm, *, offline: bool) -> list[Check]:
 
 
 async def _threads_check() -> Check:
-    """Walk the real checkpointer ladder: which tier would hold the thread?"""
+    """Walk the thread stores: which tier would hold the thread?"""
     async with AsyncExitStack() as stack:
         _saver, tier = await _open_checkpointer(stack, postgres="auto")
     if tier == "postgres":
@@ -296,7 +299,7 @@ def _next_steps() -> None:
     )
 
 
-def run(*, config: Path | None = None, force: bool = False, offline: bool = False) -> int:
+def run(*, config: Path | None = None, force: bool = False, offline: bool = False, yes: bool = False) -> int:
     """Create the sample config, probe the setup, and report what it can do."""
     config_path = Path(config) if config is not None else Path(settings.harness_config)
     # The manifest is applied **first**, before anything is written: it can name the
@@ -305,6 +308,10 @@ def run(*, config: Path | None = None, force: bool = False, offline: bool = Fals
     # inside `_verify`, which meant `iris init` reported one configuration and set
     # up another — visible the moment a profile shipped its own `workspace_dir`.)
     apply_manifest(settings, load_manifest(config_path))
+    if yes:
+        from iris_ai.cli.setup import apply_setup
+
+        apply_setup(Path(settings.workspace_dir))
     files = _write_samples(config_path, force=force) + _workspace_checks()
     checks, recall_ok = asyncio.run(_verify(offline=offline))
     _render(files, checks, recall_ok=recall_ok)

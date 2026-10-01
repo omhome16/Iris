@@ -1,19 +1,12 @@
-"""The kernel — durability around a turn, not (yet) a replacement for the graph.
+"""The kernel — the turn loop and the durability around it.
 
-`09-roadmap.md`'s Phase 5 describes a full turn state machine with LangGraph
-optional, which is the largest change on the roadmap. What is here is the part
-that has to exist *before* that swap can be safe, and that is worth having on its
-own either way:
-
-- `journal.py` — an append-only record of what a turn did: tool starts, ends,
-  interrupts, spent approvals, and the prompt/tool version the turn ran with.
-- `turn.py` — the tool boundary, which turns that record into exactly-once
-  behaviour across a restart: replay a settled call, re-enter an interrupted one,
-  and refuse to *guess* about a side-effecting call that may or may not have run.
-
-The graph stays the orchestrator, so a later re-architecture is a swap rather
-than a rewrite — but the ambiguity a crash introduces is resolved in code, with
-tests, instead of being left to hope.
+- `loop.py` — load a thread, run the nodes, pause for approval, save the thread.
+- `threads.py` — SQLite by default, memory for tests, Postgres when that extra is installed.
+- `events.py` — the stream the CLI, the API, and the bridge all read.
+- `journal.py` — an append-only record of what a turn did.
+- `turn.py` — exactly-once tool boundaries across a restart: replay a settled
+  call, re-enter an interrupted one, and refuse to guess about a side effect
+  that may or may not have run.
 """
 
 from __future__ import annotations

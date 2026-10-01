@@ -46,10 +46,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.date import DateTrigger
-from apscheduler.triggers.interval import IntervalTrigger
+try:  # reminders are the [schedule] extra
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.date import DateTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
+except ImportError:  # pragma: no cover
+    AsyncIOScheduler = None  # type: ignore[assignment,misc]
+    CronTrigger = None  # type: ignore[assignment,misc]
+    DateTrigger = None  # type: ignore[assignment,misc]
+    IntervalTrigger = None  # type: ignore[assignment,misc]
 
 from iris_ai.config import settings
 

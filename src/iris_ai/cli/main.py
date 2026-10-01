@@ -20,23 +20,20 @@ from pathlib import Path
 
 import typer
 
-from iris_ai.cli import agents as agents_mod
 from iris_ai.cli import art, ui
-from iris_ai.cli import chat as chat_mod
-from iris_ai.cli import costs as costs_mod
-from iris_ai.cli import cron as cron_mod
-from iris_ai.cli import doctor as doctor_mod
-from iris_ai.cli import guards as guards_mod
-from iris_ai.cli import init as init_mod
-from iris_ai.cli import mcp as mcp_mod
-from iris_ai.cli import migrate as migrate_mod
-from iris_ai.cli import plugins as plugins_mod
-from iris_ai.cli import policy as policy_mod
-from iris_ai.cli import secrets as secrets_mod
-from iris_ai.cli import skills as skills_mod
-from iris_ai.cli import tools as tools_mod
 from iris_ai.cli import version as version_mod
 from iris_ai.cli.help_theme import console
+
+
+def _load(name: str):
+    """Import a command module only when that command runs.
+
+    Importing every command at startup pulled in the engine and the model
+    client, which made `iris --help` take several seconds.
+    """
+    import importlib
+
+    return importlib.import_module(f"iris_ai.cli.{name}")
 
 app = typer.Typer(
     name="iris",
@@ -55,8 +52,8 @@ app = typer.Typer(
 #: here is listed under `More` — the screen degrades by getting longer, never by
 #: dropping a verb.
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("start", ("init", "chat", "doctor", "version")),
-    ("configure", ("secrets", "mcp", "policy")),
+    ("start", ("init", "chat", "config", "doctor", "version")),
+    ("configure", ("secrets", "mcp", "policy", "new")),
     ("inspect", ("tools", "plugins", "guards", "costs", "agents", "skills", "cron")),
     ("maintain", ("migrate",)),
 )
@@ -165,7 +162,8 @@ def chat(
     once: str | None = typer.Option(None, "--once", help="Run a single turn and exit."),
     no_banner: bool = typer.Option(False, "--no-banner", help="Skip the start-screen art."),
 ) -> None:
-    """Chat with Iris in the terminal (streaming; same pipeline as the API)."""
+    """Chat in the terminal (the TUI, or one turn with --once)."""
+    chat_mod = _load("chat")
     raise typer.Exit(
         code=chat_mod.run_chat(session=session, once=once, debug=_debug_flag, no_banner=no_banner)
     )
@@ -177,6 +175,7 @@ def skills(
     name: str | None = typer.Argument(None, help="Skill name (for `show`/`approve`)."),
 ) -> None:
     """Inspect the skill registry: list, show, validate, approve."""
+    skills_mod = _load("skills")
     raise typer.Exit(code=skills_mod.run(action=action, name=name))
 
 
@@ -187,6 +186,7 @@ def agents(
     limit: int = typer.Option(10, "--limit", "-n", help="How many decisions to list."),
 ) -> None:
     """Inspect the multi-agent layer (read-only): roles, show, handoffs."""
+    agents_mod = _load("agents")
     raise typer.Exit(code=agents_mod.run(action=action, name=name, limit=limit))
 
 
@@ -200,6 +200,7 @@ def cron(
     instruction: str = typer.Option("", "--instruction", "-i", help="What Iris should do when the job fires."),
 ) -> None:
     """Time-triggered work: list, add, rm."""
+    cron_mod = _load("cron")
     raise typer.Exit(
         code=cron_mod.run(action, job_id, once=once, every=every, at=at, instruction=instruction)
     )
@@ -211,6 +212,7 @@ def tools(
     limit: int = typer.Option(20, "--limit", "-n", help="How many actions to list."),
 ) -> None:
     """Inspect the tool surface and its policy (read-only): policy, actions."""
+    tools_mod = _load("tools")
     raise typer.Exit(code=tools_mod.run(action, limit=limit))
 
 
@@ -222,12 +224,14 @@ def plugins(
     ),
 ) -> None:
     """Inspect registered capabilities (read-only): channels, tools, hooks, mcp."""
+    plugins_mod = _load("plugins")
     raise typer.Exit(code=plugins_mod.run(action, live=live))
 
 
 @app.command()
 def policy(action: str = typer.Argument("show", help="show (default) | classes | overrides | servers")) -> None:
     """Show what every tool and server is allowed to do, and where that came from."""
+    policy_mod = _load("policy")
     raise typer.Exit(code=policy_mod.run(action))
 
 
@@ -243,6 +247,7 @@ def mcp(
     enabled: bool = typer.Option(True, "--enabled/--disabled", help="Declare it now or park it."),
 ) -> None:
     """Declare MCP servers (list, add, remove, test) without hand-editing JSON."""
+    mcp_mod = _load("mcp")
     raise typer.Exit(
         code=mcp_mod.run(
             action,
@@ -263,6 +268,7 @@ def costs(
     days: int = typer.Option(14, "--days", "-n", help="How many days `daily` reports."),
 ) -> None:
     """What the model calls actually cost, from the append-only ledger."""
+    costs_mod = _load("costs")
     raise typer.Exit(code=costs_mod.run(action, days=days))
 
 
@@ -273,6 +279,7 @@ def secrets(
     value: str = typer.Argument("", help="Value (omit to be prompted, hidden)."),
 ) -> None:
     """Where secrets live, which are missing, and store or remove one (names only, never values)."""
+    secrets_mod = _load("secrets")
     raise typer.Exit(code=secrets_mod.run(action, name=name, value=value))
 
 
@@ -283,9 +290,33 @@ def init(
     ),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing .env or manifest."),
     offline: bool = typer.Option(False, "--offline", help="Skip the model and embedding probes."),
+    yes: bool = typer.Option(False, "--yes", help="Write a blank identity and skip the setup screen."),
 ) -> None:
     """Set up this checkout, then prove it: config, model check, memory, recall."""
-    raise typer.Exit(code=init_mod.run(config=config, force=force, offline=offline))
+    init_mod = _load("init")
+    raise typer.Exit(code=init_mod.run(config=config, force=force, offline=offline, yes=yes))
+
+
+@app.command()
+def config() -> None:
+    """Change the name, tone, timezone and persona chosen at setup."""
+    setup_mod = _load("setup")
+    raise typer.Exit(code=setup_mod.run_config(yes=False))
+
+
+@app.command("new")
+def new(
+    kind: str = typer.Argument(..., help="component"),
+    name: str = typer.Argument(..., help="context or memory"),
+    dest: Path = typer.Option(Path("examples"), "--dest", help="Directory to write the scaffold into."),
+) -> None:
+    """Scaffold a swappable context or memory component."""
+    if kind != "component" or name not in {"context", "memory"}:
+        _fail("usage: iris new component context|memory")
+        return
+    scaffold_mod = _load("scaffold")
+    path = scaffold_mod.write_component(name, dest / name / "component.py")
+    console().print(f"wrote {path}")
 
 
 @app.command()
@@ -294,12 +325,14 @@ def migrate(
     dry_run: bool = typer.Option(False, "--dry-run", help="Report without writing anything."),
 ) -> None:
     """Move memory to another store: rebuild the index from the Markdown."""
+    migrate_mod = _load("migrate")
     raise typer.Exit(code=migrate_mod.run(to=to, dry_run=dry_run))
 
 
 @app.command()
 def guards(json_output: bool = typer.Option(False, "--json", help="Machine-readable snapshot.")) -> None:
     """The guard chain and today's token budget (read-only, no engine needed)."""
+    guards_mod = _load("guards")
     raise typer.Exit(code=guards_mod.run(json_output=json_output))
 
 
@@ -312,6 +345,7 @@ def version() -> None:
 @app.command()
 def doctor() -> None:
     """Offline environment checks (names only — never secret values)."""
+    doctor_mod = _load("doctor")
     try:
         checks = doctor_mod.run_checks()
     except Exception as exc:  # noqa: BLE001 — doctor must survive any crash and report it

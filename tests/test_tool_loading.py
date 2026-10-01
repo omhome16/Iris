@@ -17,14 +17,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from langgraph.checkpoint.memory import MemorySaver
-
 from fakes import skill_registry
 from iris_ai import turnlog
 from iris_ai.agent.chat import ChatGraph
 from iris_ai.agent.runtime import Runtime
 from iris_ai.agent.tools import get_tools, tool_schemas, tool_surface
 from iris_ai.config import settings
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.memory.skills import Skill
 from iris_ai.sandbox import Sandbox

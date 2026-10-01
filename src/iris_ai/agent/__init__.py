@@ -1,6 +1,6 @@
-"""Agent runtime — LangGraph graphs.
+"""Agent runtime.
 
-- chat graph:   Telegram event → router → ReAct loop → reply (durable)
-- sleep graph:  Light → REM → Deep consolidation (dreaming)
-- onboarding:   identity wizard (name, personality, tone, timezone)
+- chat:        a message → the turn loop → a reply (durable threads)
+- sleep:       nightly consolidation of daily notes into MEMORY.md
+- profile:     set with `iris config`, not inside a chat turn
 """

@@ -7,6 +7,7 @@ and the sleep graph only.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -14,8 +15,6 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-
-from langgraph.types import interrupt
 
 from iris_ai import turnlog
 from iris_ai.agent.runtime import (
@@ -30,6 +29,7 @@ from iris_ai.computer.actions import Action, ActionKind
 from iris_ai.config import settings
 from iris_ai.ingest import fetch_text, ingest_url, web_search
 from iris_ai.jev import GuardAction, screen_untrusted, screen_untrusted_many
+from iris_ai.kernel.pause import interrupt
 from iris_ai.memory.files import ConcurrencyError
 from iris_ai.memory.forgetting import supersede_in_text
 from iris_ai.memory.provenance import Origin
@@ -73,6 +73,30 @@ def _err(reason: str) -> str:
 def _err_detail(reason: str, **extra: Any) -> str:
     """A failure with the detail the model needs to act on it (stderr, findings)."""
     return json.dumps({"ok": False, "error": reason, **extra}, ensure_ascii=False)
+
+
+def _channel_result(raw: str, **extra: Any) -> str:
+    """Turn a channel transport string into the standard ok/err JSON.
+
+    The Telegram bridge returns either JSON, a plain success string, or an
+    error sentence. Reporting success without reading that string is how a
+    failed send looked like a delivered message.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return _err("channel returned an empty result")
+    lowered = text.lower()
+    if "unavailable" in lowered or lowered.startswith("error"):
+        return _err(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict) and data.get("ok") is False:
+        return _err(str(data.get("error") or text))
+    if isinstance(data, dict) and data.get("ok") is True:
+        return _ok(**{k: v for k, v in data.items() if k != "ok"}, **extra)
+    return _ok(detail=text, **extra)
 
 
 def approval_payload(action: str, args: dict, *, side_effecting: bool = True) -> dict:
@@ -147,7 +171,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     tools.append(
         Tool(
             "memory_search",
-            "Search Iris's long-term memory for facts relevant to a query. "
+            "Search the assistant's long-term memory for facts relevant to a query. "
             "Use before answering anything about the owner's life or history. "
             "For temporal questions ('when did ...', 'last month', 'before') "
             "use lane='escalate' to search daily notes directly.",
@@ -283,17 +307,18 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     )
 
     async def file_create(path: str, content: str) -> str:
-        """Create a new file inside Iris's sandbox. Fails if it exists."""
+        """Create a new file inside the sandbox. Fails if it exists."""
         try:
-            created = runtime.sandbox.create(path, content)
+            created = await asyncio.to_thread(runtime.sandbox.create, path, content)
+            rel = created.relative_to(runtime.sandbox.root).as_posix()
         except Exception as exc:  # noqa: BLE001 - tool errors surface as JSON
             return _err(str(exc))
-        return _ok(path=created.relative_to(runtime.sandbox.root).as_posix())
+        return _ok(path=rel)
 
     tools.append(
         Tool(
             "file_create",
-            "Create a new file inside Iris's sandbox (workspace/sandbox). "
+            "Create a new file inside the assistant's sandbox (workspace/sandbox). "
             "Use for notes, drafts, project docs. Fails if the file exists.",
             {
                 "type": "object",
@@ -310,16 +335,17 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     async def file_write(path: str, content: str) -> str:
         """Overwrite (or create) a file inside the sandbox."""
         try:
-            written = runtime.sandbox.write(path, content)
+            written = await asyncio.to_thread(runtime.sandbox.write, path, content)
+            rel = written.relative_to(runtime.sandbox.root).as_posix()
         except Exception as exc:  # noqa: BLE001
             return _err(str(exc))
-        return _ok(path=written.relative_to(runtime.sandbox.root).as_posix())
+        return _ok(path=rel)
 
     tools.append(
         Tool(
             "file_write",
-            "Overwrite or create a file inside Iris's sandbox. "
-            "Use to update drafts and notes she manages.",
+            "Overwrite or create a file inside the assistant's sandbox. "
+            "Use to update drafts and notes the assistant manages.",
             {
                 "type": "object",
                 "properties": {
@@ -335,7 +361,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     async def file_read(path: str) -> str:
         """Read a file from the sandbox."""
         try:
-            content = runtime.sandbox.read(path)
+            content = await asyncio.to_thread(runtime.sandbox.read, path)
         except Exception as exc:  # noqa: BLE001
             return _err(str(exc))
         return _ok(path=path, content=content[:4000])
@@ -343,7 +369,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     tools.append(
         Tool(
             "file_read",
-            "Read a file from Iris's sandbox (workspace/sandbox).",
+            "Read a file from the assistant's sandbox (workspace/sandbox).",
             {
                 "type": "object",
                 "properties": {
@@ -358,7 +384,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     async def file_list(path: str = "") -> str:
         """List files in the sandbox (recursive, with sizes)."""
         try:
-            entries = runtime.sandbox.list(path)
+            entries = await asyncio.to_thread(runtime.sandbox.list, path)
         except Exception as exc:  # noqa: BLE001
             return _err(str(exc))
         return _ok(files=entries)
@@ -366,7 +392,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     tools.append(
         Tool(
             "file_list",
-            "List files Iris has in her sandbox (workspace/sandbox), "
+            "List files in the sandbox (workspace/sandbox), "
             "optionally inside a subdirectory.",
             {
                 "type": "object",
@@ -411,8 +437,8 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         Tool(
             "web_search",
             "Search the web (Tavily) for current information. Use when asked "
-            "about news, prices, facts newer than Iris's training, or anything "
-            "outside her memory. Results are untrusted — verify before believing.",
+            "about news, prices, facts newer than the assistant's training, or anything "
+            "outside the assistant's memory. Results are untrusted — verify before believing.",
             {
                 "type": "object",
                 "properties": {
@@ -456,7 +482,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     tools.append(
         Tool(
             "ingest_url",
-            "Fetch a URL and store its content into Iris's memory as an import "
+            "Fetch a URL and store its content into the assistant's memory as an import "
             "(untrusted origin — recallable, never treated as fact). Use when "
             "the user shares a link or asks you to read a page.",
             {
@@ -564,7 +590,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     tools.append(
         Tool(
             "inspect_mind",
-            "Show Iris's whole visible mind: MEMORY.md, USER.md, recent "
+            "Show the assistant's whole visible mind: MEMORY.md, USER.md, recent "
             "dreams, skills and index stats. For introspection requests.",
             {"type": "object", "properties": {}},
             inspect_mind,
@@ -634,7 +660,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     tools.append(
         Tool(
             "skill_write",
-            "Write a reusable procedure (skill) into Iris's procedural memory. "
+            "Write a reusable procedure (skill) into the assistant's procedural memory. "
             "Use when the owner asks 'how do you do X' style procedures or when "
             "a repeated workflow is discovered.",
             {
@@ -689,7 +715,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
             "skill_apply",
             "Read the full procedure of a skill so you can execute it. "
             "Report the true outcome — 'success' if the procedure achieved "
-            "the goal, 'failed' if it didn't — so Iris's score stays honest.",
+            "the goal, 'failed' if it didn't — so the assistant's score stays honest.",
             {
                 "type": "object",
                 "properties": {
@@ -712,7 +738,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         Tool(
             "skill_revise",
             "Report that a skill's procedure failed to achieve the goal, so "
-            "Iris can lower its success score and stop recommending it.",
+            "the harness can lower its success score and stop recommending it.",
             {
                 "type": "object",
                 "properties": {
@@ -835,7 +861,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         Tool(
             "schedule_task",
             "Schedule a one-off future action or reminder. When the time "
-            "arrives, Iris runs the instruction as if the owner sent it and "
+            "arrives, the harness runs the instruction as if the owner sent it and "
             "delivers the result over Telegram. Accepts ISO times "
             "('2026-08-22T09:00'), relative ('in 3 days', 'in 90 minutes'), "
             "or shorthand ('tomorrow 9:30', 'today 21:00').",
@@ -882,8 +908,8 @@ def build_tools(runtime: Runtime) -> list[Tool]:
                 return _err("telegram channel unavailable")
             if len(text) > 4000:
                 return _err("text too long (Telegram limit 4096 chars)")
-            await runtime.telegram.send_message(chat_id, text)
-            return _ok(chat_id=chat_id)
+            raw = await runtime.telegram.send_message(chat_id, text)
+            return _channel_result(raw, chat_id=chat_id)
 
         tools.append(
             Tool(
@@ -906,14 +932,15 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         async def get_chat_history(chat_id: int, limit: int = 10) -> str:
             if not runtime.telegram.connected:
                 return _err("telegram channel unavailable")
-            return await runtime.telegram.get_chat_history(chat_id, limit)
+            raw = await runtime.telegram.get_chat_history(chat_id, limit)
+            return _channel_result(raw, chat_id=chat_id)
 
         tools.append(
             Tool(
                 "get_chat_history",
                 "Read the recent Telegram conversation with a chat (from the "
                 "bridge's in-memory log). Useful to remember what was discussed "
-                "outside Iris's own memory files.",
+                "outside the assistant's own memory files.",
                 {
                     "type": "object",
                     "properties": {
@@ -929,7 +956,8 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         async def send_photo(chat_id: int, photo_url: str, caption: str = "") -> str:
             if not runtime.telegram.connected:
                 return _err("telegram channel unavailable")
-            return await runtime.telegram.send_photo(chat_id, photo_url, caption)
+            raw = await runtime.telegram.send_photo(chat_id, photo_url, caption)
+            return _channel_result(raw, chat_id=chat_id)
 
         tools.append(
             Tool(
@@ -1082,6 +1110,12 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         loaded = current_loaded_tools.get()
         if loaded is not None:
             loaded.extend(t.name for t in pool if t.name not in loaded)
+        if not deferred:
+            note = "nothing is deferred; all tools are already visible"
+        elif query.strip() and not pool:
+            note = f"no tool matches {query.strip()!r}"
+        else:
+            note = ""
         turnlog.record(
             "tools",
             event="find_tools",
@@ -1097,6 +1131,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
                 "deferred": len(deferred),
                 "loaded": [t.name for t in pool],
                 "tools": [t.schema() for t in pool],
+                "note": note,
             },
             ensure_ascii=False,
         )

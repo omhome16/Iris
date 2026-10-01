@@ -22,8 +22,8 @@ iris chat
 
 That is the whole setup. `iris init` writes `.env`, keeps this profile's
 manifest (it is already where `HARNESS_CONFIG` points), and then proves the
-setup with one no-op model call, an opened index and the real checkpointer
-ladder. The profile sets its own `workspace_dir`, `sqlite_path` and
+setup with one no-op model call, an opened index and the real thread store.
+The profile sets its own `workspace_dir`, `sqlite_path` and
 `checkpointer_path`, so nothing you already have is touched or mixed.
 
 Prefer the container? The compose stack reads the same manifest with
@@ -59,9 +59,9 @@ the same, and boot says which channels are missing rather than failing.
   so neither can drift into saying something the other does not.
 - **Memory is files.** Everything the assistant knows is in `workspace/` as
   Markdown. The index is derived: delete it and it is rebuilt.
-- **Identity is bootstrapped by conversation.** First contact runs the onboarding
-  wizard, which writes `workspace/config/iris.json` and `USER.md`; nothing is
-  hard-coded.
+- **Identity is set in `iris config`.** That screen writes `workspace/config/iris.json`,
+  `USER.md`, and `PERSONA.md`. Nothing is hard-coded, and chat does not ask the
+  questions itself.
 - **The safety story is the same one.** Approvals, sandboxing, injection
   screening and budgets come from the harness, not from this profile. There is no
   special-cased "assistant mode" that could be less careful.

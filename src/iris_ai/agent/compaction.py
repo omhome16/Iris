@@ -28,7 +28,7 @@ from iris_ai.memory.llm import LLMClient
 
 log = logging.getLogger("iris.compaction")
 
-_FLUSH_SYSTEM = """You are Iris's compaction pass. Given the conversation below:
+_FLUSH_SYSTEM = """You are the harness compaction pass. Given the conversation below:
 1. Extract durable facts about the owner's life worth keeping — preferences,
    decisions, plans, relationships, projects. Short, self-contained, present
    tense. Do NOT include small talk or transient state.
@@ -77,7 +77,7 @@ def trim_messages(messages: list, keep_tokens: int) -> list:
         cutoff += 1
     # The front of the kept window must not be an AI message whose tool
     # results were cut away: its dangling tool_calls make the provider
-    # (and LangGraph's message validation) choke on the next turn.
+    # (the provider rejects a tool call whose result was trimmed away).
     if cutoff < len(messages) and getattr(messages[cutoff], "type", "") == "ai" \
             and getattr(messages[cutoff], "tool_calls", None):
         cutoff += 1
@@ -101,9 +101,9 @@ def _serialize(messages: list) -> str:
             calls = getattr(m, "tool_calls", None) or []
             if calls:
                 names = ", ".join(tc.get("name", "") for tc in calls)
-                lines.append(f"Iris: [tool call: {names}] {content or ''}".strip())
+                lines.append(f"Assistant: [tool call: {names}] {content or ''}".strip())
                 continue
-        label = "Owner" if role == "human" else "Iris"
+        label = "Owner" if role == "human" else "Assistant"
         lines.append(f"{label}: {content}")
     return "\n\n".join(lines)
 

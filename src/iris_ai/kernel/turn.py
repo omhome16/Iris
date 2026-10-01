@@ -6,7 +6,7 @@ are not interchangeable.
 
 - **It already happened** (`replay`). The journal holds the reply, so the tool is
   not called again and the model receives exactly what it received the first time.
-  This is the ordinary case after a resume: LangGraph re-enters the tools node
+  This is the ordinary case after a resume: the tools node runs again
   from the top, and every call in it that already settled must come back from the
   journal rather than from the world.
 - **It never happened** (`run`). Nothing recorded, or recorded as interrupted
@@ -45,7 +45,7 @@ RUN = "run"
 UNCERTAIN = "uncertain"
 
 UNCERTAIN_REPLY = (
-    "this action may or may not have completed before Iris restarted, so it has "
+    "this action may or may not have completed before the process restarted, so it has "
     "not been repeated — repeating a side-effecting tool can do it twice. Check its "
     "effect (a file, a message, a record) and call it again if it did not happen"
 )

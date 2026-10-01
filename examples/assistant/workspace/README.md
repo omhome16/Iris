@@ -11,7 +11,7 @@ MEMORY.md              ← durable facts & decisions about your life (curated by
 DREAMS.md              ← the dream diary: what consolidation changed and why (human-readable)
 memory/YYYY-MM-DD.md   ← daily notes: everything that happened, dated, append-only (episodic)
 skills/*.md            ← procedures it wrote for itself (procedural memory)
-config/iris.json       ← identity born during onboarding (name, personality, tone, timezone)
+config/iris.json       ← profile from `iris config` (name, tone, timezone)
 .dreams/               ← staging area for consolidation candidates (machine-facing)
 ```
 

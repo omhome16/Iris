@@ -29,6 +29,14 @@ disabled = []
 #                               #                `pgvector` (a service), `null` degrades
 # judge_backend  = "jev"        # Judge:         `jev` ships in core
 
+# ── Swappable pieces ────────────────────────────────────────────────────────
+# `default` is the built-in. A dotted path is your class: `pkg.mod:Class`.
+# `off` turns capture or consolidation off. See docs/harness.md.
+[components]
+context = "default"
+capture = "default"
+consolidator = "dreaming"
+
 # ── Examples of ordinary settings (uncomment to use) ────────────────────────
 # llm_provider = "auto"
 # tool_guard_enabled = true

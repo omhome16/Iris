@@ -18,8 +18,12 @@ import json
 import logging
 from pathlib import Path
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+try:  # nightly jobs are the [schedule] extra
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
+except ImportError:  # pragma: no cover
+    AsyncIOScheduler = None  # type: ignore[assignment,misc]
+    CronTrigger = None  # type: ignore[assignment,misc]
 
 from iris_ai.agent.runtime import Runtime
 from iris_ai.config import settings
@@ -139,6 +143,8 @@ async def _morning_brief(runtime: Runtime) -> None:
 
 
 def build_scheduler(runtime: Runtime) -> AsyncIOScheduler:
+    if AsyncIOScheduler is None or CronTrigger is None:
+        raise RuntimeError("the scheduler needs the schedule extra: uv sync --extra schedule")
     scheduler = AsyncIOScheduler(timezone=settings.iris_timezone)
     scheduler.add_job(
         _nightly_sleep,

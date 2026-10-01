@@ -12,12 +12,12 @@ library is the mind; the HTTP API, the CLI and (P3) the Telegram bridge are
 clients of it. So the sequence lives here:
 
     workspace files → cost ledger → LLM client → JEV → memory index
-      → reindex → LangGraph checkpointer → Runtime → ChatGraph
+      → reindex → thread store → Runtime → ChatGraph
       → (services) scheduler + task scheduler + Telegram channel
 
 Every client opens a `Harness` the same way. The CLI is the reason for the
 degraded mode: when no Postgres is reachable, `postgres="auto"` keeps the
-conversation alive with an in-memory checkpointer and no vector recall, and
+conversation alive with an in-memory thread store and no vector recall, and
 says so — `mode`, `degraded_reason`, and a recall error that names the fix.
 The API keeps `postgres="require"`, so a missing database still fails at boot
 exactly as it always has.
@@ -38,10 +38,6 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
 from iris_ai import background
 from iris_ai.agent.chat import ChatGraph
 from iris_ai.agent.runtime import Runtime
@@ -56,6 +52,7 @@ from iris_ai.config import settings
 from iris_ai.jev.client import JevClient
 from iris_ai.jev.recall import JevReranker
 from iris_ai.kernel import TurnKernel, build_journal
+from iris_ai.kernel.threads import MemoryThreadStore, PostgresThreadStore, SqliteThreadStore
 from iris_ai.ledger import CostLedger
 from iris_ai.manifest import apply_manifest, load_manifest
 from iris_ai.mcp.provider import McpPool
@@ -81,7 +78,7 @@ RunMode = Literal["full", "degraded"]
 
 
 def _checkpointer_dsn(dsn: str) -> str:
-    """The psycopg URL LangGraph's PostgresSaver wants, with a connect deadline.
+    """The Postgres URL for a shared thread store, with a connect deadline.
 
     Two conversions, both because this is the *psycopg* endpoint:
 
@@ -93,7 +90,7 @@ def _checkpointer_dsn(dsn: str) -> str:
       fd set, which an asyncio selector loop does not watch, so the writer
       callback never fires and the poll runs to the deadline instead of failing
       at once. A 130-second stall is indistinguishable from a hang, and it is
-      exactly the case the checkpointer ladder exists to degrade around — so the
+      exactly the case the thread-store ladder exists to degrade around — so the
       deadline comes from settings. (asyncpg, which backs the pgvector index,
       reports the refusal by itself; this is not a general no-timeouts rule.)
 
@@ -119,8 +116,8 @@ def _postgres_endpoint(dsn: str) -> tuple[str, int] | None:
 async def _postgres_accepts_connections(dsn: str) -> bool:
     """Is anything accepting TCP connections at the configured endpoint?
 
-    The `auto` ladder asks this before it asks psycopg, because a *refused*
-    connect costs psycopg its entire connect deadline on Windows (see
+    The `auto` ladder asks this before it opens Postgres, because a refused
+    connect can stall for the whole connect deadline on Windows (see
     `_checkpointer_dsn`). One blocking `connect()` answers the same question in
     microseconds — the kernel already knows, and a refusal is delivered to the
     caller rather than to the event loop. Without this, every boot on a machine
@@ -277,7 +274,7 @@ async def _build_index(
 
 async def _open_checkpointer(
     stack: AsyncExitStack, *, postgres: PostgresMode
-) -> tuple[AsyncPostgresSaver | AsyncSqliteSaver | MemorySaver, str]:
+) -> tuple[PostgresThreadStore | SqliteThreadStore | MemoryThreadStore, str]:
     """Keep conversation threads durable without requiring a service.
 
     Three tiers, tried in order and reported rather than guessed:
@@ -317,10 +314,9 @@ async def _open_checkpointer(
         )
     elif want in ("auto", "postgres"):
         try:
-            saver = await stack.enter_async_context(
-                AsyncPostgresSaver.from_conn_string(_checkpointer_dsn(settings.postgres_dsn))
-            )
-            await saver.setup()
+            saver = PostgresThreadStore(settings.postgres_dsn)
+            await saver.connect()
+            stack.push_async_callback(saver.close)
             return saver, "postgres"
         except Exception as exc:  # the fallback chain is the point; `raise` below
             if want == "postgres" or postgres == "require":
@@ -337,10 +333,8 @@ async def _open_checkpointer(
         try:
             path = Path(settings.checkpointer_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            saver = await stack.enter_async_context(
-                AsyncSqliteSaver.from_conn_string(str(path))
-            )
-            await saver.setup()
+            saver = SqliteThreadStore(str(path))
+            stack.push_async_callback(saver.close)
             return saver, "sqlite"
         except Exception as exc:  # see above; `raise` below is the pinned tier
             if want == "sqlite":
@@ -352,7 +346,7 @@ async def _open_checkpointer(
             )
 
     log.warning("degraded session: checkpointer is in-memory (threads will not survive exit)")
-    return MemorySaver(), "memory"
+    return MemoryThreadStore(), "memory"
 
 
 async def _start_services(
@@ -457,6 +451,9 @@ async def harness(
 
     root = Path(workspace_dir if workspace_dir is not None else settings.workspace_dir)
     files = WorkspaceFiles(root)
+    from iris_ai.logging_setup import configure_logging
+
+    configure_logging(files.root)
     sync_owner_chat_id()
 
     # Discover installed capability plugins once, then build the configured
@@ -594,6 +591,9 @@ async def harness(
         # the pool, which cancels it on close.
         runtime.mcp.start_retry()
 
+        from iris_ai.components import attach
+
+        attach(runtime, load_manifest(manifest_path))
         graph = ChatGraph(runtime, saver)
 
         brain = Harness(

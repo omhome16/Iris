@@ -63,10 +63,8 @@ class Reindexer:
             if origin is Origin.SYSTEM:
                 continue
             text = path.read_text(encoding="utf-8")
-            # "not yet born" placeholders (USER.md/MEMORY.md before onboarding
-            # or first dream) carry no facts — nothing worth indexing. The
-            # marker never appears in real content, so a single occurrence is
-            # enough to skip (the old check required it twice and never fired).
+            # Empty placeholders (USER.md / MEMORY.md before a profile or the
+            # first consolidation) carry no facts, so they are not indexed.
             if "_Empty" in text:
                 continue
             out.append((rel, text, origin, evergreen))

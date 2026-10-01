@@ -6,9 +6,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from langgraph.checkpoint.memory import MemorySaver
 
 from iris_ai.agent.chat import ChatGraph
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.memory.llm import LLMClient
 from test_agent_graph import make_runtime
 

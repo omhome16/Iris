@@ -138,6 +138,7 @@ def test_the_command_registry_grew_by_exactly_one():
     assert commands == {
         "agents",
         "chat",
+        "config",
         "costs",
         "cron",
         "doctor",
@@ -145,6 +146,7 @@ def test_the_command_registry_grew_by_exactly_one():
         "init",
         "mcp",
         "migrate",
+        "new",
         "plugins",
         "policy",
         "secrets",

@@ -28,7 +28,7 @@ from iris_ai.memory.index import MemoryIndex
 from iris_ai.memory.llm import LLMClient
 from iris_ai.memory.provenance import Origin, Provenance
 
-_REM_SYSTEM = """You are the REM phase of Iris's dreaming.
+_REM_SYSTEM = """You are the REM phase of memory consolidation.
 
 Group the promoted memory signals below into coherent themes. For each theme
 write ONE consolidated statement: durable, compact, self-contained, present
@@ -333,7 +333,7 @@ class DeepPhase:
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         (pre_dir / f"{stamp}-MEMORY.md").write_text(current, encoding="utf-8")
 
-        # drop the "not yet born" placeholder once there is real content
+        # Drop the empty placeholder once there is real content.
         if "\n\n_Empty" in current:
             current = current.split("\n\n_Empty", 1)[0]
         lines = current.splitlines()
@@ -359,7 +359,7 @@ class DeepPhase:
 
         body = "\n".join([*lines, *additions]) if lines else "\n".join(additions)
         if not body.startswith("# MEMORY.md"):
-            body = f"# MEMORY.md — Iris long-term memory\n\n{body}"
+            body = f"# MEMORY.md — long-term memory\n\n{body}"
 
         record.added = len(additions)
         record.superseded = len(retired)

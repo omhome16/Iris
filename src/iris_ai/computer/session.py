@@ -1,6 +1,6 @@
 """`Computer` — the single choke point every screen action passes through.
 
-The tool in `iris_ai.agent.tools` owns the LangGraph approval interrupt (that is
+The tool in `iris_ai.agent.tools` owns the approval pause (that is
 where the graph context lives). Everything *else* — is this action permitted
 here, does it need approval, is there budget left, do it, record it — lives here,
 behind one `execute()`.

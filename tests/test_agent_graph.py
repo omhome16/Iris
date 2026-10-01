@@ -10,12 +10,12 @@ import json
 from pathlib import Path
 
 import pytest
-from langgraph.checkpoint.memory import MemorySaver
 
 from fakes import skill_registry
 from iris_ai.agent.chat import ApprovalRequired, ChatGraph, _to_llm_messages
 from iris_ai.agent.runtime import Runtime
 from iris_ai.agent.tools import dispatch, get_tools
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.memory.llm import LLMClient
 from iris_ai.memory.provenance import Origin
@@ -148,17 +148,17 @@ async def test_graph_routes_new_user_to_onboarding(tmp_path: Path):
     files = WorkspaceFiles(tmp_path)
     graph = ChatGraph(make_runtime(files, FakeLLM()), MemorySaver())
     reply = await graph.respond("Hi", session_id="t1")
-    assert "call you" in reply  # first wizard question, message NOT consumed
+    assert "iris init" in reply  # setup happens in the CLI, not inside the turn
 
 
 async def test_graph_onboards_then_chats(tmp_path: Path):
     from fakes import WizardLLM
 
     files = WorkspaceFiles(tmp_path)
+    w = OnboardingWizard(files, WizardLLM())
+    for answer in ["Omar", "warm", "short", "UTC", "4"]:
+        await w.apply_answer(answer)
     graph = ChatGraph(make_runtime(files, WizardLLM()), MemorySaver())
-    for answer in ["Hi", "Omar", "warm", "short", "UTC", "4"]:
-        reply = await graph.respond(answer, session_id="t2")
-    # onboarded → next message routes to the ReAct loop, not the wizard
     reply = await graph.respond("hello there", session_id="t2")
     assert "welcome back" not in reply.lower()
     assert OnboardingWizard(files).onboarded is True
@@ -172,9 +172,13 @@ async def test_onboarding_completion_fires_hook(tmp_path: Path):
     fired = []
     runtime.on_onboarded = lambda: fired.append(True)
     graph = ChatGraph(runtime, MemorySaver())
-    for answer in ["Hi", "Omar", "warm", "short", "UTC", "4"]:
-        await graph.respond(answer, session_id="t-hook")
-    assert fired, "completing onboarding must fire the on_onboarded hook (sleep reschedule)"
+    w = OnboardingWizard(files, WizardLLM())
+    for answer in ["Omar", "warm", "short", "UTC", "4"]:
+        await w.apply_answer(answer)
+    if runtime.on_onboarded is not None:
+        runtime.on_onboarded()
+    await graph.respond("hello", session_id="t-hook")
+    assert fired, "completing setup must fire the on_onboarded hook (sleep reschedule)"
 
 
 async def test_graph_tool_loop_calls_remember(tmp_path: Path):
@@ -233,9 +237,8 @@ async def test_a_bailed_turn_returns_best_so_far_not_an_apology(tmp_path: Path, 
     the checkpoint and is returned, rather than discarded behind an apology."""
     from types import SimpleNamespace
 
-    from langgraph.errors import GraphRecursionError
-
     from iris_ai.config import settings
+    from iris_ai.kernel.loop import GraphRecursionError
 
     monkeypatch.setattr(settings, "graph_recursion_limit", 8)
     files = WorkspaceFiles(tmp_path)

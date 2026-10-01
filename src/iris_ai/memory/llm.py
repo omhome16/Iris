@@ -26,6 +26,14 @@ import litellm
 from iris_ai import turnlog
 from iris_ai.config import settings
 
+# LiteLLM prints a "Give Feedback / Get Help" banner and a debug hint on every
+# provider error, straight to stdout, which lands in the middle of a chat.
+# Silence that once, here, where the client is constructed.
+litellm.suppress_debug_info = True
+litellm.set_verbose = False
+for _noisy in ("LiteLLM", "litellm"):
+    logging.getLogger(_noisy).setLevel(logging.ERROR)
+
 log = logging.getLogger("iris.llm")
 
 try:
@@ -35,7 +43,9 @@ except ImportError:  # pragma: no cover - ledger is always present in the packag
 
 
 class LLMError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, attempts: int = 1) -> None:
+        super().__init__(message)
+        self.attempts = attempts
 
 
 # LangChain names its message roles for its own graph, not for providers: a
@@ -122,9 +132,28 @@ def _retry_after(exc: Exception) -> float:
     return 0.0
 
 
+def _failure_summary(exc: Exception) -> str:
+    """One line a chat status can show. Full tracebacks belong in the log file."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    cause = exc.__cause__ or exc
+    name = type(cause).__name__
+    line = str(cause).strip().splitlines()[0] if str(cause).strip() else name
+    if len(line) > 160:
+        line = line[:157] + "..."
+    if status:
+        return f"{name} {status}: {line}"
+    return f"{name}: {line}"
+
+
+def _attempts_of(exc: Exception, default: int) -> int:
+    return int(getattr(exc, "attempts", default) or default)
+
+
 async def _with_retries(fn, *, max_attempts: int = 4, base_delay: float = 1.0, cap: float = 45.0):
     last: Exception | None = None
+    attempts = 0
     for attempt in range(max_attempts):
+        attempts = attempt + 1
         try:
             return await fn()
         except Exception as exc:  # noqa: BLE001 - provider failures are heterogeneous
@@ -134,7 +163,10 @@ async def _with_retries(fn, *, max_attempts: int = 4, base_delay: float = 1.0, c
             delay = _retry_after(exc) or min(cap, base_delay * (2**attempt))
             jitter = random.uniform(delay * 0.8, delay * 1.2)
             await asyncio.sleep(jitter)
-    raise LLMError(f"LLM call failed after {max_attempts} attempts: {last}") from last
+    raise LLMError(
+        f"LLM call failed after {attempts} attempts: {_failure_summary(last) if last else 'unknown'}",
+        attempts=attempts,
+    ) from last
 
 
 class LLMClient:
@@ -257,14 +289,14 @@ class LLMClient:
                 last_exc = exc
                 if idx + 1 < len(candidates):
                     log.warning(
-                        "provider %s failed after %d attempts (%s); failing over to %s",
+                        "provider %s failed after %d attempt(s) (%s); failing over to %s",
                         provider,
-                        max_attempts,
-                        exc,
+                        _attempts_of(exc, 1),
+                        _failure_summary(exc),
                         candidates[idx + 1][0],
                     )
         raise LLMError(
-            f"all providers failed ({[c[0] for c in candidates]}): {last_exc}"
+            f"all providers failed ({[c[0] for c in candidates]}): {_failure_summary(last_exc) if last_exc else 'unknown'}"
         ) from last_exc
 
     async def complete_with_tools(
@@ -327,14 +359,14 @@ class LLMClient:
                 last_exc = exc
                 if idx + 1 < len(candidates):
                     log.warning(
-                        "provider %s failed after %d attempts (%s); failing over to %s",
+                        "provider %s failed after %d attempt(s) (%s); failing over to %s",
                         provider,
-                        max_attempts,
-                        exc,
+                        _attempts_of(exc, 1),
+                        _failure_summary(exc),
                         candidates[idx + 1][0],
                     )
         raise LLMError(
-            f"all providers failed ({[c[0] for c in candidates]}): {last_exc}"
+            f"all providers failed ({[c[0] for c in candidates]}): {_failure_summary(last_exc) if last_exc else 'unknown'}"
         ) from last_exc
 
     async def stream_complete_with_tools(
@@ -441,11 +473,12 @@ class LLMClient:
                 yield ("done", "")  # mid-stream failure: flush what we buffered
                 return
             if idx + 1 < len(candidates):
+                used = attempt + 1 if last is not None else 1
                 log.warning(
-                    "provider %s failed after %d attempts (%s); failing over to %s",
+                    "provider %s failed after %d attempt(s) (%s); failing over to %s",
                     provider,
-                    max_attempts,
-                    last,
+                    used,
+                    _failure_summary(last) if last else "unknown",
                     candidates[idx + 1][0],
                 )
                 continue

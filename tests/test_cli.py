@@ -31,6 +31,7 @@ def test_help_lists_only_real_commands():
     assert names == {
         "agents",
         "chat",
+        "config",
         "costs",
         "cron",
         "doctor",
@@ -38,6 +39,7 @@ def test_help_lists_only_real_commands():
         "init",
         "mcp",
         "migrate",
+        "new",
         "plugins",
         "policy",
         "secrets",

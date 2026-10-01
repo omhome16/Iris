@@ -1,20 +1,12 @@
-"""Onboarding — the birth of Iris's identity.
+"""Profile storage.
 
-First-run wizard (LLM-driven): a natural conversation in which the model
-gently gathers name → personality → tone → timezone → sleep preference, then
-extracts them into the profile. Progress persists in `workspace/config/iris.json`;
-the completed profile is written to USER.md with owner provenance.
+`iris config` writes the owner, assistant name, tone, timezone, sleep hour,
+and persona. The result is `workspace/config/iris.json`, `USER.md`, and
+`PERSONA.md`. Chat does not ask these questions. `scripts/fresh_start.py`
+clears the profile and leaves `AGENTS.md` in place.
 
-Why LLM-driven: the owner may say anything ("hi, I'm Omar" / "call me Aria")
-instead of answering a rigid question. The model responds in context, infers
-what it safely can (name, tone, personality), and only asks for what truly
-needs a human answer (timezone, sleep hour). Responses are structured JSON so
-profile extraction is deterministic; the chat text is always the model's own.
-
-Fresh-start guarantee: after `scripts/fresh_start.py` (or a wiped workspace),
-`onboarded` is False and the chat graph routes every message through the
-wizard until it completes — Iris starts with *zero memory but instructions
-intact* (AGENTS.md is never touched).
+The question-and-answer methods on `OnboardingWizard` remain so tests can
+build a profile without a terminal.
 """
 
 from __future__ import annotations
@@ -22,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -32,7 +24,7 @@ from iris_ai.text import text_of
 
 log = logging.getLogger("iris_ai.onboarding")
 
-OPENING = "Hi! I'm Iris. Let's get to know each other — what should I call you?"
+OPENING = "Hi. Let's get to know each other — what should I call you?"
 
 
 def _parse_json_object(raw: str) -> dict | None:
@@ -81,7 +73,7 @@ def _parse_json_object(raw: str) -> dict | None:
 # Every reply the model makes is JSON with `message` (what to say next) and
 # `profile` (fields learned so far). `complete` flips true when the model is
 # confident it has everything.
-SYSTEM_PROMPT = """You are Iris, being born. Have a warm, natural conversation with your owner and gather five profile fields for your memory:
+SYSTEM_PROMPT = """You are the setup assistant. Have a warm, natural conversation with the owner and gather five profile fields for memory:
 1. name — what to call them
 2. personality — how you should be (e.g. warm and curious, dry and efficient, playful)
 3. tone — how your messages should sound (e.g. short and direct, friendly and detailed)
@@ -130,9 +122,38 @@ class OnboardingWizard:
         if not self.config_path.exists():
             return OnboardingState()
         try:
-            return OnboardingState(**json.loads(self.config_path.read_text(encoding="utf-8")))
+            raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+            known = {item.name for item in fields(OnboardingState)}
+            return OnboardingState(**{key: value for key, value in raw.items() if key in known})
         except (json.JSONDecodeError, TypeError):
             return OnboardingState()
+
+    def configure(
+        self,
+        *,
+        owner_name: str,
+        assistant_name: str,
+        tone: str,
+        timezone: str,
+        sleep_hour: str,
+        persona: str,
+    ) -> None:
+        """Write the profile the setup screen collected. No model call."""
+        self.state.onboarded = True
+        self.state.owner_name = owner_name.strip()
+        self.state.personality = persona.strip()
+        self.state.tone = tone.strip()
+        self.state.timezone = timezone.strip() or "UTC"
+        self.state.sleep_pref = str(sleep_hour).strip() or "4"
+        self.state.asked = True
+        self.save()
+        self._write_user_profile()
+        self._wire_runtime()
+        persona_path = self.files.root / "PERSONA.md"
+        persona_path.write_text((persona.strip() + "\n") if persona.strip() else "", encoding="utf-8")
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["assistant_name"] = assistant_name.strip() or "assistant"
+        self.config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
     def save(self) -> None:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)

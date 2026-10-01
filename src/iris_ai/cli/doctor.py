@@ -14,6 +14,37 @@ from iris_ai.providers import AUTO_ORDER, KEYED_PROVIDERS, PROVIDERS
 # registry — so adding a provider does not leave `doctor` silently blind to it.
 PROVIDER_KEY_NAMES = tuple(p.key_env for p in KEYED_PROVIDERS)
 
+# Model ids that used to be defaults and now 404. A checkout that copied them
+# into .env keeps failing over on every Groq call, because .env beats the
+# fixed defaults in config.py. Doctor names them; it never rewrites .env.
+DEAD_MODEL_IDS = (
+    "qwen/qwen3.6-27b",
+    "groq/qwen/qwen3.6-27b",
+    "groq/compound-mini",
+    "groq/groq/compound-mini",
+)
+
+
+def stale_model_checks(env: Mapping[str, str]) -> list[Check]:
+    """Warn when a configured model id is one we already know is dead."""
+    found: list[str] = []
+    for key, value in env.items():
+        if not key.endswith("_MODEL"):
+            continue
+        model = value.strip()
+        if model in DEAD_MODEL_IDS:
+            found.append(f"{key}={model}")
+    if not found:
+        return []
+    listed = ", ".join(found)
+    return [
+        Check(
+            "model ids",
+            "warn",
+            f"dead model id in config ({listed}). Remove the line so the current default is used.",
+        )
+    ]
+
 
 def _resolve_provider(requested: str, env: Mapping[str, str]) -> str:
     """Which provider a turn would actually use, from env alone.
@@ -97,6 +128,7 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
     requested = (env.get("LLM_PROVIDER", "auto") or "auto").strip().lower()
     resolved = _resolve_provider(requested, env)
     checks.append(Check("model provider", "ok", f"{PROVIDERS[resolved].label} (LLM_PROVIDER={requested})"))
+    checks.extend(stale_model_checks(env))
     if requested not in ("auto",) and requested not in PROVIDERS:
         checks.append(
             Check("LLM_PROVIDER", "warn", f"{requested!r} is not a known provider — falling back to {resolved}")

@@ -18,7 +18,7 @@ __all__ = ["THREAD_PREFIX", "IrisAcpAgent"]
 
 def __getattr__(name: str):
     """Lazy, for the same reason `iris_ai.cli` defers `engine`: `import iris_ai`
-    should not pull an optional dependency (or LangGraph) in."""
+    should not pull an optional dependency in."""
     if name in __all__:
         import importlib
 

@@ -9,13 +9,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.checkpoint.memory import MemorySaver
 
 from fakes import skill_registry
 from iris_ai.agent.chat import ChatGraph
 from iris_ai.agent.compaction import messages_tokens, trim_messages
 from iris_ai.agent.runtime import Runtime
+from iris_ai.kernel.messages import Msg
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.memory.llm import LLMClient
 from iris_ai.onboarding import OnboardingWizard
@@ -25,14 +25,14 @@ from iris_ai.sandbox import Sandbox
 
 def _history() -> list:
     return [
-        HumanMessage(content="hi"),
-        AIMessage(content="hello!", tool_calls=[{"id": "c1", "name": "memory_search", "args": {"query": "x"}}]),
-        ToolMessage(content='{"ok": true}', tool_call_id="c1"),
-        AIMessage(content="found it"),
-        HumanMessage(content="tell me about it"),
-        AIMessage(content="sure, here it is"),
-        HumanMessage(content="thanks"),
-        AIMessage(content="anytime"),
+        Msg(type="human", content="hi"),
+        Msg(type="ai", content="hello!", tool_calls=[{"id": "c1", "name": "memory_search", "args": {"query": "x"}}]),
+        Msg(type="tool", content='{"ok": true}', tool_call_id="c1"),
+        Msg(type="ai", content="found it"),
+        Msg(type="human", content="tell me about it"),
+        Msg(type="ai", content="sure, here it is"),
+        Msg(type="human", content="thanks"),
+        Msg(type="ai", content="anytime"),
     ]
 
 

@@ -11,9 +11,8 @@ Two things were invisible before this module:
    number cannot separate *prefill* from *generation*: a p99 you cannot
    attribute to either is a p99 you cannot act on.
 
-Both are per-turn and scoped to the graph run, so they live in a ContextVar
-rather than in LangGraph state: nodes inside one `ainvoke` share the context,
-and nothing needs a reducer to merge.
+Both are per-turn and scoped to one turn, so they live in a ContextVar:
+nodes inside one turn share the context, and nothing needs a reducer to merge.
 
 Design rules:
 

@@ -1,0 +1,30 @@
+Screen {
+    background: #14120b;
+    color: #ece7dc;
+}
+
+#status {
+    height: 1;
+    background: #1c1914;
+    color: #c4b8a5;
+    padding: 0 1;
+}
+
+#transcript {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#prompt {
+    dock: bottom;
+    height: 3;
+    border: tall #3a3428;
+}
+
+.tool-ok {
+    color: #9ecb8a;
+}
+
+.tool-fail {
+    color: #e07a5f;
+}

@@ -10,6 +10,16 @@ research notes) has since been consolidated into a single [`DOCS.md`](DOCS.md), 
 the link targets below were repointed rather than left broken. Backticked paths in
 older prose are historical records of where things lived at the time.
 
+## 0.3.0 — a neutral harness
+
+The turn loop is a small native loop instead of LangGraph. Context, capture
+and consolidation are swappable from `[components]` in `config/harness.toml`.
+There is no default persona: `iris init` asks once, `iris config` edits it
+later, and `workspace/PERSONA.md` is empty until you fill it. `iris chat` opens
+a full-screen terminal when stdout is a TTY; `--once` and pipes stay plain.
+Heavy libraries (Postgres, the HTTP API, MCP, the scheduler, the judge SDK)
+moved to extras. See `docs/harness.md`.
+
 ## Unreleased — the presentation pass: a designed CLI, one manual, and no dead corpus
 
 **Scope:** how Iris looks, and what it ships as documentation — no behaviour change.

@@ -10,7 +10,7 @@ a protocol question differently from the CLI is a second behavior to debug.
 
 The four decisions worth reading before the code:
 
-**One harness, many sessions.** ACP sessions map to LangGraph threads by
+**One harness, many sessions.** ACP sessions map to threads by
 `THREAD_PREFIX + session_id`, so `session/load` continues the same memory after
 an editor restart without a second registry. `session/new` mints the id.
 
@@ -183,10 +183,9 @@ def _final_text(update: dict) -> str:
 def _nodes(payload: dict) -> list[dict]:
     """Only the real node updates in an `updates` payload.
 
-    LangGraph reports the interrupt through the same channel, under the
-    `__interrupt__` key, with a *tuple* of `Interrupt` objects as its value —
-    not a state update, and with no `messages`. Filtering once, here, is what
-    keeps every access below from needing its own type guard.
+    A paused approval is stored on the thread under `__interrupt__`. That key is
+    not a state update. Filtering once, here, is what keeps every access below
+    from needing its own type guard.
     """
     return [update for update in (payload or {}).values() if isinstance(update, dict)]
 
@@ -467,8 +466,8 @@ class IrisAcpAgent(_AcpAgent):
 
         Returns `(streamed, failed, pending, refused)`. The generator is closed
         in `finally` rather than left to the event loop: this method returns
-        early when the kernel refuses a turn before calling a provider, and an
-        abandoned LangGraph stream logs a context error when it is finalized.
+        early when the kernel refuses a turn before calling a provider, and a
+        generator left open logs a context error when it is finalized.
         """
         streamed = False
         failed = False

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from langgraph.checkpoint.memory import MemorySaver
-
 from fakes import WizardLLM, skill_registry
 from iris_ai import turnlog
 from iris_ai.agent.chat import ChatGraph
@@ -13,6 +11,7 @@ from iris_ai.agent.runtime import Runtime
 from iris_ai.budget import Budget, BudgetPolicy
 from iris_ai.config import settings
 from iris_ai.guards import GuardChain
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.memory.llm import LLMClient
 from iris_ai.onboarding import OnboardingWizard

@@ -11,8 +11,8 @@ Markdown memory. So a degraded session gets:
   reindex picks them up once Postgres is back,
 - `stats()` that says `degraded: True` so a caller can report it.
 
-The name mirrors langgraph's `MemorySaver`: the in-memory counterpart of the
-durable, Postgres-backed component.
+The name is the in-memory counterpart of the durable Postgres index: it reports
+degraded instead of pretending the search succeeded.
 """
 
 from __future__ import annotations

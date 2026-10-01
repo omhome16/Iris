@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 
 from rich.console import Console
 from rich.text import Text
@@ -162,8 +163,13 @@ def art_text(width: int, height: int, *, color: bool = True) -> Text:
 
 
 def size_for(console: Console) -> tuple[int, int]:
-    """Which mark fits: the full eye, or the compact one."""
-    width = console.width or 80
+    """Which mark fits: the full eye, or the compact one.
+
+    Prefer the width the caller asked for. A dumb terminal (`TERM=dumb`) makes
+    rich report width 80 even when `Console(width=60)` was constructed, which
+    would draw the wide mark into a narrow window.
+    """
+    width = getattr(console, "_width", None) or console.width or 80
     return COMPACT if width < WIDE[0] + 4 else WIDE
 
 
@@ -178,7 +184,17 @@ def banner_enabled(console: Console, *, no_banner: bool = False) -> bool:
         return False
     if os.environ.get("NO_COLOR"):
         return False
-    return bool(console.is_terminal)
+    # An explicit Rich force wins (tests, `--force`). Otherwise a banner only
+    # draws on a real terminal. `FORCE_COLOR` (even "0") makes rich claim
+    # `is_terminal` on a pipe, which is how the mark ended up in captured logs.
+    if getattr(console, "_force_terminal", None):
+        return True
+    file = getattr(console, "file", None) or sys.stdout
+    isatty = getattr(file, "isatty", None)
+    try:
+        return bool(isatty()) if callable(isatty) else False
+    except OSError:
+        return False
 
 
 def render_banner(

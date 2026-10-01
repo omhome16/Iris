@@ -87,6 +87,8 @@ def test_banner_is_off_when_the_output_is_not_a_terminal(monkeypatch):
 
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("IRIS_NO_BANNER", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
     captured = Console(width=100)  # rich reports is_terminal False when not a tty
     assert art.banner_enabled(captured) is False
     assert art.banner_enabled(_terminal()) is True

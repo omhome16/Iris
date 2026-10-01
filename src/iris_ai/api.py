@@ -17,8 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-# psycopg async (used by the LangGraph PostgresSaver) cannot run on
-# Windows' ProactorEventLoop; select the selector loop before any loop exists.
+# Windows: the selector loop is the one async database connects can finish on.
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -134,8 +133,7 @@ async def judgment_status(_token: None = Depends(require_token)) -> dict:
 async def chat(
     req: ChatRequest, _token: None = Depends(require_token)
 ) -> ChatResponse:
-    """One chat turn through the durable graph. Routes to the onboarding
-    wizard until identity is born; then the ReAct loop.
+    """One chat turn. If no profile is saved, the reply points at `iris init`.
 
     When a tool asks for approval (forget), the turn halts and the response
     carries `pending=True` with the approval payload; resume via
@@ -156,7 +154,7 @@ async def chat(
     except Exception as exc:
         log.exception("chat turn failed")
         reply = f"I hit an unexpected error ({type(exc).__name__}) — say that again, or try later."
-    # wizard state lives on disk; reload for a fresh read (graph may have run it)
+    # Profile state lives on disk; reload it for a fresh read.
     wizard = OnboardingWizard(app.state.runtime.files)
     return ChatResponse(
         reply=reply,

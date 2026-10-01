@@ -65,7 +65,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv sync --frozen
+      - run: uv sync --frozen --extra postgres
       # No `CREATE DATABASE` step: `iris_eval` is the gate's *scratch* corpus
       # database, and the fixture creates it on demand (`tests/db.py`). Reaching
       # into the service container to make it was the fragile half of this job —

@@ -169,6 +169,7 @@ async def ingest_url(workspace: Path, url: str, *, text: str | None = None, bann
         text = await fetch_text(url)
     if len(text.strip()) < 40:
         raise RuntimeError("page contained no readable text")
+    workspace = Path(workspace).resolve()
     path = import_path(workspace, url)
     path.parent.mkdir(parents=True, exist_ok=True)
     header = (

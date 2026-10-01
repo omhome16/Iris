@@ -1,18 +1,106 @@
 # Iris
 
-**A personal agent harness with a visible mind.** Memory that is plain Markdown,
-judgments that are typed probabilities instead of vibes, and a policy layer that
-refuses *before* anything is spent — in one Python package, with a CLI, an HTTP API
-and an editor adapter on top.
+**A neutral agent harness with a mind you can open.** The package and the `iris`
+command keep that name. There is no persona until you write one. Memory is plain
+Markdown, tools stop for approval before a side effect, and the CLI, the HTTP API,
+and the editor adapter share one turn loop.
 
 ```bash
 git clone https://github.com/omhome16/Iris.git && cd Iris
 uv sync
 uv run iris init        # write the config, seed a workspace, then prove it works
-uv run iris chat        # talk to it
+uv run iris config      # name, tone, timezone, persona — editable again later
+uv run iris chat        # full-screen chat; --once stays plain
 ```
 
-No Postgres. No Docker. No daemon. One command to a reply.
+No Postgres. No Docker. No daemon. Postgres, the HTTP API, MCP, the scheduler,
+and the judge SDK are extras (`uv sync --extra all`).
+
+The map of a session and of one message is [docs/architecture.md](docs/architecture.md).
+How to swap context or memory is [docs/harness.md](docs/harness.md).
+
+## A session
+
+```mermaid
+flowchart TD
+  clone["Clone the repo"] --> sync["uv sync"]
+  sync --> init["iris init"]
+  init --> config["iris config"]
+  config --> chat["iris chat"]
+  chat --> tty{"Real terminal?"}
+  tty -->|yes| tui["Full-screen chat"]
+  tty -->|pipe or --once| plain["Plain text"]
+```
+
+`iris init` writes the files and measures them: a cheap model call, the memory
+store, and which thread store a conversation would use. `iris init --yes` writes
+a blank profile and skips the screen, which is what CI uses. `iris config` is
+where you set the owner, the assistant name, tone, timezone, the consolidation
+hour, and the persona. Leave `workspace/PERSONA.md` empty and the assistant has
+no voice of its own.
+
+## One message
+
+```mermaid
+flowchart TD
+  msg["Your message"] --> route{"Profile exists?"}
+  route -->|no| setupReply["Reply: run iris init"]
+  route -->|yes| assemble["Read MEMORY.md, USER.md, skills"]
+  assemble --> agent["Model"]
+  agent --> tools{"Tool call?"}
+  tools -->|needs approval| pause["Allow or Deny, saved on the thread"]
+  pause --> agent
+  tools -->|allowed| run["Run the tool"]
+  run --> agent
+  tools -->|no| save["Daily note, capture, save the thread"]
+```
+
+Assemble does not search the index. The model recalls with `memory_search`.
+A tool that returns `"ok": false` is a failure, and the model is told not to
+claim the write succeeded. `/dream` in chat runs consolidation. There is no
+`iris dream` command.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+  subgraph faces ["Faces, one turn"]
+    cli["iris chat"]
+    api["HTTP API"]
+    acp["Editor adapter"]
+    tg["Telegram"]
+  end
+  faces --> harness["harness()"]
+  harness --> loop["Turn loop"]
+  loop --> model["LiteLLM"]
+  loop --> tools["Tools and policy"]
+  loop --> threads["SQLite threads"]
+  tools --> memory["Markdown memory"]
+  memory --> index["SQLite index"]
+```
+
+| Piece | Default | Swap |
+|---|---|---|
+| Context | `MEMORY.md` and `USER.md` | `[components] context = "pkg.mod:Class"` |
+| Capture | Daily-note facts | `capture = "off"` or a class |
+| Consolidation | Dreaming, and `/dream` | `consolidator = "off"` or a class |
+| Threads | `workspace/threads.db` | `postgres` extra |
+| Index | SQLite, keyword-only without an embedding key | `postgres` extra |
+| Persona | Empty `PERSONA.md` | `iris config` |
+
+```bash
+uv run iris new component context
+uv run iris new component memory
+```
+
+| File | Holds |
+|---|---|
+| `workspace/USER.md` | Profile from setup |
+| `workspace/MEMORY.md` | Facts consolidation promoted |
+| `workspace/memory/YYYY-MM-DD.md` | Daily note, one line per finished turn |
+| `workspace/PERSONA.md` | Optional voice |
+| `workspace/sandbox/` | The only place file tools may write |
+| `workspace/logs/iris.log` | Provider failover and harness logs |
 
 ---
 
@@ -27,7 +115,7 @@ No Postgres. No Docker. No daemon. One command to a reply.
 - **Budgets** that refuse *before* the spend, with a per-call cost ledger behind
   `iris costs`
 - **Durability** from an append-only turn journal, exactly-once tool boundaries,
-  and a checkpointer ladder that survives a restart
+  and a thread store that survives a restart
 - **Observability** as a trace per turn with stage timings, plus optional OTLP spans
 - **Tools, hooks and MCP servers** declared once and policed per tool
 - **Skills** in the Agent Skills format — validated, listed and approved from the CLI
@@ -54,54 +142,23 @@ stores are all Protocols behind registries, so a new integration is configuratio
 rather than a fork. SQLite is the default because a harness that needs a database
 before it will say hello is not a five-minute harness.
 
-## How it fits together
-
-```text
-FACES         library    import iris_ai; async with iris_ai.harness() as brain
-              CLI        iris init · chat · doctor · policy · guards · costs · migrate
-              HTTP API   POST /chat, /chat/stream, /chat/resume; GET /mind, /costs
-              editor     iris-acp — the same kernel, driven by Zed / JetBrains
-                        │
-                        │  one turn pipeline, so the faces cannot disagree
-                        ▼
-THE TURN      guards     deterministic, and first: refuse before anything is spent
-              recall     four tiers, four provenance levels, decay, diversity
-              judges     typed probabilities, deterministic fallbacks, latency budgets
-              model      a router, tiers, a cost ledger per call, enforced budgets
-              tools      one gate for every side effect; approvals bound to a digest
-              journal    exactly-once tool boundaries that survive a restart
-                        │
-                        │  every seam is a Protocol with a registry behind it
-                        ▼
-SEAMS         memory     SQLite (default) · pgvector · Markdown files
-              capability channels · tools · hooks · MCP servers
-              stores     secrets · the checkpointer ladder · the turn journal
-              models     providers · judges · embedders — each one swappable
-```
-
-Everything above the library is a **client**, and the library itself is the product.
-The four faces share one turn pipeline, so memory, judgments, approvals, budgets and
-traces behave identically whichever one you use — there is no second brain to keep in
-sync.
-
-The spine is the design: **a face may not reach past the turn, and the turn may not
-know which store it is talking to.** That is why adding a provider, swapping SQLite
-for pgvector, or putting an HTTP API in front of it are all configuration changes —
-and why a bug in the guard chain cannot be fixed only in the CLI, because the CLI
-never owned the decision in the first place.
+Everything above the library is a client. The library is the product. A face
+does not reach past the turn, and the turn does not know which store it is
+talking to, so a guard bug cannot be fixed only in the CLI.
 
 ## What `iris init` actually proves
 
 It writes `.env` and `config/harness.toml`, seeds a neutral `workspace/`, and then
 **measures** the result rather than assuming it: one no-op completion on the cheap
 tier (a provider key that works, with its latency), the configured memory store
-opened and counted, and the real checkpointer ladder walked so the report says which
+opened and counted, and the real thread store walked so the report says which
 tier a conversation would land in. Recall is reported honestly — with no embedding
 provider it says **keyword-only** and names both fixes instead of printing a green
 tick.
 
-It is deliberately not interactive: everything a wizard would ask has a right answer
-that can be detected. Re-running it never overwrites anything you edited.
+`iris init` itself does not ask questions. The profile screen is `iris config`.
+Re-running init reports `kept (already exists)` rather than overwriting a file
+you edited. `--force` replaces `.env` and the manifest.
 
 ## The CLI
 
@@ -110,8 +167,8 @@ command registry, so it can never list a command that does not exist.
 
 | | |
 |---|---|
-| **Start** | `init` · `chat` · `doctor` · `version` |
-| **Configure** | `secrets` · `mcp` · `policy` |
+| **Start** | `init` · `chat` · `config` · `doctor` · `version` |
+| **Configure** | `secrets` · `mcp` · `policy` · `new` |
 | **Inspect** | `tools` · `plugins` · `guards` · `costs` · `agents` · `skills` · `cron` |
 | **Maintain** | `migrate` |
 
@@ -145,7 +202,7 @@ $ iris
             :+#%%*+-:.                                .:-+*%%#+:
                  .-=*#%%%#*+==--::::....::::--==+*#%%%#*=-.
                           .:-==++****##****++==-:.
-  iris 0.2.0
+  iris 0.3.0
   memory · judgment · agents — one library, one kernel, four faces
 commands ———————————————————————————————————————————————————————————————————————
   start
@@ -260,7 +317,9 @@ selected with `HARNESS_CONFIG=…`, which is how `examples/assistant/` works.
 
 | | |
 |---|---|
-| **[`DOCS.md`](DOCS.md)** | the manual. Every page in depth: install, all 15 commands, every setting, the turn, memory, the judgment layer, safety, extending, interfaces, observability, providers, scheduling, deployment, testing, troubleshooting |
+| **[`docs/architecture.md`](docs/architecture.md)** | the map: a session, one message, the faces, the files |
+| **[`docs/harness.md`](docs/harness.md)** | how to swap context, capture, and consolidation |
+| **[`DOCS.md`](DOCS.md)** | the manual: install, commands, settings, memory, safety, interfaces, testing |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed, per phase, with the numbers and the method that produced them |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, the gates to run, and the house rules |
 | [`examples/assistant/`](examples/assistant/README.md) | a reference profile: a persona, a workspace and a channel, with no core edits |
@@ -279,24 +338,22 @@ New here? Read [`DOCS.md` §1](DOCS.md#1-what-iris-is) and
 | A provider key | **optional to start** — without one, recall is keyword-only and model calls degrade |
 | Postgres | **not needed** (SQLite is the default; pgvector is the scale-up option) |
 | Docker | **not needed** (only for Postgres, the full API + bridge stack, or the `container` script sandbox) |
-| Optional extras | `[acp]` for `iris-acp`, `[otel]` for OTLP spans. Absent, each degrades with a reason rather than failing the boot |
+| Optional extras | `postgres`, `api`, `mcp`, `schedule`, `judge`, `acp`, `otel`, or `all`. A missing extra names itself instead of failing boot |
 
 ```bash
-pip install iris-personal-ai            # core
-pip install "iris-personal-ai[acp]"     # + the editor adapter
-pip install "iris-personal-ai[otel]"    # + OTLP span export
+pip install iris-personal-ai                 # chat, SQLite, CLI
+pip install "iris-personal-ai[all]"          # every extra
+pip install "iris-personal-ai[postgres,api]" # one or more, by name
 ```
 
 ## Status
 
-Shipped and verified: **1129 tests pass offline** (the two pgvector-backed files
-need a service and run in CI), `ruff` clean, and the wheel installs into a clean
-venv and works with no daemon. CI proves the five-minute onboarding path with a
-300-second budget, a model-free retrieval gate, a non-root image build, a
-dependency audit, and byte-equality of the shipped default profile.
+Version **0.3.0**. The turn loop lives in `iris_ai.kernel`.
+**1143 tests passed**, 1 skipped, `ruff` clean, on this tree. The two
+pgvector-backed files run when Postgres is up and are part of that count in CI.
+The wheel installs into a clean venv and the CLI runs with no daemon.
 
-Deliberately deferred, and stated rather than hidden: the native turn kernel (the
-journal is here; the loop swap is not), non-LangGraph orchestration modes, native
-provider SDK backends, MCP-server mode, and `sqlite-vec` as the vector extension.
+Still outside this release: native provider SDK backends (LiteLLM is the
+router), an MCP *server* mode, and `sqlite-vec` as the vector extension.
 
 MIT licensed.

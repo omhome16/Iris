@@ -12,11 +12,11 @@ import json
 from pathlib import Path
 
 import pytest
-from langgraph.checkpoint.memory import MemorySaver
 
 from fakes import WizardLLM
 from iris_ai.agent.chat import ChatGraph
 from iris_ai.config import settings
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.memory.capture import (
     CaptureResult,
     condense,
@@ -204,7 +204,7 @@ async def test_graph_captures_a_durable_fact_into_the_daily_note(tmp_path: Path)
     assert llm.judgments, "the capture judgment must see the turn"
 
     # Recall-loop prevention: the judgment is shown what Iris already has.
-    assert "Already in Iris's context" in llm.judgments[0]
+    assert "Already in the assistant's context" in llm.judgments[0]
 
     # The write path is observable in the turn trace, not taken on faith.
     traced = runtime.traces.recent()[0]

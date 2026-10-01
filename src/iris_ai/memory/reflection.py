@@ -206,7 +206,7 @@ class ReflectionPass:
                     "content": (
                         f"## Retrieved memory excerpts\n{excerpts}\n\n"
                         f"## User message\n{user_message}\n\n"
-                        f"## Iris's reply\n{ai_reply}\n"
+                        f"## Assistant reply\n{ai_reply}\n"
                     ),
                 },
             ],

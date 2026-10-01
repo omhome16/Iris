@@ -392,7 +392,7 @@ class Settings(BaseSettings):
     recency_half_life_days: int = 30
 
     # ── Graph ────────────────────────────────────────────────────────────
-    # Hard cap on LangGraph steps per turn (agent→tools cycles count 2 each).
+    # Hard cap on turn steps (an agent→tools cycle counts as two).
     # Exceeding it is caught and turned into a graceful message, never a 500.
     graph_recursion_limit: int = 40
 

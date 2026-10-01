@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,6 +25,21 @@ from iris_ai.memory.chunking import estimate_tokens
 
 class ConcurrencyError(RuntimeError):
     pass
+
+
+_PATH_LOCKS: dict[str, threading.Lock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _path_lock(path: Path) -> threading.Lock:
+    """One lock per file so concurrent appends cannot interleave lines."""
+    key = str(path)
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _PATH_LOCKS[key] = lock
+        return lock
 
 
 class WorkspaceFiles:
@@ -124,11 +140,11 @@ class WorkspaceFiles:
             block += f"\n## {datetime.now(ZoneInfo(settings.iris_timezone)).isoformat(timespec='seconds')}\n"
         block += text.rstrip() + "\n"
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
+        with _path_lock(path), path.open("a", encoding="utf-8") as fh:
             fh.write(block)
 
     def append_dreams(self, entry: str) -> None:
-        with self.dreams.open("a", encoding="utf-8") as fh:
+        with _path_lock(self.dreams), self.dreams.open("a", encoding="utf-8") as fh:
             fh.write(entry.rstrip() + "\n\n")
 
     # ── recall feedback (episodic: the agent went back to a memory) ──────
@@ -141,11 +157,15 @@ class WorkspaceFiles:
         `content` is capped to a short snippet — enough for the Light phase
         to match staged signals against, without duplicating the note itself.
         """
+        file = self.recall_feedback_path()
+        max_bytes = settings.recall_feedback_max_bytes
+        with _path_lock(file):
+            self._append_feedback_line(file, path, content, max_bytes)
+
+    def _append_feedback_line(self, file: Path, path: str, content: str, max_bytes: int) -> None:
         import json
         from datetime import datetime
 
-        file = self.recall_feedback_path()
-        max_bytes = settings.recall_feedback_max_bytes
         if file.exists() and file.stat().st_size >= max_bytes:
             old = file.with_suffix(".jsonl.1")
             if old.exists():
@@ -164,7 +184,7 @@ class WorkspaceFiles:
 
     def append_curated(self, path: Path, entry: str) -> None:
         """Append one entry to a curated file (e.g. explicit remember)."""
-        with path.open("a", encoding="utf-8") as fh:
+        with _path_lock(path), path.open("a", encoding="utf-8") as fh:
             fh.write("\n" + entry.rstrip() + "\n")
 
     # ── curated writes with optimistic concurrency ────────────────────────

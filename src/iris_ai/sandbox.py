@@ -30,7 +30,11 @@ class SandboxError(Exception):
 
 class Sandbox:
     def __init__(self, root: Path) -> None:
-        self.root = Path(root)
+        # Always absolute. Callers compare results with `relative_to(self.root)`,
+        # and `resolve()` below returns an absolute path. A relative root
+        # (`./workspace/sandbox`) makes that comparison raise after a successful
+        # write, so the model is told the file failed when it is already on disk.
+        self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
     def resolve(self, rel: str) -> Path:

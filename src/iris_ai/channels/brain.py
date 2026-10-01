@@ -9,7 +9,7 @@ shapes have one home.
 
 **Dependency rule (enforced by `tests/test_brain_client_imports.py`):** this
 module imports stdlib + httpx only. The bridge image installs the package with
-`pip install --no-deps .`, so pulling in LangGraph, asyncpg or the memory layer
+`pip install --no-deps .`, so pulling in the engine, asyncpg, or the memory layer
 here would silently drag the whole engine into that image.
 
 Unknown event kinds are forwarded rather than rejected, so a newer server cannot

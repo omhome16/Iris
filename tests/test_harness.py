@@ -59,9 +59,17 @@ def dead_postgres(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
 
 async def _onboard(brain: Harness) -> None:
-    """Walk the wizard to the end so later turns are ordinary chat turns."""
-    for answer in ["Hi", "Omar", "warm", "short", "UTC", "4"]:
-        await brain.respond(answer, session_id="t1")
+    """Write the profile the way `iris init` does, so later turns are ordinary chat."""
+    from iris_ai.onboarding import OnboardingWizard
+
+    OnboardingWizard(brain.files, None).configure(
+        owner_name="Omar",
+        assistant_name="assistant",
+        tone="warm",
+        timezone="UTC",
+        sleep_hour="4",
+        persona="",
+    )
 
 
 async def test_degraded_mode_reports_itself(dead_postgres):

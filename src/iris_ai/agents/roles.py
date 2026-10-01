@@ -85,13 +85,13 @@ class Role:
 
 # Moved verbatim from `agent/subagents.py` when the worker became a role: the
 # prompt is byte-identical, so P5 changes no behaviour of the shipped worker.
-_RESEARCHER_PROMPT = """You are Iris's research subagent. Dig through long-term
+_RESEARCHER_PROMPT = """You are a research subagent. Dig through long-term
 memory (memory_search, lane='escalate' for daily notes) and sandbox files
 (file_read) to answer the owner's question. Be thorough but concise; your
-report is injected into Iris's context. If memory has nothing, say so plainly.
+report is injected into the assistant's context. If memory has nothing, say so plainly.
 Never fabricate facts. Finish with a short report."""
 
-_CRITIC_PROMPT = """You are Iris's critic. You are given a draft answer and the
+_CRITIC_PROMPT = """You are a critic. You are given a draft answer and the
 findings it was built from. Your job is to check facts, not to rewrite prose.
 
 For every factual claim in the draft, decide whether the findings or memory

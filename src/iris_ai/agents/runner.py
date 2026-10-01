@@ -35,14 +35,12 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from langchain_core.messages import HumanMessage
-from langgraph.graph import END, START, MessagesState, StateGraph
-
 from iris_ai import turnlog
 from iris_ai.agent.runtime import Runtime
 from iris_ai.agent.tools import Tool, memory_result_payload, run_memory_search
 from iris_ai.agents.handoff import REFUSED_ERROR, Claim, Handoff, Source, Spend
 from iris_ai.agents.roles import Role
+from iris_ai.kernel.messages import merge_messages
 
 log = logging.getLogger("iris_ai.agents.runner")
 
@@ -137,9 +135,6 @@ class RoleRunner:
         tools = self._tools_for(run)
         cap = role.max_tool_rounds
 
-        class _State(MessagesState):
-            rounds: int
-
         async def agent(state) -> dict:
             llm_messages: list[dict] = [{"role": "system", "content": role.system_prompt}]
             for m in state["messages"]:
@@ -215,21 +210,27 @@ class RoleRunner:
                 results.append({"type": "tool", "content": out, "tool_call_id": tc["id"]})
             return {"messages": results}
 
-        def after_agent(state):
-            last = state["messages"][-1]
-            if not getattr(last, "tool_calls", None):
-                return "done"
-            if state["rounds"] >= cap:
-                return "done"
-            return "tools"
+        class _RoleLoop:
+            async def ainvoke(self, state, config=None):
+                messages = merge_messages([], state["messages"])
+                rounds = int(state.get("rounds") or 0)
+                steps = 0
+                limit = int((config or {}).get("recursion_limit") or 25)
+                while True:
+                    steps += 1
+                    if steps > limit:
+                        break
+                    update = await agent({"messages": messages, "rounds": rounds})
+                    messages = merge_messages(messages, update.get("messages") or [])
+                    rounds = int(update.get("rounds", rounds))
+                    last = messages[-1]
+                    if not getattr(last, "tool_calls", None) or rounds >= cap:
+                        break
+                    tool_update = await tools_node({"messages": messages, "rounds": rounds})
+                    messages = merge_messages(messages, tool_update.get("messages") or [])
+                return {"messages": messages, "rounds": rounds}
 
-        g = StateGraph(_State)
-        g.add_node(role.name, agent)
-        g.add_node("tools", tools_node)
-        g.add_edge(START, role.name)
-        g.add_conditional_edges(role.name, after_agent, {"tools": "tools", "done": END})
-        g.add_edge("tools", role.name)
-        return g.compile()
+        return _RoleLoop()
 
     # ── public API ───────────────────────────────────────────────────────
     async def run(self, question: str, *, session_id: str = "") -> Handoff:
@@ -253,7 +254,7 @@ class RoleRunner:
         try:
             graph = self._build(run)
             result = await graph.ainvoke(
-                {"messages": [HumanMessage(content=question)], "rounds": 0},
+                {"messages": [{"role": "user", "content": question}], "rounds": 0},
                 # Pre-P5 the researcher ran with a limit of 12 at 3 tool rounds
                 # (4 super-steps each); the ratio is kept so the worker's
                 # behaviour is unchanged.

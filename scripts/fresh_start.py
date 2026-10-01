@@ -1,14 +1,12 @@
-"""Fresh start — reset Iris to a newborn state.
+"""Reset the workspace to an empty profile.
 
-Wipes ALL memory artifacts (MEMORY.md, USER.md, DREAMS.md, daily notes,
-skills, staging, dreams preimages, ingested imports, sandbox files,
-traces, hallucination flags, scheduled tasks, the index) and resets
-onboarding, so the next chat goes through the identity wizard.
+Wipes memory artifacts (MEMORY.md, USER.md, DREAMS.md, daily notes,
+skills, staging, ingested imports, sandbox files, traces, scheduled tasks,
+and the index) and clears the saved profile, so the next step is `iris config`.
 
 WHAT SURVIVES: AGENTS.md (the operating contract), the cost ledger
-(config/llm_calls.jsonl — operator accounting, not her memory), config
-defaults, .env, the database schema itself.
-WHAT DIES: every memory, every dream, every skill, every staged signal,
+(config/llm_calls.jsonl), config defaults, .env, and the database schema.
+WHAT IS REMOVED: every memory, every dream, every skill, every staged signal,
 every ingested document, every pending task.
 """
 
@@ -24,28 +22,27 @@ from iris_ai.memory.index import MemoryIndex
 from iris_ai.memory.llm import LLMClient
 from iris_ai.onboarding import OnboardingState
 
-HEADER_MEMORY = """# MEMORY.md — Iris long-term memory
+HEADER_MEMORY = """# MEMORY.md — long-term memory
 
-> Curated by dreaming consolidation. Small, compact, durable facts only.
+> Curated by consolidation. Small, compact, durable facts only.
 > Detail lives in `memory/YYYY-MM-DD.md`. Superseded entries are retired
 > with keys, never deleted silently.
 
-_Empty — Iris is not yet born. Onboarding will fill USER.md; daily life will
-fill this file over days and dreams._
+_Empty. `iris config` writes the profile; daily use fills this file._
 """
 
 HEADER_USER = """# USER.md — the owner's profile
 
 > Stable preferences, communication style, relationships, active projects.
-> Loaded at session start within a separate budget. Written during onboarding
-> and refined by dreaming.
+> Loaded at session start within a separate budget. Written by `iris config`
+> and refined by consolidation.
 
-_Empty — onboarding will define the owner's profile here._
+_Empty until `iris config` saves a profile._
 """
 
-HEADER_DREAMS = """# DREAMS.md — Iris's dream diary
+HEADER_DREAMS = """# DREAMS.md — consolidation diary
 
-> Human-readable record of every sleep cycle. Read-only for Iris.
+> Human-readable record of every consolidation cycle. For reading, not for the prompt.
 """
 
 
@@ -63,9 +60,9 @@ def fresh_start(workspace: Path) -> None:
         p.unlink()
     shutil.rmtree(files.root / ".dreams", ignore_errors=True)
     (files.root / ".dreams").mkdir(parents=True, exist_ok=True)
-    # ingested web documents are UNTRUSTED memory — a newborn has none
+    # ingested pages are untrusted memory — a reset has none
     shutil.rmtree(files.root / "imports", ignore_errors=True)
-    # sandbox files are hers — a newborn has a clean box
+    # sandbox files belong to the workspace — a reset starts empty
     shutil.rmtree(files.root / "sandbox", ignore_errors=True)
     (files.root / "sandbox").mkdir(parents=True, exist_ok=True)
     # scheduled tasks and turn telemetry don't survive a reset either
@@ -92,4 +89,4 @@ async def truncate_index() -> None:
 if __name__ == "__main__":
     fresh_start(Path(settings.workspace_dir))
     asyncio.run(truncate_index())
-    print("Iris reset to newborn state. AGENTS.md untouched. Say hi to meet her.")
+    print("Workspace reset. AGENTS.md was left in place. Run `iris config`, then `iris chat`.")

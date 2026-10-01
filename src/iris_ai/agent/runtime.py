@@ -113,4 +113,7 @@ class Runtime:
     # "you have no memory server configured" and "your memory server is not
     # running" are different answers and only one of them is the owner's fault.
     mcp: McpPool | None = None
+    # Swappable pieces. None means the built-in context assembler and capture.
+    context_builder: object | None = None
+    capture_policy: object | None = None
     on_onboarded: Callable[[], None] | None = field(default=None, init=False)

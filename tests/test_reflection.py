@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from langgraph.checkpoint.memory import MemorySaver
-
 from fakes import FakeJev
 from iris_ai import background, turnlog
 from iris_ai.agent.chat import ChatGraph
+from iris_ai.kernel.threads import MemoryThreadStore as MemorySaver
 from iris_ai.memory.llm import LLMClient
 from iris_ai.memory.reflection import ReflectionPass, _claims, retrieved_excerpts
 from test_agent_graph import make_runtime
@@ -44,14 +43,14 @@ class ExplodingReflectLLM(RetrieveThenReflectLLM):
 
 
 def test_retrieved_excerpts_collects_tool_messages_only():
-    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from iris_ai.kernel.messages import Msg
 
     state = {
         "messages": [
-            HumanMessage(content="hi"),
-            AIMessage(content="", tool_calls=[{"name": "memory_search", "id": "c1", "args": {"query": "x"}}]),
-            ToolMessage(content="hit 1", tool_call_id="c1"),
-            AIMessage(content="answer", tool_calls=[]),
+            Msg(type="human", content="hi"),
+            Msg(type="ai", content="", tool_calls=[{"name": "memory_search", "id": "c1", "args": {"query": "x"}}]),
+            Msg(type="tool", content="hit 1", tool_call_id="c1"),
+            Msg(type="ai", content="answer"),
         ]
     }
     assert retrieved_excerpts(state) == ["hit 1"]

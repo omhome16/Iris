@@ -79,6 +79,8 @@ def test_the_output_survives_a_windows_console_encoding(monkeypatch, tmp_path: P
     rather than remembered.
     """
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "dumb")
     result = runner.invoke(app, ["guards"])
     assert result.exit_code == 0
     result.stdout.encode("cp1252")  # raises if a character is not representable

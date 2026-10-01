@@ -147,7 +147,7 @@ class CaptureResult:
     reason: str = ""
 
 
-_LLM_SYSTEM = """You are Iris's capture pass — the safety net behind her memory.
+_LLM_SYSTEM = """You are the capture pass — the safety net behind the assistant's memory.
 
 Given one conversation turn, decide whether the owner revealed a DURABLE fact
 about themselves worth keeping: a preference, decision, plan, relationship,
@@ -212,11 +212,11 @@ async def _judge_with_jev(
             false="The context does not contain this fact.",
         ),
         "importance": score(
-            "If Iris had to choose what to remember six months from now, how important is `turn.owner`?",
+            "If the harness had to choose what to remember six months from now, how important is `turn.owner`?",
             [
                 "Forgettable: pleasant but inconsequential.",
                 "Useful context: worth knowing, not critical.",
-                "Important: shapes how Iris should behave toward the owner.",
+                "Important: shapes how the assistant should behave toward the owner.",
                 "Critical: core to the owner's life, safety, or identity.",
             ],
         ),
@@ -256,9 +256,9 @@ async def _judge_with_llm(
                 {
                     "role": "user",
                     "content": (
-                        f"## Already in Iris's context\n{context_block or '(nothing)'}\n\n"
+                        f"## Already in the assistant's context\n{context_block or '(nothing)'}\n\n"
                         f"## Owner said\n{condense(user_message, max_chars=2000)}\n\n"
-                        f"## Iris replied\n{condense(ai_reply, max_chars=1200)}\n"
+                        f"## Assistant replied\n{condense(ai_reply, max_chars=1200)}\n"
                     ),
                 },
             ],
