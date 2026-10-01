@@ -10,6 +10,7 @@ the thing being asserted rather than an environment assumption.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -143,7 +144,9 @@ def test_init_seeds_a_neutral_workspace_the_first_time(checkout: Path):
     assert (workspace / "AGENTS.md").is_file()
     assert (workspace / "README.md").is_file()
     assert "Never edited by the agent" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
-    assert "AGENTS.md: created from" in result.stdout
+    # Color codes sit between the path and the colon, and a narrow console wraps.
+    flat = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout).replace("\n", "")
+    assert "AGENTS.md: created from" in flat
 
 
 def test_init_never_overwrites_the_workspace_the_owner_edited(checkout: Path):

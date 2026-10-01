@@ -102,6 +102,8 @@ packages = ["src/iris_ai"]
 
 [tool.uv]
 package = true
+# urllib3 2.7.0 has CVE-2026-97687, CVE-2026-97688, and CVE-2026-97689.
+constraint-dependencies = ["urllib3>=2.8.0"]
 
 [dependency-groups]
 dev = [

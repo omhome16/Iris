@@ -8,6 +8,8 @@ banner drawn into a log file, or an exception on an 8-column window.
 
 from __future__ import annotations
 
+import re
+
 from typer.testing import CliRunner
 
 from iris_ai.cli import art
@@ -142,4 +144,6 @@ def test_the_start_screen_still_prints_the_real_commands(monkeypatch):
 def test_iris_chat_accepts_no_banner():
     result = runner.invoke(app, ["chat", "--help"])
     assert result.exit_code == 0
-    assert "--no-banner" in result.stdout
+    # CI forces color, and rich paints the dashes separately from the name.
+    text = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert "--no-banner" in text

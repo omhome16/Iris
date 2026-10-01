@@ -48,7 +48,22 @@ class MemoryUnavailable(RuntimeError):
     DSN and the command that fixes it.
     """
 
-_SCHEMA = f"""
+def _vector_dim(llm: object) -> int:
+    """The width this index must store.
+
+    A test double (and any client that knows its model) carries `embedding_dim`.
+    Otherwise the configured width is used. Baking the width into the module at
+    import time was wrong: with no Gemini key the setting becomes 768 after
+    import, while a 1536-d stand-in still inserts 1536 values.
+    """
+    dim = getattr(llm, "embedding_dim", None)
+    if isinstance(dim, int) and dim > 0:
+        return dim
+    return int(settings.embedding_dim)
+
+
+def _schema_sql(dim: int) -> str:
+    return f"""
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
@@ -63,7 +78,7 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     trigger_phrases TEXT[]      NOT NULL DEFAULT '{{}}',
     observed_at     DATE        NOT NULL DEFAULT CURRENT_DATE,
     evergreen       BOOLEAN     NOT NULL DEFAULT FALSE,
-    embedding       vector({settings.embedding_dim}),
+    embedding       vector({int(dim)}),
     UNIQUE (path, chunk_index)
 );
 
@@ -161,16 +176,19 @@ class MemoryIndex:
         if self._pool is None:
             dsn = self.dsn.replace("postgresql+psycopg://", "postgresql://")
 
+            dim = _vector_dim(self.llm)
+            sql = _schema_sql(dim)
+
             async def init_conn(conn: asyncpg.Connection) -> None:
-                await conn.execute(_SCHEMA)
+                await conn.execute(sql)
                 await register_vector(conn)
 
             self._pool = await asyncpg.create_pool(
                 dsn, min_size=1, max_size=5, init=init_conn
             )
-            await self._ensure_embedding_dim()
+            await self._ensure_embedding_dim(dim, sql)
 
-    async def _ensure_embedding_dim(self) -> None:
+    async def _ensure_embedding_dim(self, dim: int, sql: str) -> None:
         """The schema bakes `embedding_dim` into the column at CREATE TABLE.
         If the model was switched (different vector size), the column type no
         longer matches and every insert fails. The index is a derived view
@@ -189,18 +207,18 @@ class MemoryIndex:
         # vector(1536) column; -1 = no fixed length). Reading it as
         # `atttypmod - 4` mis-decoded 1536 as 1532 and dropped the table on
         # every connect.
-        dim = typmod if (typmod is not None and typmod > 0) else None
-        if dim is None or dim == settings.embedding_dim:
+        column_dim = typmod if (typmod is not None and typmod > 0) else None
+        if column_dim is None or column_dim == dim:
             return
         log.warning(
             "embedding column dim %s != configured %s — dropping and recreating "
             "memory_chunks (index is rebuildable from files)",
+            column_dim,
             dim,
-            settings.embedding_dim,
         )
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute("DROP TABLE IF EXISTS memory_chunks")
-            await conn.execute(_SCHEMA)
+            await conn.execute(sql)
             await register_vector(conn)
         self.clear_cache()
 

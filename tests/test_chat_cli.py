@@ -7,6 +7,7 @@ and the pipeline underneath is covered by `test_harness.py`.
 
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 
 import pytest
@@ -16,6 +17,11 @@ from iris_ai.cli import chat as chat_mod
 from iris_ai.cli.main import app
 
 runner = CliRunner()
+
+
+def _plain(text: str) -> str:
+    """Drop ANSI so a colored help panel still contains the flag text."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 class FakeBrain:
@@ -143,5 +149,7 @@ def test_provider_detection_accepts_ollama(monkeypatch: pytest.MonkeyPatch):
 def test_chat_help_documents_the_flags():
     result = runner.invoke(app, ["chat", "--help"])
     assert result.exit_code == 0
-    assert "--session" in result.stdout
-    assert "--once" in result.stdout
+    # CI forces color, and rich paints the dashes separately from the name.
+    text = _plain(result.stdout)
+    assert "--session" in text
+    assert "--once" in text
