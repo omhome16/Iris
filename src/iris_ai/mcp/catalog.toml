@@ -1,0 +1,50 @@
+# Built-in MCP servers. `iris mcp add <name>` fills any missing env key.
+
+[filesystem]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+trust = "review"
+env = []
+
+[fetch]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-fetch"]
+trust = "untrusted"
+env = []
+
+[github]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+trust = "review"
+env = ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+
+[git]
+transport = "stdio"
+command = "uvx"
+args = ["mcp-server-git", "--repository", "."]
+trust = "review"
+env = []
+
+[brave-search]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-brave-search"]
+trust = "untrusted"
+env = ["BRAVE_API_KEY"]
+
+[playwright]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+trust = "untrusted"
+env = []
+
+[sqlite]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-sqlite", "--db", "config/memory.db"]
+trust = "review"
+env = []

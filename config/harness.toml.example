@@ -30,12 +30,30 @@ disabled = []
 # judge_backend  = "jev"        # Judge:         `jev` ships in core
 
 # ── Swappable pieces ────────────────────────────────────────────────────────
-# `default` is the built-in. A dotted path is your class: `pkg.mod:Class`.
+# Names below are the built-ins. A dotted path is your class: `pkg.mod:Class`.
+# context: default | recall-first | minimal
+# memory is `memory_backend`: sqlite | markdown | pgvector
+# persona: blank | file | assistant | coder | researcher | tutor
 # `off` turns capture or consolidation off. See docs/harness.md.
 [components]
 context = "default"
+persona = "file"
 capture = "default"
 consolidator = "dreaming"
+
+# Parallel agents. Built-in roles are researcher and critic.
+# Add one with `iris new role <name>`, or write a table here.
+[agents]
+max_parallel = 3
+max_calls_per_turn = 2
+budget_usd = 0
+
+# [roles.scribe]
+# description = "Writes a short brief."
+# prompt = "You are a specialist. Report what you found and where."
+# tools = ["memory_search", "file_read"]
+# model_tier = "cheap"
+# max_steps = 3
 
 # ── Examples of ordinary settings (uncomment to use) ────────────────────────
 # llm_provider = "auto"
@@ -45,6 +63,6 @@ consolidator = "dreaming"
 # iriS_timezone = "UTC"
 #
 # ── External tools: MCP servers ─────────────────────────────────────────────
-# Servers are declared in their own file (the ecosystem's `.mcp.json` shape), not
-# here: they carry commands, URLs and per-server trust. See config/mcp.json.example.
+# Servers live in `.mcp.json` (one file). Turn one on with `iris mcp add <preset>`.
+# Presets: filesystem, fetch, github, git, brave-search, playwright, sqlite.
 # mcp_servers_file = ".mcp.json"

@@ -56,6 +56,7 @@ class ToolEnd:
     ok: bool
     summary: str
     result: str = ""
+    duration_ms: float = 0.0
     kind: str = "tool_end"
 
     def __iter__(self):
@@ -66,6 +67,7 @@ class ToolEnd:
             "ok": self.ok,
             "summary": self.summary,
             "result": self.result,
+            "duration_ms": self.duration_ms,
         }
 
 
@@ -161,6 +163,22 @@ def event_from_custom(payload: dict) -> Event:
     if kind == "tool_call":
         call = payload.get("call") or {}
         return ToolStart(call=call if isinstance(call, dict) else {})
+    if kind == "tool_end":
+        return ToolEnd(
+            name=str(payload.get("name") or ""),
+            ok=bool(payload.get("ok")),
+            summary=str(payload.get("summary") or ""),
+            result=str(payload.get("result") or ""),
+            duration_ms=float(payload.get("duration_ms") or 0),
+        )
+    if kind == "usage":
+        return Usage(
+            tokens=int(payload.get("tokens") or 0),
+            cost=float(payload.get("cost") or 0),
+            model=str(payload.get("model") or ""),
+        )
+    if kind == "reply":
+        return Done(text=str(payload.get("text") or ""))
     if kind == "approval":
         body = payload.get("payload") or {}
         return Approval(payload=body if isinstance(body, dict) else {})

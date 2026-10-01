@@ -10,7 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from iris_ai.kernel.events import Event, NodeUpdate, event_from_custom
+from iris_ai.kernel.events import Event, NodeUpdate, Usage, event_from_custom
 from iris_ai.kernel.messages import merge_messages
 from iris_ai.kernel.pause import GraphInterrupt, reset_stream_writer, set_resume_decision, set_stream_writer
 from iris_ai.kernel.threads import ThreadStore, coerce_store
@@ -30,6 +30,30 @@ class Command:
 class Interrupt:
     def __init__(self, value: dict) -> None:
         self.value = value
+
+
+def _usage_event() -> Usage | None:
+    """Tokens and cost for the turn in flight. Nothing outside `turnlog.collect()`."""
+    from iris_ai import turnlog
+    from iris_ai.config import settings
+    from iris_ai.ledger import estimate_cost
+
+    log = turnlog.current()
+    if log is None:
+        return None
+    prompt = sum(int(bucket.get("prompt_tokens", 0)) for bucket in log.usage.values())
+    completion = log.completion_tokens()
+    model = ""
+    for names in log.models.values():
+        if names:
+            model = names[-1]
+    if not model:
+        model = settings.strong_model or settings.cheap_model or ""
+    return Usage(
+        tokens=log.total_tokens(),
+        cost=round(estimate_cost(model, prompt, completion), 6),
+        model=model,
+    )
 
 
 def _blank(thread_id: str) -> dict:
@@ -155,6 +179,9 @@ class NativeGraph:
                 steps += 1
                 if steps > limit:
                     await self.store.save(thread_id, state)
+                    usage = _usage_event()
+                    if usage is not None:
+                        yield usage
                     raise GraphRecursionError(f"turn exceeded {limit} steps")
                 before = len(collected)
                 update: dict = {}
@@ -180,6 +207,8 @@ class NativeGraph:
                     except GraphInterrupt as paused:
                         state["__interrupt__"] = [Interrupt(paused.value)]
                         await self.store.save(thread_id, state)
+                        for event in collected[before:]:
+                            yield event
                         yield NodeUpdate("tools", {})
                         return
                     _apply(state, update)
@@ -200,6 +229,9 @@ class NativeGraph:
                 node = nxt
             state.pop("__interrupt__", None)
             await self.store.save(thread_id, state)
+            usage = _usage_event()
+            if usage is not None:
+                yield usage
         finally:
             reset_stream_writer(token)
 

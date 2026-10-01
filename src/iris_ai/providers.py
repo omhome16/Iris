@@ -53,6 +53,8 @@ class Provider:
     # one. `doctor` reports these instead of the first call 404ing, and
     # `Settings._provider_usable` refuses to guess.
     requires_model_config: bool = False
+    # A base URL field that may stay empty. When false, an empty base is unusable.
+    optional_base: bool = False
     verified: str = ""  # date the defaults were checked
     docs: str = ""
 
@@ -102,7 +104,7 @@ PROVIDERS: dict[str, Provider] = {
         strong_field="openai_strong_model",
         cheap_field="openai_cheap_model",
         key_env="OPENAI_API_KEY",
-        requires_model_config=True,
+        verified=VERIFIED,
         docs="https://platform.openai.com/api-keys",
     ),
     "deepseek": Provider(
@@ -113,7 +115,7 @@ PROVIDERS: dict[str, Provider] = {
         strong_field="deepseek_strong_model",
         cheap_field="deepseek_cheap_model",
         key_env="DEEPSEEK_API_KEY",
-        requires_model_config=True,
+        verified=VERIFIED,
         docs="https://platform.deepseek.com/api_keys",
     ),
     "xai": Provider(
@@ -124,7 +126,7 @@ PROVIDERS: dict[str, Provider] = {
         strong_field="xai_strong_model",
         cheap_field="xai_cheap_model",
         key_env="XAI_API_KEY",
-        requires_model_config=True,
+        verified=VERIFIED,
         docs="https://console.x.ai",
     ),
     "mistral": Provider(
@@ -135,7 +137,7 @@ PROVIDERS: dict[str, Provider] = {
         strong_field="mistral_strong_model",
         cheap_field="mistral_cheap_model",
         key_env="MISTRAL_API_KEY",
-        requires_model_config=True,
+        verified=VERIFIED,
         docs="https://console.mistral.ai/api-keys",
     ),
     "together": Provider(
@@ -146,7 +148,7 @@ PROVIDERS: dict[str, Provider] = {
         strong_field="together_strong_model",
         cheap_field="together_cheap_model",
         key_env="TOGETHER_API_KEY",
-        requires_model_config=True,
+        verified=VERIFIED,
         docs="https://api.together.ai/settings/api-keys",
     ),
     "fireworks": Provider(
@@ -157,7 +159,7 @@ PROVIDERS: dict[str, Provider] = {
         strong_field="fireworks_strong_model",
         cheap_field="fireworks_cheap_model",
         key_env="FIREWORKS_API_KEY",
-        requires_model_config=True,
+        verified=VERIFIED,
         docs="https://fireworks.ai/account/api-keys",
     ),
     "opencode": Provider(
@@ -196,6 +198,19 @@ PROVIDERS: dict[str, Provider] = {
         base_url_field="openai_compatible_base_url",
         requires_model_config=True,
         docs="https://docs.litellm.ai/docs/providers/openai_compatible",
+    ),
+    "any": Provider(
+        name="any",
+        label="Any LiteLLM model",
+        prefix="custom/",
+        key_field="any_api_key",
+        strong_field="any_model",
+        cheap_field="any_model",
+        key_env="ANY_API_KEY",
+        base_url_field="any_api_base",
+        optional_base=True,
+        requires_model_config=True,
+        docs="https://docs.litellm.ai/docs/providers",
     ),
     "ollama": Provider(
         name="ollama",

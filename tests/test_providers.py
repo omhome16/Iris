@@ -110,8 +110,13 @@ def test_go_shares_the_key_but_not_the_endpoint():
 
 
 def test_a_configured_but_model_less_provider_is_skipped_not_attempted():
-    """A key without a model id must not become a call with a guessed model."""
-    settings = _settings(llm_provider="openai", openai_api_key="sk-x")
+    """A key with the model id blanked must not become a call with a guessed model."""
+    settings = _settings(
+        llm_provider="openai",
+        openai_api_key="sk-x",
+        openai_strong_model="",
+        openai_cheap_model="",
+    )
     assert settings._resolved_provider != "openai"
     assert "not usable" in settings.provider_warning
     assert "openai" not in [name for name, _model, _auth in settings.llm_candidates("strong")]
@@ -199,14 +204,17 @@ def test_doctor_sees_a_zen_key_and_names_the_provider(tmp_path: Path):
 
 
 def test_doctor_warns_when_a_named_provider_has_no_model_id(tmp_path: Path):
-    """The OpenAI provider ships no default model id on purpose, so doctor must
-    say so rather than let the first turn 404."""
+    """A provider that still requires a model id (bring-your-own) must say so."""
     checks = run_checks(
         env_dir=tmp_path,
-        environ={"OPENAI_API_KEY": "sk-x", "LLM_PROVIDER": "openai"},
+        environ={
+            "OPENAI_COMPATIBLE_API_KEY": "sk-x",
+            "LLM_PROVIDER": "openai-compatible",
+            "OPENAI_COMPATIBLE_BASE_URL": "http://localhost:8000/v1",
+        },
     )
     details = {c.name: c.detail for c in checks}
-    assert "OPENAI_STRONG_MODEL" in details["strong model"]
+    assert "OPENAI_COMPATIBLE_STRONG_MODEL" in details["strong model"]
 
 
 def test_doctor_flags_an_unknown_provider_name(tmp_path: Path):

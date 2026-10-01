@@ -270,6 +270,11 @@ def add_usage(
         )
 
 
+def current() -> TurnLog | None:
+    """The turn in flight, or nothing outside `collect()`."""
+    return _current.get()
+
+
 def usage_total() -> int:
     """Prompt + completion tokens spent so far this turn (0 outside a turn)."""
     log = _current.get()

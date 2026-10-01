@@ -68,6 +68,13 @@ async def test_respond_stream_emits_thinking_text_tool_call(tmp_path: Path):
     tool_events = [p for k, p in events if k == "custom" and p["kind"] == "tool_call"]
     assert tool_events and tool_events[0]["call"]["name"] == "memory_search"
 
+    ended = [p for k, p in events if k == "custom" and p["kind"] == "tool_end"]
+    assert ended and ended[0]["name"] == "memory_search"
+    assert "duration_ms" in ended[0]
+
+    usage = [p for k, p in events if k == "custom" and p["kind"] == "usage"]
+    assert usage and "tokens" in usage[0]
+
     text = "".join(p["delta"] for k, p in events if k == "custom" and p["kind"] == "text")
     assert text.startswith("I found it:")
     assert text.endswith("Here's the answer.")

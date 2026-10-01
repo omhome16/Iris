@@ -116,4 +116,6 @@ class Runtime:
     # Swappable pieces. None means the built-in context assembler and capture.
     context_builder: object | None = None
     capture_policy: object | None = None
+    # Which persona the prompt should load: blank, file, or a preset name.
+    persona_choice: str = "file"
     on_onboarded: Callable[[], None] | None = field(default=None, init=False)

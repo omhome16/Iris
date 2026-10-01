@@ -28,10 +28,10 @@ extras: `uv sync --extra all`.
 
 `iris init` writes `.env` and `config/harness.toml`, seeds `workspace/`, then
 measures the result: one cheap model call, the memory store opened, and which
-thread store a conversation would land in. It does not ask questions.
-`iris init --yes` also writes a blank profile, which is what CI uses.
-`iris config` is the screen where you set the owner name, the assistant name,
-tone, timezone, the hour consolidation runs, and the persona text.
+thread store a conversation would land in. On a terminal it opens the setup
+wizard (provider, key, model, parts, MCP, profile). `iris init --yes` writes a
+blank profile and skips the wizard, which is what CI uses. `iris config` reopens
+the same wizard.
 
 Until that profile exists, chat answers with a pointer to `iris init` and does
 not run tools.
@@ -139,8 +139,19 @@ command. Consolidation from chat is `/dream`, or the `dream_now` tool.
 `/memory` `/search` `/dream` `/forget` `/tools` `/skills` `/costs` `/trace`
 `/clear` `/exit`
 
-`iris chat` opens the full-screen terminal when stdout is a TTY.
+`iris` and `iris chat` open the full-screen terminal when stdout is a TTY.
 `iris chat --once "hello"` and a pipe stay plain text.
+
+The turn loop yields typed events (`TextDelta`, `ToolStart`, `ToolEnd`, `Usage`,
+`ErrorEvent`, `Done`). Each event also unpacks as the older `(mode, payload)`
+pair, so the plain REPL and the HTTP API keep working. `ToolEnd` carries a
+short result and how long the tool took. `Usage` carries tokens and cost.
+
+MCP servers are declared in `.mcp.json`. `iris mcp add <preset>` writes one
+from the catalog (filesystem, fetch, github, git, brave-search, playwright,
+sqlite). On Windows, a stdio server runs on a Proactor loop because the chat
+process uses a selector loop that cannot spawn subprocesses. `iris serve http`
+starts the HTTP API. `iris serve telegram` names the token and the mcp extra.
 
 ## Extras
 

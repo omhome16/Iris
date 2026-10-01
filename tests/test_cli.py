@@ -31,6 +31,7 @@ def test_help_lists_only_real_commands():
     assert names == {
         "agents",
         "chat",
+        "components",
         "config",
         "costs",
         "cron",
@@ -39,10 +40,12 @@ def test_help_lists_only_real_commands():
         "init",
         "mcp",
         "migrate",
+        "models",
         "new",
         "plugins",
         "policy",
         "secrets",
+        "serve",
         "skills",
         "tools",
         "version",
@@ -53,7 +56,7 @@ def test_help_lists_only_real_commands():
     # text: prose legitimately contains these words ("a server is allowed to do"),
     # and a substring search over help output cannot tell a command from a
     # sentence.
-    for stub in ("ask", "run", "shell", "serve", "tui"):
+    for stub in ("ask", "run", "shell", "tui"):
         assert stub not in names
 
 

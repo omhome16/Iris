@@ -57,12 +57,52 @@ def assistant_name(root: Path) -> str:
     return name or "assistant"
 
 
+_PRESETS = ("assistant", "coder", "researcher", "tutor")
+
+
+def persona_text(root: Path, choice: str = "") -> str:
+    """The persona block for this workspace.
+
+    `blank` adds nothing. A preset name loads the shipped file. `file` (the
+    default) reads `PERSONA.md`.
+    """
+    picked = (choice or _persona_choice(root)).strip() or "file"
+    if picked == "blank":
+        return ""
+    if picked in _PRESETS:
+        path = Path(__file__).resolve().parent / "templates" / "personas" / f"{picked}.md"
+        if path.is_file():
+            return path.read_text(encoding="utf-8").strip()
+    path = root / "PERSONA.md"
+    if path.is_file():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _persona_choice(root: Path) -> str:
+    """`[components] persona` from the harness manifest, or `file`."""
+    import tomllib
+
+    from iris_ai.config import settings
+
+    path = Path(settings.harness_config)
+    if not path.is_file():
+        return "file"
+    try:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return "file"
+    section = data.get("components") or {}
+    if not isinstance(section, dict):
+        return "file"
+    return str(section.get("persona") or "file")
+
+
 def render_system(root: Path, *, today: str, timezone: str) -> str:
     name = assistant_name(root)
     text = CONTRACT.format(name=name, date=today, tz=timezone)
-    persona = root / "PERSONA.md"
-    if persona.is_file():
-        extra = persona.read_text(encoding="utf-8").strip()
-        if extra:
-            text += "\n\n## Persona\n" + extra
+    extra = persona_text(root)
+    if extra:
+        text += "\n\n## Persona\n" + extra
     return text

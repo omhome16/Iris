@@ -30,6 +30,7 @@ from iris_ai.config import settings
 from iris_ai.guards import GuardChain, Verdict
 from iris_ai.hooks import HookBus
 from iris_ai.kernel import TurnKernel, side_effecting
+from iris_ai.kernel.events import Approval, ErrorEvent
 from iris_ai.kernel.loop import Command, GraphRecursionError, NativeGraph
 from iris_ai.kernel.messages import RemoveMessage
 from iris_ai.kernel.pause import GraphInterrupt, get_stream_writer
@@ -155,6 +156,22 @@ def _interrupt_value(snapshot: object) -> dict | None:
             if isinstance(value, dict):
                 return value
     return None
+
+
+def _emit_tool_end(name: str, content: str, started: float) -> None:
+    """Tell the stream a tool finished, with a short preview and how long it took."""
+    text = str(content or "")
+    preview = " ".join(text.split())[:160]
+    get_stream_writer()(
+        {
+            "kind": "tool_end",
+            "name": name,
+            "ok": not _tool_failed(text),
+            "summary": preview[:80],
+            "result": preview,
+            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+        }
+    )
 
 
 def _tool_failed(out: str) -> bool:
@@ -428,6 +445,7 @@ class ChatGraph:
         scope_token = current_tool_scope.set((origin, active))
         try:
             for tc in last.tool_calls:
+                started = time.monotonic()
                 # The pre-tool hook chain runs *before* dispatch, outside the
                 # tool, so a refusal costs nothing and never reaches a provider.
                 # The built-in guard chain is its first subscriber (budget →
@@ -440,6 +458,7 @@ class ChatGraph:
                         {"ok": False, "error": refusal.reason, "guard": str(refusal.guard)},
                         ensure_ascii=False,
                     )
+                    _emit_tool_end(tc["name"], out, started)
                     results.append(
                         {"type": "tool", "name": tc["name"], "content": out, "tool_call_id": tc["id"]}
                     )
@@ -463,6 +482,7 @@ class ChatGraph:
                     # reply is what makes the boundary exactly-once: a write must
                     # not happen twice because a node ran twice.
                     turnlog.record("tools", event="tool_replayed", tool=tc["name"], call_id=tc["id"] or "")
+                    _emit_tool_end(tc["name"], decision.replay, started)
                     results.append(
                         {"type": "tool", "name": tc["name"], "content": decision.replay, "tool_call_id": tc["id"]}
                     )
@@ -471,6 +491,7 @@ class ChatGraph:
                 if decision.uncertain:
                     out = self.kernel.uncertain_reply()
                     turnlog.record("tools", event="tool_uncertain", tool=tc["name"], call_id=tc["id"] or "")
+                    _emit_tool_end(tc["name"], out, started)
                     results.append(
                         {"type": "tool", "name": tc["name"], "content": out, "tool_call_id": tc["id"]}
                     )
@@ -512,6 +533,7 @@ class ChatGraph:
                     await self.hooks.emit("post_tool", tool=tc["name"], ok=not _tool_failed(out))
                 finally:
                     current_tool_call.reset(call_token)
+                _emit_tool_end(tc["name"], out, started)
                 results.append(
                     {"type": "tool", "name": tc["name"], "content": out, "tool_call_id": tc["id"]}
                 )
@@ -958,11 +980,10 @@ class ChatGraph:
     async def respond_stream(
         self, message: str, *, session_id: str, image: str | None = None, origin: str = "owner"
     ):
-        """Streamed turn with custom visibility events.
+        """Streamed turn. Yields typed events.
 
-        Yields (kind, payload) tuples:
-        - ("custom", event)  — {"kind": thinking|text|tool_call|thinking_done|approval|error}
-        - ("updates", {node: update}) — state updates, last one holds the reply
+        Each event also unpacks as the legacy `(mode, payload)` pair, which is
+        what the REPL and the HTTP API match on. New clients read `.kind`.
         """
         config = {
             "configurable": {"thread_id": session_id},
@@ -984,10 +1005,10 @@ class ChatGraph:
             )
             if settings.kill_switch:
                 turnlog.record("halt", reason="kill_switch", provider_calls=0)
-                yield "error", self._killed_reply()
+                yield ErrorEvent(self._killed_reply())
                 return
             try:
-                async for mode, data in self.graph.astream(
+                async for event in self.graph.astream(
                     {
                         "messages": [{"role": "user", "content": _human_content(message, image)}],
                         "session_id": session_id,
@@ -998,7 +1019,7 @@ class ChatGraph:
                     config,
                     stream_mode=["custom", "updates"],
                 ):
-                    yield mode, data
+                    yield event
                 snapshot = await self.graph.aget_state(config)
                 # The approval lives on the saved thread. Read it the same way resume does.
                 pending = _interrupt_value(snapshot) if snapshot else None
@@ -1009,7 +1030,8 @@ class ChatGraph:
                         session_id, message, started, snapshot.values.get("messages", []),
                         pending=pending, judgment=judgment,
                     )
-                    yield "custom", {"kind": "approval", "payload": pending}
+                    body = pending if isinstance(pending, dict) else {"summary": str(pending)}
+                    yield Approval(payload=body)
                 else:
                     messages = snapshot.values.get("messages", []) if snapshot else []
                     self._trace_turn(
@@ -1025,6 +1047,6 @@ class ChatGraph:
                 turnlog.record("halt", reason="recursion_limit")
                 judgment = turn.to_trace() if settings.turnlog_enabled else None
                 self._trace_turn(session_id, message, started, [], judgment=judgment)
-                yield "error", await self._halt_reply(config)
+                yield ErrorEvent(await self._halt_reply(config))
             finally:
                 await self._bank_turn()

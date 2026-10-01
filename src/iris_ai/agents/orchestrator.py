@@ -64,6 +64,22 @@ _current_budget: ContextVar[tuple[int, int, TurnBudget] | None] = ContextVar(
 )
 
 
+def _over_budget() -> bool:
+    """True when this turn's tokens already passed the dollar ceiling.
+
+    A ceiling of 0 is off. Unknown prices count as $5 per million tokens, which
+    is a high estimate so the cap fails closed rather than pretending the call
+    was free.
+    """
+    cap = float(getattr(settings, "agents_budget_usd", 0) or 0)
+    if cap <= 0:
+        return False
+    log = turnlog.current()
+    if log is None:
+        return False
+    return (log.total_tokens() / 1_000_000) * 5.0 > cap
+
+
 def _critique_question(draft: str, findings: str) -> str:
     return (
         f"Draft answer:\n{draft}\n\n"
@@ -339,9 +355,36 @@ class Orchestrator:
             budget.spend_revision()
         return handoff, needs_revision
 
+    async def parallel(
+        self, tasks: Sequence[tuple[str, str]], *, session_id: str = ""
+    ) -> list[Handoff]:
+        """Run several (role, task) pairs at once and return them in ask order."""
+        pairs = [(role, task) for role, task in tasks if str(task).strip()]
+        if not pairs:
+            return []
+        width = min(len(pairs), max(1, int(settings.multi_agent_max_parallel)), self.budget.remaining())
+        if width <= 0 or _over_budget():
+            reason = self._refuse_reason(pairs[0][0])
+            return [self._refusal(pairs[0][0], pairs[0][1], reason or REFUSED_BUDGET)]
+        chosen = pairs[:width]
+        for role, _task in chosen:
+            reason = self._refuse_reason(role)
+            if reason:
+                return [self._refusal(role, _task, reason)]
+        for _ in chosen:
+            self.budget.spend_call()
+        return list(
+            await asyncio.gather(
+                *(self._run(role, task, session_id=session_id) for role, task in chosen)
+            )
+        )
+
     async def _run(self, role_name: str, question: str, *, session_id: str) -> Handoff:
         """Run a role. Assumes policy already allowed (and charged) it."""
-        runner = RoleRunner(self.runtime, get_role(role_name))
+        role = self.roles.get(role_name)
+        if role is None:
+            role = get_role(role_name)
+        runner = RoleRunner(self.runtime, role)
         handoff = await runner.run(question, session_id=session_id)
         self.budget.handoffs.append(handoff)
         return handoff

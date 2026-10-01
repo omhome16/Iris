@@ -4,6 +4,7 @@ Screen {
 }
 
 #status {
+    dock: top;
     height: 1;
     background: #1c1914;
     color: #c4b8a5;
@@ -15,8 +16,22 @@ Screen {
     padding: 0 1;
 }
 
-#prompt {
+#bottom {
     dock: bottom;
+    height: auto;
+    max-height: 12;
+}
+
+#suggest {
+    height: auto;
+    max-height: 6;
+    background: #1c1914;
+    color: #c4b8a5;
+    padding: 0 1;
+    display: none;
+}
+
+#prompt {
     height: 3;
     border: tall #3a3428;
 }

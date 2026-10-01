@@ -42,6 +42,7 @@ def stale_model_checks(env: Mapping[str, str]) -> list[Check]:
             "model ids",
             "warn",
             f"dead model id in config ({listed}). Remove the line so the current default is used.",
+            fix="iris config model",
         )
     ]
 
@@ -66,6 +67,7 @@ class Check:
     name: str
     level: Literal["ok", "warn", "fail"]
     detail: str
+    fix: str = ""
 
 
 def _package_location() -> Path:
@@ -100,14 +102,14 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
     env_path = root / ".env"
     file_vars: dict[str, str] = {}
     if not env_path.exists():
-        checks.append(Check(".env", "warn", "missing — cp .env.example .env"))
+        checks.append(Check(".env", "warn", "missing — cp .env.example .env", fix="cp .env.example .env"))
     else:
         try:
             env_path.read_text(encoding="utf-8")
             file_vars = _load_dotenv(env_path)
             checks.append(Check(".env", "ok", "present"))
         except OSError:
-            checks.append(Check(".env", "fail", "unreadable"))
+            checks.append(Check(".env", "fail", "unreadable", fix="iris init"))
 
     # Process env wins; .env fills gaps so quickstart keys are visible.
     base = dict(os.environ if environ is None else environ)
@@ -117,13 +119,13 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
         loc = _package_location()
         checks.append(Check("package", "ok", f"importable at {loc}"))
     except Exception:  # noqa: BLE001 — any import failure is a fail-level check result
-        checks.append(Check("package", "fail", "cannot import iris_ai"))
+        checks.append(Check("package", "fail", "cannot import iris_ai", fix="uv sync"))
 
     present = [name for name in PROVIDER_KEY_NAMES if env.get(name, "").strip()]
     if present:
         checks.append(Check("provider keys", "ok", ", ".join(present)))
     else:
-        checks.append(Check("provider keys", "warn", "none set — set a provider key"))
+        checks.append(Check("provider keys", "warn", "none set — set a provider key", fix="iris init"))
 
     requested = (env.get("LLM_PROVIDER", "auto") or "auto").strip().lower()
     resolved = _resolve_provider(requested, env)
@@ -131,7 +133,12 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
     checks.extend(stale_model_checks(env))
     if requested not in ("auto",) and requested not in PROVIDERS:
         checks.append(
-            Check("LLM_PROVIDER", "warn", f"{requested!r} is not a known provider — falling back to {resolved}")
+            Check(
+                "LLM_PROVIDER",
+                "warn",
+                f"{requested!r} is not a known provider — falling back to {resolved}",
+                fix="iris config provider",
+            )
         )
     # A provider can only be used once a model id exists for it. The registry
     # names the field, so the env var to look for is derived rather than listed.
@@ -139,13 +146,25 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
     model_env = spec.strong_field.upper()
     if spec.requires_model_config and not env.get(model_env, "").strip():
         checks.append(
-            Check("strong model", "warn", f"{model_env} is unset — {spec.label} cannot be used yet")
+            Check(
+                "strong model",
+                "warn",
+                f"{model_env} is unset — {spec.label} cannot be used yet",
+                fix="iris config model",
+            )
         )
 
     if env.get("TYPESAFE_API_KEY", "").strip():
         checks.append(Check("TYPESAFE_API_KEY", "ok", "set"))
     else:
-        checks.append(Check("TYPESAFE_API_KEY", "warn", "missing — JEV disabled (deterministic fallback)"))
+        checks.append(
+            Check(
+                "TYPESAFE_API_KEY",
+                "warn",
+                "missing — JEV disabled (deterministic fallback)",
+                fix="uv sync --extra judge",
+            )
+        )
 
     checks.append(_secret_store_check(env))
     return checks
@@ -163,7 +182,12 @@ def _secret_store_check(env: Mapping[str, str]) -> Check:
 
     requested = (env.get("SECRET_STORE", "auto") or "auto").strip().lower()
     if requested not in ("auto", "env", "keyring", "file"):
-        return Check("secret store", "fail", f"SECRET_STORE={requested!r} is not a known backend")
+        return Check(
+            "secret store",
+            "fail",
+            f"SECRET_STORE={requested!r} is not a known backend",
+            fix="iris secrets backend",
+        )
     chosen = requested
     if requested == "auto":
         chosen = "keyring" if available_backends()["keyring"] else "file"
@@ -171,7 +195,12 @@ def _secret_store_check(env: Mapping[str, str]) -> Check:
         return Check("secret store", "ok", "keyring (OS-encrypted)")
     if chosen == "env":
         return Check("secret store", "ok", "env (read-only; nothing stored by Iris)")
-    return Check("secret store", "warn", "file (0600, NOT encrypted — see `iris secrets backend`)")
+    return Check(
+        "secret store",
+        "warn",
+        "file (0600, NOT encrypted — see `iris secrets backend`)",
+        fix="iris secrets backend",
+    )
 
 
 def exit_code(checks: list[Check]) -> int:
@@ -186,6 +215,7 @@ def render(checks: list[Check]) -> None:
     ui.header(out, "Iris doctor", "offline checks - names only, never secret values")
     ui.section(out, "environment")
     for check in checks:
-        ui.status(out, check.level, check.name, check.detail)
+        detail = check.detail if not check.fix or check.level == "ok" else f"{check.detail}  fix: {check.fix}"
+        ui.status(out, check.level, check.name, detail)
     out.print()
     ui.counts(out, [check.level for check in checks])

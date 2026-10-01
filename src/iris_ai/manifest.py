@@ -96,6 +96,14 @@ def apply_manifest(settings: Any, data: dict[str, Any], *, environ: dict | None 
             flat["channels_enabled"] = _join(channels["enabled"])
         if "disabled" in channels:
             flat["channels_disabled"] = _join(channels["disabled"])
+    agents = data.get("agents")
+    if isinstance(agents, dict):
+        if "max_parallel" in agents:
+            flat["multi_agent_max_parallel"] = agents["max_parallel"]
+        if "max_calls_per_turn" in agents:
+            flat["multi_agent_max_calls"] = agents["max_calls_per_turn"]
+        if "budget_usd" in agents:
+            flat["agents_budget_usd"] = agents["budget_usd"]
 
     fields = getattr(type(settings), "model_fields", None) or getattr(settings, "model_fields", {})
     applied: list[str] = []

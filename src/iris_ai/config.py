@@ -113,28 +113,34 @@ class Settings(BaseSettings):
     # call it, because a guessed id is a 404 at runtime rather than an error at
     # startup. `iris doctor` reports exactly which are configured.
     openai_api_key: str = Field(default="", repr=False)
-    openai_strong_model: str = ""
-    openai_cheap_model: str = ""
+    openai_strong_model: str = "openai/gpt-4o"
+    openai_cheap_model: str = "openai/gpt-4o-mini"
 
     deepseek_api_key: str = Field(default="", repr=False)
-    deepseek_strong_model: str = ""
-    deepseek_cheap_model: str = ""
+    deepseek_strong_model: str = "deepseek/deepseek-chat"
+    deepseek_cheap_model: str = "deepseek/deepseek-chat"
 
     xai_api_key: str = Field(default="", repr=False)
-    xai_strong_model: str = ""
-    xai_cheap_model: str = ""
+    xai_strong_model: str = "xai/grok-3-mini"
+    xai_cheap_model: str = "xai/grok-3-mini"
 
     mistral_api_key: str = Field(default="", repr=False)
-    mistral_strong_model: str = ""
-    mistral_cheap_model: str = ""
+    mistral_strong_model: str = "mistral/mistral-small-latest"
+    mistral_cheap_model: str = "mistral/mistral-small-latest"
 
     together_api_key: str = Field(default="", repr=False)
-    together_strong_model: str = ""
-    together_cheap_model: str = ""
+    together_strong_model: str = "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    together_cheap_model: str = "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo"
 
     fireworks_api_key: str = Field(default="", repr=False)
-    fireworks_strong_model: str = ""
-    fireworks_cheap_model: str = ""
+    fireworks_strong_model: str = "fireworks_ai/accounts/fireworks/models/llama-v3p1-8b-instruct"
+    fireworks_cheap_model: str = "fireworks_ai/accounts/fireworks/models/llama-v3p1-8b-instruct"
+
+    # Any LiteLLM model string (Anthropic, Azure, Bedrock, LM Studio, and the rest).
+    # The id is whatever LiteLLM accepts. The base URL is optional.
+    any_api_key: str = Field(default="", repr=False)
+    any_model: str = ""
+    any_api_base: str = ""
 
     # OpenCode Zen and Go share one key and differ only by endpoint. Ids were
     # verified against opencode.ai/docs on 2026-09-26 (see providers.VERIFIED);
@@ -186,7 +192,11 @@ class Settings(BaseSettings):
             return False
         if not (self._models_strong.get(name) or "").strip():
             return False
-        return not (spec.base_url_field and not self._provider_base(name).strip())
+        return not (
+            spec.base_url_field
+            and not spec.optional_base
+            and not self._provider_base(name).strip()
+        )
 
     def _autodetect_provider(self) -> str:
         """First usable provider in AUTO_ORDER, else local Ollama.
@@ -529,6 +539,9 @@ class Settings(BaseSettings):
     multi_agent_effort_gate: float = 0.60
     multi_agent_critique_gate: float = 0.60
     multi_agent_revise_once: bool = True  # allow exactly one revision pass
+    # Dollar ceiling for one turn's specialist calls. 0 means no dollar cap.
+    # The [agents] table in harness.toml is the place to set this.
+    agents_budget_usd: float = 0.0
 
     # ── Cron — time as a first-class trigger (P6) ────────────────────────
     # Jobs live in `workspace/config/tasks.json` (files are the source of

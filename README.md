@@ -6,12 +6,18 @@ Markdown, tools stop for approval before a side effect, and the CLI, the HTTP AP
 and the editor adapter share one turn loop.
 
 ```bash
-git clone https://github.com/omhome16/Iris.git && cd Iris
-uv sync
-uv run iris init        # write the config, seed a workspace, then prove it works
-uv run iris config      # name, tone, timezone, persona — editable again later
-uv run iris chat        # full-screen chat; --once stays plain
+uv tool install iris-personal-ai
+iris init
+iris
 ```
+
+`iris init` asks for a provider, an API key, and a model, then optional memory,
+persona, and MCP servers. `iris` opens the full-screen chat. From a clone,
+`uv sync` then `uv run iris init` and `uv run iris` do the same thing.
+`iris init --yes` skips the screen, which is what CI uses.
+
+![Setup wizard](docs/images/wizard.svg)
+![Full-screen chat](docs/images/chat.svg)
 
 No Postgres. No Docker. No daemon. Postgres, the HTTP API, MCP, the scheduler,
 and the judge SDK are extras (`uv sync --extra all`).
@@ -23,21 +29,19 @@ How to swap context or memory is [docs/harness.md](docs/harness.md).
 
 ```mermaid
 flowchart TD
-  clone["Clone the repo"] --> sync["uv sync"]
-  sync --> init["iris init"]
-  init --> config["iris config"]
-  config --> chat["iris chat"]
+  install["uv tool install"] --> init["iris init"]
+  init --> wizard["Provider, key, model, parts, MCP"]
+  wizard --> chat["iris"]
   chat --> tty{"Real terminal?"}
   tty -->|yes| tui["Full-screen chat"]
   tty -->|pipe or --once| plain["Plain text"]
 ```
 
 `iris init` writes the files and measures them: a cheap model call, the memory
-store, and which thread store a conversation would use. `iris init --yes` writes
-a blank profile and skips the screen, which is what CI uses. `iris config` is
-where you set the owner, the assistant name, tone, timezone, the consolidation
-hour, and the persona. Leave `workspace/PERSONA.md` empty and the assistant has
-no voice of its own.
+store, and which thread store a conversation would use. On a terminal it also
+walks the setup wizard. `iris config` reopens that wizard, and `iris config model`
+starts at the model step. Leave the persona blank and the assistant has no voice
+of its own.
 
 ## One message
 

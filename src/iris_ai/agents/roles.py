@@ -145,6 +145,30 @@ CRITIC = Role(
 ROLES: Mapping[str, Role] = {RESEARCHER.name: RESEARCHER, CRITIC.name: CRITIC}
 
 
+def roles_from_manifest(data: dict | None) -> dict[str, Role]:
+    """Built-in roles, plus any `[roles.<name>]` table in the harness manifest."""
+    roles = dict(ROLES)
+    tables = (data or {}).get("roles") or {}
+    if not isinstance(tables, dict):
+        return roles
+    for name, body in tables.items():
+        if not isinstance(body, dict):
+            continue
+        tools = body.get("tools") or ["memory_search", "file_read"]
+        if isinstance(tools, str):
+            tools = [part.strip() for part in tools.split(",") if part.strip()]
+        roles[str(name)] = Role(
+            name=str(name),
+            description=str(body.get("description") or name),
+            tier=str(body.get("model_tier") or body.get("tier") or "cheap"),
+            system_prompt=str(body.get("prompt") or body.get("system_prompt") or f"You are {name}."),
+            tools=frozenset(str(tool) for tool in tools),
+            max_tool_rounds=int(body.get("max_steps") or body.get("max_tool_rounds") or 3),
+            search_lane=str(body.get("search_lane") or "default"),
+        )
+    return roles
+
+
 def get_role(name: str) -> Role:
     """Look a role up by name, naming the alternatives when one is misspelled."""
     role = ROLES.get(name)

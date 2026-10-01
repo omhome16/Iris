@@ -115,6 +115,7 @@ class Declaration:
 TOOL_DECLARATIONS: dict[str, Declaration] = {
     "memory_search": Declaration(ToolClass.READ),
     "deep_dive": Declaration(ToolClass.READ),
+    "run_parallel": Declaration(ToolClass.READ),
     "verify_answer": Declaration(ToolClass.READ),
     "remember": Declaration(ToolClass.MEMORY_WRITE),
     "note": Declaration(ToolClass.MEMORY_WRITE),
@@ -230,6 +231,7 @@ NAMESPACES: dict[str, tuple[str, ...]] = {
     "memory": (
         "memory_search",
         "deep_dive",
+        "run_parallel",
         "verify_answer",
         "remember",
         "note",

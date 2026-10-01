@@ -364,6 +364,7 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "ingest_url",
         "deep_dive",
         "verify_answer",
+        "run_parallel",
     }
     for s in schemas:
         assert s["function"]["parameters"]["type"] == "object"

@@ -306,6 +306,55 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         )
     )
 
+    async def run_parallel(tasks: list) -> str:
+        """Split work across specialists and merge their reports."""
+        orchestrator = getattr(runtime, "orchestrator", None)
+        if orchestrator is None:
+            return _err("parallel agents are not available")
+        pairs: list[tuple[str, str]] = []
+        for item in tasks or []:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip()
+            task = str(item.get("task") or "").strip()
+            if role and task:
+                pairs.append((role, task))
+        if not pairs:
+            return _err("tasks must be a list of {role, task}")
+        try:
+            handoffs = await orchestrator.parallel(pairs)
+        except Exception as exc:  # noqa: BLE001 - tool errors surface as JSON
+            return _err(str(exc))
+        text, _truncated = orchestrator.merge(handoffs)
+        return _ok(answer=text, roles=[role for role, _task in pairs])
+
+    tools.append(
+        Tool(
+            "run_parallel",
+            "Answer several parts at once by handing each one to a specialist "
+            "(researcher, critic, or a role from harness.toml) and merging the reports.",
+            {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "Each item is {role, task}",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {"type": "string"},
+                                "task": {"type": "string"},
+                            },
+                            "required": ["role", "task"],
+                        },
+                    }
+                },
+                "required": ["tasks"],
+            },
+            run_parallel,
+        )
+    )
+
     async def file_create(path: str, content: str) -> str:
         """Create a new file inside the sandbox. Fails if it exists."""
         try:
@@ -1225,6 +1274,7 @@ TOOL_NAMES: frozenset[str] = frozenset(
         "memory_search",
         "deep_dive",
         "verify_answer",
+        "run_parallel",
         "file_create",
         "file_write",
         "file_read",

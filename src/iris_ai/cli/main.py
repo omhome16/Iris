@@ -16,6 +16,7 @@ the grouping still appears, under its own heading, so the list is never partial.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import typer
@@ -52,8 +53,8 @@ app = typer.Typer(
 #: here is listed under `More` — the screen degrades by getting longer, never by
 #: dropping a verb.
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("start", ("init", "chat", "config", "doctor", "version")),
-    ("configure", ("secrets", "mcp", "policy", "new")),
+    ("start", ("init", "chat", "serve", "config", "doctor", "version")),
+    ("configure", ("secrets", "mcp", "models", "components", "policy", "new")),
     ("inspect", ("tools", "plugins", "guards", "costs", "agents", "skills", "cron")),
     ("maintain", ("migrate",)),
 )
@@ -124,8 +125,8 @@ def _help_screen(ctx: typer.Context, *, draw_art: bool = True) -> None:
         out,
         "next",
         [
-            ("iris init", "set up this checkout, then prove it"),
-            ("iris chat", "talk to it — no service, no daemon"),
+            ("iris init", "provider, key, model, then a working profile"),
+            ("iris", "open the chat — no service, no daemon"),
         ],
         subtitle="the flags of one command: `iris <command> --help`",
     )
@@ -152,6 +153,9 @@ def root(
         version_mod.print_version()
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
+        if sys.stdout.isatty() and not os.environ.get("IRIS_PLAIN"):
+            chat_mod = _load("chat")
+            raise typer.Exit(code=chat_mod.run_chat())
         _help_screen(ctx)
         raise typer.Exit()
 
@@ -245,6 +249,7 @@ def mcp(
     trust: str = typer.Option("untrusted", "--trust", help="untrusted | review | owner"),
     approval: str = typer.Option("auto", "--approval", help="auto | always | never"),
     enabled: bool = typer.Option(True, "--enabled/--disabled", help="Declare it now or park it."),
+    transport: str = typer.Option("", "--transport", help="stdio | http | sse"),
 ) -> None:
     """Declare MCP servers (list, add, remove, test) without hand-editing JSON."""
     mcp_mod = _load("mcp")
@@ -258,6 +263,7 @@ def mcp(
             trust=trust,
             approval=approval,
             enabled=enabled,
+            transport=transport,
         )
     )
 
@@ -298,24 +304,63 @@ def init(
 
 
 @app.command()
-def config() -> None:
-    """Change the name, tone, timezone and persona chosen at setup."""
+def config(
+    section: str = typer.Argument("", help="provider | key | model | embeddings | parts | mcp | profile"),
+) -> None:
+    """Open setup again. Pass a section to start there."""
     setup_mod = _load("setup")
-    raise typer.Exit(code=setup_mod.run_config(yes=False))
+    raise typer.Exit(code=setup_mod.run_config(yes=False, section=section))
+
+
+@app.command()
+def models(
+    action: str = typer.Argument("test", help="test"),
+    model: str = typer.Argument("", help="Optional model id to probe."),
+) -> None:
+    """Probe the configured model with one short call."""
+    models_mod = _load("models")
+    raise typer.Exit(code=models_mod.run(action, model))
+
+
+@app.command()
+def components(
+    action: str = typer.Argument("list", help="list | use"),
+    kind: str = typer.Argument("", help="context | memory | persona | channel"),
+    option: str = typer.Argument("", help="The option to switch to."),
+) -> None:
+    """List plug-and-play options, or switch one."""
+    mod = _load("components_cmd")
+    raise typer.Exit(code=mod.run(action, kind, option))
+
+
+@app.command()
+def serve(
+    channel: str = typer.Argument("terminal", help="terminal | telegram | http"),
+) -> None:
+    """Start a face: the terminal, Telegram, or the HTTP API."""
+    serve_mod = _load("serve")
+    raise typer.Exit(code=serve_mod.run(channel))
 
 
 @app.command("new")
 def new(
-    kind: str = typer.Argument(..., help="component"),
-    name: str = typer.Argument(..., help="context or memory"),
+    kind: str = typer.Argument(..., help="context | memory | persona | role | channel | component"),
+    name: str = typer.Argument("", help="Name, or context|memory when kind is component."),
     dest: Path = typer.Option(Path("examples"), "--dest", help="Directory to write the scaffold into."),
 ) -> None:
-    """Scaffold a swappable context or memory component."""
-    if kind != "component" or name not in {"context", "memory"}:
-        _fail("usage: iris new component context|memory")
-        return
+    """Scaffold a context, memory, persona, role, or channel and switch to it."""
     scaffold_mod = _load("scaffold")
-    path = scaffold_mod.write_component(name, dest / name / "component.py")
+    if kind == "component":
+        if name not in {"context", "memory"}:
+            _fail("usage: iris new component context|memory")
+            return
+        path = scaffold_mod.write_component(name, dest / name / "component.py")
+        console().print(f"wrote {path}")
+        return
+    if kind not in {"context", "memory", "persona", "role", "channel"} or not name:
+        _fail("usage: iris new context|memory|persona|role|channel <name>")
+        return
+    path = scaffold_mod.write_new(kind, name, dest)
     console().print(f"wrote {path}")
 
 

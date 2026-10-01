@@ -28,6 +28,7 @@ import contextlib
 import json
 import logging
 import sys
+import threading
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -181,6 +182,55 @@ class McpConnection:
         await self._stack.aclose()
 
 
+class _ProactorConnection:
+    """An MCP session that lives on a proactor loop in another thread."""
+
+    def __init__(self, spec: McpServerSpec, loop: asyncio.AbstractEventLoop, inner: McpConnection) -> None:
+        self.spec = spec
+        self.client = inner.client
+        self._loop = loop
+        self._inner = inner
+
+    async def _hop(self, coro):
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, self._loop))
+
+    async def tools(self) -> list[McpToolInfo]:
+        return await self._hop(self._inner.tools())
+
+    async def call(self, tool: str, arguments: dict[str, Any] | None = None) -> str:
+        return await self._hop(self._inner.call(tool, arguments))
+
+    async def call_raw(self, tool: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await self._hop(self._inner.call_raw(tool, arguments))
+
+    async def close(self) -> None:
+        with contextlib.suppress(Exception):
+            await self._hop(self._inner.close())
+        self._loop.call_soon_threadsafe(self._loop.stop)
+
+
+async def _connect_on_proactor(spec: McpServerSpec, timeout: float) -> _ProactorConnection:
+    """Spawn a stdio server on a proactor loop. The selector loop cannot."""
+    policy = asyncio.WindowsProactorEventLoopPolicy()
+    loop = policy.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, name=f"iris-mcp-{spec.name}", daemon=True)
+    thread.start()
+
+    async def _open() -> McpConnection:
+        stack = AsyncExitStack()
+        client = await stack.enter_async_context(
+            Client(_target(spec), read_timeout_seconds=timeout)
+        )
+        return McpConnection(spec=spec, client=client, _stack=stack)
+
+    try:
+        inner = await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(_open(), loop))
+    except Exception:
+        loop.call_soon_threadsafe(loop.stop)
+        raise
+    return _ProactorConnection(spec, loop, inner)
+
+
 @asynccontextmanager
 async def open_server(
     spec: McpServerSpec, *, server: Any | None = None, timeout: float = 20.0
@@ -200,16 +250,24 @@ async def open_server(
     if Client is None or stdio_client is None or sse_client is None:
         raise McpUnavailable(f"{spec.name}: MCP needs the mcp extra: uv sync --extra mcp")
     if server is None and spec.transport == "stdio" and _stdio_blocked():
-        raise McpUnsupported(
-            f"{spec.name}: the stdio transport cannot run under this event loop — "
-            "Windows' selector loop, which `iris chat` and `iris api` select, does "
-            "not implement asyncio subprocesses. Run the server yourself and point "
-            "`url` at it (the http transport is unaffected), or start Iris from a "
-            "process using the proactor loop."
-        )
+        try:
+            connection = await _connect_on_proactor(spec, timeout)
+        except Exception as exc:
+            raise McpUnavailable(
+                f"{spec.name}: stdio could not start on the Windows proactor loop "
+                f"({type(exc).__name__}: {exc}). The selector loop cannot spawn "
+                "processes. Use an http server (`iris mcp add custom --transport http`) "
+                "or run the server yourself and set a url."
+            ) from exc
+        try:
+            yield connection
+        finally:
+            await connection.close()
+        return
     stack = AsyncExitStack()
     try:
-        client = await stack.enter_async_context(            Client(server if server is not None else _target(spec), read_timeout_seconds=timeout)
+        client = await stack.enter_async_context(
+            Client(server if server is not None else _target(spec), read_timeout_seconds=timeout)
         )
     except BaseException as exc:  # connect/spawn/handshake are one outcome to a caller
         with contextlib.suppress(Exception):

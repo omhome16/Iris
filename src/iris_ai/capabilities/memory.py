@@ -94,6 +94,15 @@ MEMORY_BACKENDS.register(
 )
 
 
+def _build_markdown(**kw: Any) -> Any:
+    from iris_ai.memory.markdown_index import MarkdownIndex
+
+    return MarkdownIndex(**kw)
+
+
+MEMORY_BACKENDS.register("markdown", _build_markdown, source="core")
+
+
 def discover_memory_backends(enabled: set[str] | None = None) -> list[str]:
     """Register installed memory backends; returns the names that were added."""
     return [reg.name for reg in MEMORY_BACKENDS.discover("iris_ai.memory", enabled=enabled)]

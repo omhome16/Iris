@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sys
 import time
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -288,7 +289,7 @@ def _next_steps() -> None:
         out,
         "next",
         [
-            ("iris chat", "talk to her (no service, no daemon)"),
+            ("iris", "open the chat (no service, no daemon)"),
             ("iris doctor", "re-check the environment any time"),
         ],
     )
@@ -312,6 +313,10 @@ def run(*, config: Path | None = None, force: bool = False, offline: bool = Fals
         from iris_ai.cli.setup import apply_setup
 
         apply_setup(Path(settings.workspace_dir))
+    elif sys.stdout.isatty() and not os.environ.get("IRIS_PLAIN"):
+        from iris_ai.cli.tui.wizard import run_wizard
+
+        run_wizard(Path(settings.workspace_dir))
     files = _write_samples(config_path, force=force) + _workspace_checks()
     checks, recall_ok = asyncio.run(_verify(offline=offline))
     _render(files, checks, recall_ok=recall_ok)

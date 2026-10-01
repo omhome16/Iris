@@ -207,8 +207,8 @@ class Harness:
 
     def stream(
         self, message: str, *, session_id: str = "default", image: str | None = None
-    ) -> AsyncIterator[tuple[str, object]]:
-        """Streamed turn: yields `(kind, payload)` from the chat graph."""
+    ):
+        """Streamed turn. Yields typed events that also unpack as `(mode, payload)`."""
         return self.graph.respond_stream(message, session_id=session_id, image=image)
 
     # ── shutdown ─────────────────────────────────────────────────────────
@@ -527,8 +527,11 @@ async def harness(
         # policy (role allowlists, call caps, the deadline) and only does work
         # when the lead actually delegates.
         from iris_ai.agents.orchestrator import Orchestrator
+        from iris_ai.agents.roles import roles_from_manifest
 
-        runtime.orchestrator = Orchestrator(runtime)
+        runtime.orchestrator = Orchestrator(
+            runtime, roles=roles_from_manifest(load_manifest(manifest_path))
+        )
 
         # P8: the pre-tool guard chain, with a budget whose day counters persist
         # to config/budget.json so a cross-session ceiling survives a restart.

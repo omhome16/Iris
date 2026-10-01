@@ -71,6 +71,7 @@ def _add(
     trust: str = "untrusted",
     approval: str = "auto",
     enabled: bool = True,
+    transport: str = "",
 ) -> int:
     out = console()
     from iris_ai.mcp import McpConfigError, validate_entry
@@ -85,6 +86,8 @@ def _add(
     entry: dict = {"url": url} if url else {"command": command}
     if command and args:
         entry["args"] = [a for a in args.split(",") if a]
+    if transport:
+        entry["transport"] = transport
     entry["trust"] = trust
     entry["approval"] = approval
     entry["enabled"] = enabled
@@ -184,6 +187,57 @@ def _test(name: str) -> int:
     return 0
 
 
+def _add_preset(name: str) -> int:
+    """Write a catalog server. Missing env keys are named, never printed."""
+    import os
+
+    from iris_ai.mcp import McpConfigError, validate_entry
+    from iris_ai.mcp.catalog import preset
+
+    out = console()
+    body = preset(name)
+    if body is None:
+        ui.error(out, f"no catalog preset {name!r}")
+        return 2
+    needed = [str(key) for key in body.get("env") or []]
+    missing = [key for key in needed if not os.environ.get(key, "").strip()]
+    entry: dict = {
+        "command": body.get("command") or "",
+        "args": list(body.get("args") or []),
+        "transport": body.get("transport") or "stdio",
+        "trust": body.get("trust") or "untrusted",
+        "approval": "auto",
+        "enabled": not missing,
+    }
+    if needed:
+        entry["env"] = {key: "${" + key + "}" for key in needed}
+    try:
+        validate_entry(name, entry, environ=os.environ)
+    except McpConfigError as exc:
+        out.print(f"[iris.fail]that declaration is not valid:[/iris.fail] {exc}")
+        return 1
+    data = _read()
+    data["mcpServers"][name] = entry
+    _write(data)
+    out.print(f"[iris.ok]added[/iris.ok] {name} from the catalog")
+    if missing:
+        ui.note(out, "set " + ", ".join(missing) + f" then `iris mcp enable {name}`")
+    return 0
+
+
+def _set_enabled(name: str, enabled: bool) -> int:
+    out = console()
+    data = _read()
+    if name not in data["mcpServers"]:
+        ui.warn(out, f"{name} is not declared in {_path()}")
+        return 1
+    data["mcpServers"][name]["enabled"] = enabled
+    _write(data)
+    state = "enabled" if enabled else "disabled"
+    out.print(f"[iris.ok]{state}[/iris.ok] {name}")
+    return 0
+
+
 def run(action: str = "list", name: str = "", **options) -> int:
     """Entry point from the typer command. Returns the process exit code."""
     out = console()
@@ -195,7 +249,15 @@ def run(action: str = "list", name: str = "", **options) -> int:
                 if not name:
                     ui.error(out, "`add` needs a name")
                     return 2
+                from iris_ai.mcp.catalog import preset
+
+                if preset(name) and not options.get("url") and not options.get("command"):
+                    return _add_preset(name)
                 return _add(name, **options)
+            case "enable":
+                return _set_enabled(name, True)
+            case "disable":
+                return _set_enabled(name, False)
             case "remove" | "rm":
                 if not name:
                     ui.error(out, "`remove` needs a name")
@@ -207,7 +269,7 @@ def run(action: str = "list", name: str = "", **options) -> int:
                     return 2
                 return _test(name)
             case _:
-                ui.failed(out, f"unknown action {action!r}", "- use list, add, remove or test")
+                ui.failed(out, f"unknown action {action!r}", "- use list, add, remove, test, enable or disable")
                 return 2
     except typer.Exit:
         raise
