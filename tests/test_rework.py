@@ -53,7 +53,10 @@ def test_manifest_model_is_resolved_after_load(tmp_path: Path, monkeypatch: pyte
     from iris_ai.manifest import apply_manifest, load_manifest
 
     targeted = Settings(harness_config=str(manifest), groq_api_key="sk-test")
-    apply_manifest(targeted, load_manifest(manifest))
+    # A real environment variable beats the file. CI exports LLM_PROVIDER, so
+    # this check passes an empty override map and only asserts that applying
+    # the file re-resolves the model.
+    apply_manifest(targeted, load_manifest(manifest), environ={})
     assert targeted._resolved_provider == "groq"
     assert targeted._models_strong["groq"] == "groq/openai/gpt-oss-120b"
 
