@@ -24,6 +24,8 @@ itself; what it cannot downgrade is a character *we* wrote.
 
 from __future__ import annotations
 
+import sys
+
 from rich.console import Console
 from rich.theme import Theme
 
@@ -69,7 +71,9 @@ def console(stderr: bool = False) -> Console:
     paths inside prose, and `emoji=False` keeps `:name:` sequences literal — a
     designed screen should render exactly what the code wrote.
     """
-    return Console(theme=THEME, stderr=stderr, highlight=False, emoji=False)
+    stream = sys.stderr if stderr else sys.stdout
+    width = 120 if not stream.isatty() else None
+    return Console(theme=THEME, stderr=stderr, highlight=False, emoji=False, width=width)
 
 
 LEVEL_STYLE = {"ok": "iris.ok", "warn": "iris.warn", "fail": "iris.fail", "opt": "iris.sub"}

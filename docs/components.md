@@ -28,8 +28,9 @@ components/context/graph-rag/
   test_component.py
 ```
 
-Local folders are imported by file path. The directory you run `iris` from
-does not matter.
+Local folders are imported by file path. Iris finds `components/` by walking
+up from the working directory to the harness file, so the command does not
+have to be run from the project root.
 
 `component.toml` names the kind, the class (`entry = "component:GraphRag"`),
 and a one-line description. The class is constructed as
@@ -52,11 +53,14 @@ component fails its first few calls.
 ## Asking Iris to build one
 
 Say "implement this context technique in yourself." Iris writes into
-`components/.staging`, checks the code in a separate process, and calls
-`component_activate` only after showing you the result. That call waits for
-your approval. Iris does not edit its own package, so upgrading Iris does not
-conflict with a component you or Iris added.
+`components/.staging`, checks the code in a sandboxed process (no API keys,
+writes confined to the folder, and `test_component.py` runs when it is present),
+and calls `component_activate` only after showing you the result. Activation and
+rollback wait for your approval, pinned to the digest of the staged files.
+Iris does not edit its own package, so upgrading Iris does not conflict with a
+component you or Iris added.
 
-Components run in-process with normal Python privileges. The protection is the
-staging folder, the separate-process check, and your approval. Do not activate
-a component you have not read.
+After approval, components run in-process. The protection is the staging folder,
+the sandboxed check, and that approval. Do not activate a component you have
+not read. A selected component that cannot load does not stop boot: Iris uses
+the built-in for that process, and `iris doctor` reports the failure.

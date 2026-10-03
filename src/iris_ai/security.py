@@ -50,6 +50,18 @@ def require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="missing or invalid bearer token")
 
 
+def host_is_loopback(host: str | None) -> bool:
+    """True for a local bind or a test client. ``0.0.0.0`` is not loopback."""
+    if not host:
+        return True
+    name = host.strip().lower()
+    if name.startswith("[") and name.endswith("]"):
+        name = name[1:-1]
+    if "%" in name:
+        name = name.split("%", 1)[0]
+    return name in {"127.0.0.1", "::1", "localhost", "testserver", "testclient"} or name.startswith("127.")
+
+
 def warn_if_unset() -> None:
     if not settings.iris_api_token:
         log.warning(

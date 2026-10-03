@@ -19,8 +19,9 @@ Every client opens a `Harness` the same way. The CLI is the reason for the
 degraded mode: when no Postgres is reachable, `postgres="auto"` keeps the
 conversation alive with an in-memory thread store and no vector recall, and
 says so — `mode`, `degraded_reason`, and a recall error that names the fix.
-The API keeps `postgres="require"`, so a missing database still fails at boot
-exactly as it always has.
+The HTTP API uses `postgres="auto"` on a SQLite install and `postgres="require"`
+when memory is pgvector or the checkpointer is pinned to Postgres, so a missing
+database still fails that boot.
 """
 
 from __future__ import annotations
@@ -505,8 +506,9 @@ async def harness(
 ) -> AsyncIterator[Harness]:
     """Boot the engine and yield it.
 
-    `postgres="require"` fails at boot when the database is missing (the API's
-    contract). `postgres="auto"` degrades instead (the CLI's contract).
+    `postgres="require"` fails at boot when the database is missing.
+    `postgres="auto"` degrades instead (the CLI's contract, and the HTTP API
+    on a SQLite install).
     `services=True` also starts the scheduler, the scheduled-task store and the
     Telegram channel.
 

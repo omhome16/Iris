@@ -72,7 +72,7 @@ def _stdio_blocked() -> bool:
     The SDK's stdio transport spawns the server with asyncio subprocesses, and
     Windows' *selector* loop does not implement them — the same wall
     `skills/runner.py` hit, which is why skill scripts run `subprocess.run` on a
-    worker thread instead. `iris chat` and `iris api` select that loop on Windows
+    worker thread instead. `iris chat` and `iris serve http` select that loop on Windows
     (psycopg's async path needs it), so without this check a stdio server declared
     there would fail deep inside the SDK with a bare `NotImplementedError` that
     says nothing about which server or what to do.

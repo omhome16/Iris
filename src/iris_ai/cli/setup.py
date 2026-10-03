@@ -6,6 +6,7 @@ uses. `iris config` opens the same screen again.
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 from iris_ai.config import settings
@@ -45,6 +46,7 @@ def write_env_key(path: Path, key: str, value: str) -> None:
         out.append(prefix + value)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
 def apply_wizard(

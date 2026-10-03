@@ -15,9 +15,10 @@
 # ── Channels (plug-and-play) ────────────────────────────────────────────────
 # Core ships `telegram`. Install a plugin that registers a channel (entry-point
 # group `iris_ai.channels`) and enable it here by name — no core edit.
-# Empty `enabled` means "every registered channel"; `disabled` always wins.
+# Empty `enabled` means "every registered channel". `none` starts no external
+# channel. `disabled` always wins.
 [channels]
-enabled = ["telegram"]
+enabled = ["none"]
 disabled = []
 
 # ── Capability backends (plug-and-play) ─────────────────────────────────────

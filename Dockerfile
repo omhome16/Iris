@@ -68,4 +68,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/health || exit 1
 
+# Binds every interface. Without IRIS_API_TOKEN the process refuses that bind
+# unless IRIS_HTTP_INSECURE=1. Compose sets the override because it publishes
+# only 127.0.0.1:8000; a raw `docker run -p 8000:8000` should set a token.
 CMD ["uvicorn", "iris_ai.api:app", "--host", "0.0.0.0", "--port", "8000"]

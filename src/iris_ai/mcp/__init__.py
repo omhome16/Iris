@@ -45,7 +45,7 @@ is an MCP client" and "the model can call it" are different claims:
    transport spawns the server with asyncio subprocesses, and Windows' selector
    loop does not implement them — the same wall `skills/runner.py` hit, which is
    why skill scripts run `subprocess.run` on a worker thread instead. `iris chat`
-   and `iris api` select that loop on Windows (psycopg needs it), so a stdio
+   and `iris serve http` select that loop on Windows (psycopg needs it), so a stdio
    server declared there will refuse to start rather than half-work. The http
    transport is unaffected, and it is what the Telegram bridge already uses.
 

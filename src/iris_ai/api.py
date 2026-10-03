@@ -21,11 +21,11 @@ from pathlib import Path
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from iris_ai import background
+from iris_ai import __version__, background
 from iris_ai.agent.chat import ApprovalRequired, ChatGraph
 from iris_ai.agent.runtime import Runtime
 from iris_ai.config import settings
@@ -35,11 +35,20 @@ from iris_ai.memory.forgetting import ForgettingEngine, decay_curve, supersede_i
 from iris_ai.memory.index import MemoryIndex
 from iris_ai.memory.provenance import Origin
 from iris_ai.onboarding import OnboardingWizard
-from iris_ai.security import require_token, warn_if_unset
+from iris_ai.security import host_is_loopback, require_token, warn_if_unset
 from iris_ai.text import text_of
 from iris_ai.voice import transcribe
 
 log = logging.getLogger("iris")
+
+
+def _postgres_mode() -> str:
+    """SQLite installs boot. pgvector or a pinned Postgres checkpointer still require it."""
+    memory = (settings.memory_backend or "").strip().lower()
+    threads = (settings.checkpointer_backend or "").strip().lower()
+    if memory == "pgvector" or threads == "postgres":
+        return "require"
+    return "auto"
 
 
 @asynccontextmanager
@@ -48,22 +57,47 @@ async def lifespan(app: FastAPI):
 
     The API is a *client* of the library, exactly like `iris chat`: it opens the
     same harness and hands the route handlers `app.state.runtime` /
-    `app.state.graph`. `postgres="require"` is the API's contract — a missing
-    database is a boot failure here, whereas the CLI degrades instead.
+    `app.state.graph`. A default SQLite install uses `postgres="auto"`.
+    `MEMORY_BACKEND=pgvector` or `CHECKPOINTER_BACKEND=postgres` still fails
+    the boot when that database is missing.
 
     Shutdown ordering (stop taking work, drain the fire-and-forget passes,
     release connections) lives in `Harness.aclose`, which is where it ran
     before this module delegated — there is nothing left to do here.
     """
-    async with harness(postgres="require") as brain:
+    async with harness(postgres=_postgres_mode()) as brain:
         app.state.brain = brain
         app.state.runtime = brain.runtime
         app.state.graph = brain.graph
         yield
 
 
-app = FastAPI(title="Iris", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Iris", version=__version__, lifespan=lifespan)
 warn_if_unset()
+
+
+@app.middleware("http")
+async def refuse_public_bind_without_token(request: Request, call_next):
+    """A non-loopback bind without ``IRIS_API_TOKEN`` does not serve traffic.
+
+    ``IRIS_HTTP_INSECURE=1`` is the explicit override. The ASGI server host is
+    what matters: uvicorn bound to ``0.0.0.0`` reports that host even when the
+    client is local. Test clients use ``testserver`` and stay allowed.
+    """
+    insecure = os.environ.get("IRIS_HTTP_INSECURE", "").strip() == "1"
+    server = request.scope.get("server")
+    server_host = server[0] if isinstance(server, tuple) and server else ""
+    if not insecure and not settings.iris_api_token and server_host and not host_is_loopback(server_host):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": (
+                    "refusing a non-loopback bind without IRIS_API_TOKEN. "
+                    "Set the token, or IRIS_HTTP_INSECURE=1 to override."
+                )
+            },
+        )
+    return await call_next(request)
 
 
 class ChatRequest(BaseModel):

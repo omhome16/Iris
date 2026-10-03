@@ -352,8 +352,9 @@ class Settings(BaseSettings):
     # Which registered channels are live. Names come from the channel registry
     # (`iris_ai.channels.registry`), so a plugin channel is enabled by name here
     # without a code change. Empty `channels_enabled` means "every registered
-    # channel"; `channels_disabled` always wins.
-    channels_enabled: str = "telegram"
+    # channel". `none` means no external channel, which is the default so a
+    # fresh install does not warn about Telegram. `channels_disabled` always wins.
+    channels_enabled: str = "none"
     channels_disabled: str = ""
     channel_connect_timeout_s: float = 10.0
     owner_chat_id: int | None = None  # learned from the first /start if unknown

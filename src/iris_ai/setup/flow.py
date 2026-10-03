@@ -120,7 +120,14 @@ def collect(prompter: Prompter, *, section: str = "", skip_verify: bool = False)
         prompter.say("What should the assistant call you, and what should you call it?")
         plan.owner_name = prompter.text("Your name", default="")
         plan.assistant_name = prompter.text("Assistant name", default="assistant")
-        plan.timezone = prompter.text("Timezone", default=plan.timezone)
+        from iris_ai.timeutil import try_zone
+
+        while True:
+            typed = prompter.text("Timezone", default=plan.timezone).strip()
+            if try_zone(typed or "UTC") is not None:
+                plan.timezone = typed or "UTC"
+                break
+            prompter.say(f"{typed!r} is not a known timezone. Use a name like Asia/Kolkata or UTC.")
         plan.tone = prompter.select(
             "Tone",
             [("plain", "Plain"), ("warm", "Warm"), ("brief", "Brief")],

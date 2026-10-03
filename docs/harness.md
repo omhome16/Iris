@@ -90,7 +90,7 @@ The core install is the chat, the SQLite memory, and the CLI.
 | extra | what it adds |
 |---|---|
 | `postgres` | pgvector memory and shared threads |
-| `api` | `iris api` (FastAPI) |
+| `api` | `iris serve http` (FastAPI) |
 | `mcp` | MCP servers and the Telegram channel |
 | `schedule` | nightly consolidation and reminders |
 | `judge` | typed probability judgments |

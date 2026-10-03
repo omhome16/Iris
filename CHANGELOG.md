@@ -10,6 +10,14 @@ research notes) has since been consolidated into a single [`DOCS.md`](DOCS.md), 
 the link targets below were repointed rather than left broken. Backticked paths in
 older prose are historical records of where things lived at the time.
 
+## Unreleased — plug-and-play, safe self-extension, accurate memory
+
+- A local persona that cannot be constructed no longer crashes `/reload` or the next boot. Iris uses the built-in persona for that process and logs `iris components rollback persona`. `iris doctor` imports every selected local component and fails when one cannot load.
+- `component_activate` and `component_rollback` wait for an approval pinned to the argument digest. A resume whose staged files (or rollback target) no longer match that digest is refused. `component_check` and `iris components check` run in a child process with no API keys, writes confined to the component folder, and `test_component.py` when that file is present.
+- `iris serve http` boots on the default SQLite install. `/rot` and `/retention` accept the dates SQLite stores as text. The HTTP API refuses a non-loopback bind unless `IRIS_API_TOKEN` is set or `--insecure` / `IRIS_HTTP_INSECURE=1` is explicit. There is no `iris api` command; the docs now say `iris serve http`.
+- `iris init` copies the sample config before the wizard writes into it, so a new file is "created from" the example. An unknown timezone is not stored. A flag-supplied API key is written to `.env` with mode `0600` and is not printed. The default channel is `none`, so a fresh install does not warn about Telegram. An empty embedding model does not call the provider.
+- `forget` retires the line that matches the query, and refuses when several lines match equally. A new "lives in" or "main project" fact marks the previous line superseded. `remember` stamps the turn's origin. A custom capture component's note is appended to the daily note. An empty model reply is not described as a rate limit and is not written into the daily note.
+
 ## 0.3.0 — a neutral harness
 
 The turn loop is a small native loop instead of LangGraph. Context, capture

@@ -128,6 +128,7 @@ class ArrowPrompter(PlainPrompter):
             elif key == "down":
                 index = (index + 1) % len(choices)
             elif key in {"enter", "quit"}:
+                _draw.lines = 0  # type: ignore[attr-defined]
                 print()
                 return names[index]
 
@@ -139,14 +140,27 @@ def prompter_for() -> Prompter:
 
 
 def _draw(message: str, labels: list[str], index: int) -> None:
-    # Move up over the previous frame when redrawing. The first draw just prints.
+    # Move up over the previous frame and clear it. The line count is visual
+    # (a wrapped prompt is more than one row) and is reset when the menu ends,
+    # so the next question does not climb into the previous prompt.
     if getattr(_draw, "lines", 0):
-        sys.stdout.write(f"\x1b[{_draw.lines}A")  # type: ignore[attr-defined]
+        sys.stdout.write(f"\x1b[{_draw.lines}A\x1b[J")  # type: ignore[attr-defined]
     frame = [message, "  up/down, enter to accept"]
     frame.extend(f"  {'>' if i == index else ' '} {label}" for i, label in enumerate(labels))
-    sys.stdout.write("\n".join(frame) + "\n")
+    written = "\n".join(frame) + "\n"
+    sys.stdout.write(written)
     sys.stdout.flush()
-    _draw.lines = len(frame)  # type: ignore[attr-defined]
+    _draw.lines = _visual_lines(written)  # type: ignore[attr-defined]
+
+
+def _visual_lines(text: str) -> int:
+    import shutil
+
+    width = max(1, shutil.get_terminal_size(fallback=(80, 24)).columns)
+    count = 0
+    for line in text.splitlines() or [""]:
+        count += max(1, (len(line) + width - 1) // width)
+    return count
 
 
 def _read_key() -> str:

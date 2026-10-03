@@ -22,7 +22,7 @@ Install a global `iris` from this repository:
 uv tool install git+https://github.com/omhome16/Iris
 ```
 
-Skip the questions with flags. The value of the key stays in the environment
+Skip the questions with flags. The key is written to `.env` with mode `0600`
 and is never printed:
 
 ```bash
@@ -107,7 +107,7 @@ lists the same options.
 Three places a part can come from:
 
 1. **Built in**, shipped with Iris. `iris components eject context recall-first` copies one out so you can edit it.
-2. **A local folder** next to `config/`, imported by file path. The directory you run `iris` from does not matter.
+2. **A local folder** next to `config/`, imported by file path. Iris finds that folder by walking up from the working directory to the harness file, so the command does not have to be run from the project root.
 3. **A class path**, `pkg.module:Class`, from your own package.
 
 ```text
@@ -131,10 +131,13 @@ uv run iris components check context graph-rag
 uv run iris components use context graph-rag
 ```
 
-`check` runs `test_component.py` in a separate process. `use` writes the choice
-into `config/harness.toml` and remembers it in `components.lock`.
-`iris components rollback context` returns to the previous choice. A local
-component that fails its first few calls rolls back on its own.
+`check` runs the contract import and `test_component.py` (when that file exists)
+in a separate process. That process does not inherit API keys and cannot write
+outside the component folder. `use` writes the choice into `config/harness.toml`
+and remembers it in `components.lock`. `iris components rollback context` returns
+to the previous choice. A local component that fails its first few calls rolls
+back on its own. A component that cannot load does not stop boot: Iris uses the
+built-in persona for that process and `iris doctor` names `iris components rollback`.
 
 The constructor is `Class(ctx, **options)`. `ctx` is `iris_ai.sdk.ComponentContext`:
 `llm`, `memory`, `files`, and `options`.
@@ -150,13 +153,15 @@ The constructor is `Class(ctx, **options)`. `ctx` is `iris_ai.sdk.ComponentConte
 ### Ask Iris to add one
 
 Say "implement this context technique in yourself." Iris writes into
-`components/.staging`, checks the code in a separate process, and calls
-`component_activate` only after showing you the result. That call waits for
-approval. Iris does not edit its own package, so an upgrade does not collide
-with a part you or Iris added. Then type `/reload`.
+`components/.staging`, checks the code in a sandboxed process, and calls
+`component_activate` only after showing you the result. Activation and rollback
+wait for your approval, pinned to the digest of the staged files (or to the
+rollback target). Iris does not edit its own package, so an upgrade does not
+collide with a part you or Iris added. Then type `/reload`.
 
-Components run in-process. The protection is the staging folder, the separate
-check, and your approval. Read a component before you activate it.
+Components run in-process after you approve them. The protection is the staging
+folder, the sandboxed check, and that approval. Read a component before you
+activate it.
 The skill Iris follows is [`skills/component-author/SKILL.md`](skills/component-author/SKILL.md).
 
 ## Use it as a library
@@ -282,7 +287,7 @@ The core install is the chat, SQLite memory, and the CLI.
 | Extra | What it adds |
 |---|---|
 | `postgres` | pgvector memory and shared threads |
-| `api` | `iris serve http` |
+| `api` | `iris serve http` (loopback by default; a public bind needs `IRIS_API_TOKEN` or `--insecure`) |
 | `mcp` | MCP servers and the Telegram channel |
 | `schedule` | nightly consolidation and reminders |
 | `judge` | typed probability judgments |
