@@ -13,6 +13,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli.agents import handoffs_from_traces, run
 from iris_ai.cli.main import app
 
@@ -41,7 +42,7 @@ def test_show_prints_the_prompt_and_the_bounds():
     result = runner.invoke(app, ["agents", "show", "critic"])
     assert result.exit_code == 0
     assert "unsupported" in result.stdout  # from the critic's own instructions
-    assert "per claim" in result.stdout.replace("\n", " ").lower() or "claim" in result.stdout
+    assert "per claim" in flat(result.stdout).lower()
 
 
 def test_show_unknown_role_exits_non_zero_and_names_the_real_ones():
@@ -67,7 +68,7 @@ def test_handoffs_on_an_empty_workspace_says_so(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     result = runner.invoke(app, ["agents", "handoffs"])
     assert result.exit_code == 0
-    assert "no agent decisions" in result.stdout.lower()
+    assert "no agent decisions" in flat(result.stdout).lower()
 
 
 def test_handoffs_reads_delegations_out_of_the_traces(tmp_path: Path, monkeypatch):

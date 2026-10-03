@@ -10,6 +10,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli.main import app
 from iris_ai.cli.plugins import run
 from iris_ai.config import settings
@@ -66,7 +67,7 @@ def test_mcp_says_so_when_nothing_is_declared(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(settings, "mcp_servers_file", str(tmp_path / "absent.json"))
     result = runner.invoke(app, ["plugins", "mcp"])
     assert result.exit_code == 0
-    assert "No MCP servers declared" in result.stdout
+    assert "No MCP servers declared" in flat(result.stdout)
     assert "config/mcp.json.example" in result.stdout
 
 
@@ -87,7 +88,7 @@ def test_mcp_shows_each_declared_server_and_its_trust(monkeypatch, tmp_path: Pat
     assert "always" in result.stdout
     assert "notes" in result.stdout and "stdio" in result.stdout
     # A server switched off is reported as switched off, not as missing.
-    assert "switched off in config: off" in result.stdout
+    assert "switched off in config: off" in flat(result.stdout)
     assert "--live" in result.stdout
 
 
@@ -149,4 +150,4 @@ def test_mcp_reports_a_broken_config_instead_of_tracebacking(monkeypatch, tmp_pa
     monkeypatch.setattr(settings, "mcp_servers_file", str(tmp_path / ".mcp.json"))
     result = runner.invoke(app, ["plugins", "mcp"])
     assert result.exit_code == 1
-    assert "not usable" in result.stdout
+    assert "not usable" in flat(result.stdout)

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli.main import app
 from iris_ai.cli.tools import run
 from iris_ai.config import settings
@@ -48,7 +49,13 @@ def test_policy_shows_computer_as_off_while_the_capability_is_disabled(monkeypat
     monkeypatch.setattr(settings, "computer_enabled", False)
     result = runner.invoke(app, ["tools"])
     assert result.exit_code == 0
-    row = next(line for line in result.stdout.splitlines() if "computer" in line and "control" in line)
+    # A narrow console wraps the table, so "computer" and "control" need not
+    # share a physical line. Column order is unchanged after whitespace collapse.
+    text = flat(result.stdout)
+    start = text.find("computer")
+    assert start >= 0
+    row = text[start : start + 160]
+    assert "control" in row
     assert "off" in row  # absent, not "visible"
 
 
@@ -70,7 +77,7 @@ def test_actions_on_an_empty_workspace_says_so(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     result = runner.invoke(app, ["tools", "actions"])
     assert result.exit_code == 0
-    assert "no computer actions" in result.stdout.lower()
+    assert "no computer actions" in flat(result.stdout).lower()
 
 
 def test_actions_reads_the_log(tmp_path: Path, monkeypatch):

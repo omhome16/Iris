@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli.main import app
 from iris_ai.cli.policy import run
 from iris_ai.config import settings
@@ -42,7 +43,7 @@ def test_a_class_override_is_shown_as_an_override(monkeypatch: pytest.MonkeyPatc
     result = runner.invoke(app, ["policy", "overrides"])
     assert result.exit_code == 0
     assert "external" in result.stdout
-    assert "every tool in it" in result.stdout
+    assert "every tool in it" in flat(result.stdout)
     assert "deny" in result.stdout
 
 
@@ -52,7 +53,7 @@ def test_an_unknown_override_is_reported_not_ignored(monkeypatch: pytest.MonkeyP
     result = runner.invoke(app, ["policy", "overrides"])
     assert result.exit_code == 0
     assert "send_mesage" in result.stdout
-    assert "names no tool" in result.stdout
+    assert "names no tool" in flat(result.stdout)
 
 
 def test_a_malformed_override_is_an_error_not_a_traceback(monkeypatch: pytest.MonkeyPatch):
@@ -92,7 +93,7 @@ def test_servers_view_is_quiet_when_nothing_is_declared(monkeypatch: pytest.Monk
     monkeypatch.setattr(settings, "mcp_servers_file", str(tmp_path / "absent.json"))
     result = runner.invoke(app, ["policy", "servers"])
     assert result.exit_code == 0
-    assert "No MCP servers declared" in result.stdout
+    assert "No MCP servers declared" in flat(result.stdout)
     assert "config/mcp.json.example" in result.stdout
 
 
@@ -105,8 +106,8 @@ def test_show_covers_all_three_views(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     monkeypatch.setattr(settings, "mcp_servers_file", str(path))
     result = runner.invoke(app, ["policy"])
     assert result.exit_code == 0
-    assert "Capability classes" in result.stdout
-    assert "Server policy" in result.stdout
+    assert "Capability classes" in flat(result.stdout)
+    assert "Server policy" in flat(result.stdout)
     assert "precedence" in result.stdout
 
 
