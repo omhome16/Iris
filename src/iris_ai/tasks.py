@@ -287,6 +287,7 @@ class Task:
     failures: int = 0
     last_run: str = ""
     last_outcome: str = ""
+    last_reply: str = ""
     disabled: bool = False
 
     def to_dict(self) -> dict:
@@ -347,6 +348,7 @@ class TaskStore:
             failures=int(t.get("failures", 0) or 0),
             last_run=str(t.get("last_run", "")),
             last_outcome=str(t.get("last_outcome", "")),
+            last_reply=str(t.get("last_reply", "")),
             disabled=bool(t.get("disabled", False)),
         )
 
@@ -584,10 +586,18 @@ class TaskScheduler:
             except Exception as exc:  # noqa: BLE001
                 ok = False
                 log.warning("delivering scheduled task %s failed: %s", task.id, exc)
+        shown = " ".join(str(reply).split())[:240]
+        log.info("scheduled task %s fired: %s", task.id, shown or "(empty reply)")
+        files = getattr(self.runtime, "files", None)
+        if files is not None and shown:
+            try:
+                files.append_daily(f"Scheduled task {task.id}: {shown}", stamp=True)
+            except Exception as exc:  # noqa: BLE001 - the job already ran
+                log.warning("scheduled task %s reply was not written to the daily note: %s", task.id, exc)
 
-        self._record_run(task, ok=ok)
+        self._record_run(task, ok=ok, reply=shown)
 
-    def _record_run(self, task: Task, *, ok: bool) -> None:
+    def _record_run(self, task: Task, *, ok: bool, reply: str = "") -> None:
         """Persist the outcome of one run and decide whether to keep the job.
 
         The task object closed over at registration time still has the old
@@ -606,6 +616,7 @@ class TaskScheduler:
             failures=failures,
             last_run=now,
             last_outcome="ok" if ok else "error",
+            last_reply=reply[:240],
             disabled=disabled,
         )
         if disabled:

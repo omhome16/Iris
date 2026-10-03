@@ -75,10 +75,15 @@ def refuse_public_argv_bind(argv: list[str] | None = None) -> None:
         return
     if settings.iris_api_token or os.environ.get("IRIS_HTTP_INSECURE", "").strip() == "1":
         return
-    raise RuntimeError(
+    # SystemExit is a BaseException, so Starlette's lifespan handler (which
+    # catches Exception and prints a traceback) does not wrap it. The message
+    # is the whole refusal.
+    print(
         "refusing to listen on a non-loopback host without IRIS_API_TOKEN. "
-        "Set the token, or IRIS_HTTP_INSECURE=1 to override."
+        "Set the token, or IRIS_HTTP_INSECURE=1 to override.",
+        file=sys.stderr,
     )
+    raise SystemExit(1)
 
 
 @asynccontextmanager
@@ -86,7 +91,9 @@ async def lifespan(app: FastAPI):
     """Boot the engine through the library (`iris_ai.harness`), then serve.
 
     A direct ``uvicorn --host 0.0.0.0`` without a token or
-    ``IRIS_HTTP_INSECURE=1`` stops here, before any route is served.
+    ``IRIS_HTTP_INSECURE=1`` stops here, before any route is served. The
+    refusal is a one-line message and ``os._exit``: raising out of the
+    lifespan makes Starlette print a traceback.
 
     The API is a *client* of the library, exactly like `iris chat`: it opens the
     same harness and hands the route handlers `app.state.runtime` /
@@ -98,7 +105,10 @@ async def lifespan(app: FastAPI):
     release connections) lives in `Harness.aclose`, which is where it ran
     before this module delegated — there is nothing left to do here.
     """
-    refuse_public_argv_bind()
+    try:
+        refuse_public_argv_bind()
+    except SystemExit as exc:
+        os._exit(exc.code if isinstance(exc.code, int) else 1)
     async with harness(postgres=_postgres_mode()) as brain:
         app.state.brain = brain
         app.state.runtime = brain.runtime

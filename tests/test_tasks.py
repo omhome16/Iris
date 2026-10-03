@@ -148,3 +148,32 @@ async def test_run_task_executes_and_cleans_up(tmp_path: Path, monkeypatch: pyte
     assert graph.got == ("send me the weekly summary", "default", "task")
     assert telegram.sent and "here is the summary" in telegram.sent[0]
     assert store.list() == [], "fired task must be removed"
+
+
+async def test_a_fired_job_keeps_a_visible_reply(tmp_path: Path, caplog):
+    from iris_ai.memory.files import WorkspaceFiles
+
+    store = TaskStore(tmp_path / "tasks.json")
+    task = store.add(
+        instruction="tick",
+        run_at=datetime.now(ZoneInfo("UTC")),
+        kind="interval",
+        every="1 minutes",
+    )
+    scheduler = AsyncIOScheduler(timezone=settings.iris_timezone)
+
+    class FakeGraph:
+        async def respond(self, message, *, session_id, origin="owner"):
+            return "job fired: the reminder is done"
+
+    files = WorkspaceFiles(tmp_path)
+    runtime = type("R", (), {"telegram": None, "files": files})()
+    ts = TaskScheduler(store, runtime=runtime, graph=FakeGraph(), scheduler=scheduler)
+    with caplog.at_level("INFO"):
+        await ts._run_task(task)
+    fresh = store.get(task.id)
+    assert fresh is not None
+    assert fresh.runs == 1
+    assert "job fired" in fresh.last_reply
+    assert "job fired" in files.read_daily(files.today())
+    assert any("fired" in record.message for record in caplog.records)

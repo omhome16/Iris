@@ -50,6 +50,26 @@ PROVIDER_REPLY = "The model provider failed just now. Give me a minute and say t
 DIAGNOSTIC_REPLIES = (RATE_LIMIT_REPLY, EMPTY_REPLY, PROVIDER_REPLY)
 
 
+def _reply_worth_journaling(text: str) -> bool:
+    """False for diagnostic text and for a reply that is mostly ellipsis.
+
+    A model that emits ``...`` or ``All the the … …`` is not evidence. Saving
+    it teaches the next turn that the junk was the conversation.
+    """
+    stripped = text.strip()
+    if not stripped or stripped in DIAGNOSTIC_REPLIES or stripped.startswith("I hit an unexpected error"):
+        return False
+    alnum = sum(ch.isalnum() for ch in stripped)
+    if alnum == 0:
+        return False
+    ellipsis = stripped.count("…") + stripped.count("...")
+    dots = stripped.count(".")
+    if alnum < 12 and (ellipsis or dots >= 3):
+        return False
+    junk = sum(ch in ".…·" or ch.isspace() for ch in stripped)
+    return not (junk / len(stripped) > 0.6 and alnum < 40)
+
+
 def _is_rate_limit(exc: BaseException) -> bool:
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
     if status == 429:
@@ -580,7 +600,7 @@ class ChatGraph:
             return {}
         # Diagnostic replies are not evidence of the conversation. Saving them
         # would teach the next turn that a rate limit or an empty reply happened.
-        if ai_msg.strip() in DIAGNOSTIC_REPLIES or ai_msg.startswith("I hit an unexpected error"):
+        if not _reply_worth_journaling(ai_msg):
             return {}
 
         has_photo = any(

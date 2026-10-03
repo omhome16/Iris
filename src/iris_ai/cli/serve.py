@@ -37,8 +37,11 @@ def run(channel: str = "terminal", *, host: str = "127.0.0.1", port: int = 8000,
         uvicorn.run("iris_ai.api:app", host=host, port=port)
         return 0
     if name == "telegram":
-        ui.note(out, "Telegram uses the bridge. Set the bot token, then run the bridge process.")
-        ui.note(out, "fix: uv sync --extra mcp  and set TELEGRAM_BOT_TOKEN in .env")
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or settings.telegram_bot_token.strip()
+        if not token:
+            ui.failed(out, "TELEGRAM_BOT_TOKEN is unset", "set it in .env, then start the bridge")
+            return 1
+        ui.note(out, "Telegram uses the bridge. The token is set; start the bridge process.")
         return 0
     ui.failed(out, "unknown channel", f"{channel!r}. known: terminal, telegram, http")
     return 2

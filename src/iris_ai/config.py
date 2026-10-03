@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     # Strong model: conversation, reasoning, skill writing.
     # Cheap model: extraction, consolidation, scoring (the write path).
     # Embedding model: index everything (OpenRouter and Groq have no
-    # embeddings — Gemini does; fall back to Ollama nomic-embed-text if no
-    # GEMINI_API_KEY is set).
+    # embeddings — Gemini does, when GEMINI_API_KEY is set). Without that key,
+    # and unless the provider is Ollama, recall stays keyword-only.
     #
     # Provider pick: LLM_PROVIDER=<name>|auto. The registry in
     # `iris_ai.providers` is the single source of truth for which names exist,
@@ -291,13 +291,26 @@ class Settings(BaseSettings):
         self.strong_model = self._models_strong.get(provider, "") or self.strong_model
         self.cheap_model = self._models_cheap.get(provider, "") or self.cheap_model
         # An explicit empty embedding model means keyword-only. Do not invent an
-        # Ollama embedder the owner just turned off. The Gemini default falls
-        # back to Ollama only when no Gemini key is configured.
+        # Ollama embedder the owner just turned off. The Gemini default is used
+        # only when a Gemini key exists. With no key, pointing at Ollama and
+        # retrying a dead localhost is not a setup — say so once and stay on
+        # keyword recall. An owner who set LLM_PROVIDER=ollama still gets the
+        # local embedding model.
+        object.__setattr__(self, "embedding_notice", "")
+        provider = (getattr(self, "_resolved_provider", "") or "").strip().lower()
         if not (self.embedding_model or "").strip():
             self.embedding_model = ""
         elif not self.gemini_api_key and str(self.embedding_model).startswith("gemini/"):
-            self.embedding_model = self.ollama_embedding_model
-            self.embedding_dim = self.ollama_embedding_dim
+            if provider == "ollama":
+                self.embedding_model = self.ollama_embedding_model
+                self.embedding_dim = self.ollama_embedding_dim
+            else:
+                self.embedding_model = ""
+                object.__setattr__(
+                    self,
+                    "embedding_notice",
+                    "semantic memory needs GEMINI_API_KEY or LLM_PROVIDER=ollama; using keyword recall",
+                )
 
     def model_post_init(self, __context) -> None:
         self.resolve()

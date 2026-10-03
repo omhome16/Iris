@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from iris_ai.providers import AUTO_ORDER, KEYED_PROVIDERS, PROVIDERS
 
@@ -181,8 +183,51 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
         )
 
     checks.append(_secret_store_check(env))
+    postgres = _postgres_check(env)
+    if postgres is not None:
+        checks.append(postgres)
     checks.extend(_component_checks(root))
     return checks
+
+
+def _postgres_check(env: Mapping[str, str]) -> Check | None:
+    """Probe the configured DSN when memory is Postgres. SQLite doctor stays quiet.
+
+    A refused connection is a failure here, the same fact chat later prints as
+    ``degraded session: no Postgres at …``. The password is not included.
+    """
+    backend = (env.get("MEMORY_BACKEND") or "").strip().lower()
+    if backend not in {"pgvector", "postgres"}:
+        return None
+    dsn = (env.get("POSTGRES_DSN") or "").strip()
+    if not dsn:
+        return Check(
+            "postgres",
+            "fail",
+            "MEMORY_BACKEND is pgvector but POSTGRES_DSN is unset",
+            fix="set POSTGRES_DSN",
+        )
+    shown = _dsn_without_password(dsn)
+    host, port = _dsn_host_port(dsn)
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return Check("postgres", "ok", f"reachable at {shown}")
+    except OSError as exc:
+        return Check("postgres", "fail", f"no Postgres at {shown} ({type(exc).__name__})")
+
+
+def _dsn_host_port(dsn: str) -> tuple[str, int]:
+    parsed = urlparse(dsn.replace("postgresql+psycopg", "postgresql", 1).replace("postgres://", "postgresql://", 1))
+    return parsed.hostname or "127.0.0.1", parsed.port or 5432
+
+
+def _dsn_without_password(dsn: str) -> str:
+    parsed = urlparse(dsn)
+    if not parsed.hostname:
+        return "the configured DSN"
+    port = f":{parsed.port}" if parsed.port else ""
+    path = parsed.path or ""
+    return f"{parsed.scheme}://{parsed.hostname}{port}{path}"
 
 
 def _component_checks(root: Path) -> list[Check]:

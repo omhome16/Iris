@@ -271,6 +271,124 @@ for item in json.loads(sys.argv[2]):
     read_roots.append(Path(item).resolve())
 os.chdir(sandbox)
 
+def _kernel_isolation(folder, roots):
+    # Landlock denies exec, outside writes (including utime), and TCP.
+    # Seccomp denies execve and any new socket, which is what stops
+    # ctypes.CDLL(None).system and DNS. The audit hook below still raises
+    # PermissionError for the Python-level calls. Where the kernel refuses
+    # Landlock, the hook plus an import ban is all that remains.
+    label = "audit"
+    try:
+        import ctypes
+        from ctypes import Structure, c_int, c_uint64, c_void_p
+        libc = ctypes.CDLL(None, use_errno=True)
+
+        def _ok(ret, what):
+            if ret < 0:
+                err = ctypes.get_errno()
+                raise OSError(err, f"{what}: {os.strerror(err)}")
+            return ret
+
+        if not sys.platform.startswith("linux"):
+            raise OSError("landlock is linux-only")
+        fs_read = (1 << 2) | (1 << 3)
+        fs_write = (
+            (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
+            | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 13) | (1 << 14)
+        )
+        fs_handled = fs_read | fs_write | (1 << 0)
+
+        class RulesetAttr(Structure):
+            _fields_ = [("handled_access_fs", c_uint64), ("handled_access_net", c_uint64)]
+
+        class PathBeneath(Structure):
+            _fields_ = [("allowed_access", c_uint64), ("parent_fd", c_int)]
+
+        attr = RulesetAttr(fs_handled, 3)
+        rules = _ok(libc.syscall(444, ctypes.byref(attr), ctypes.sizeof(attr), 0), "landlock")
+        seen = set()
+        # /usr and the loader dirs are how Python imports. /etc is not in this
+        # list: a native open() would bypass the audit hook, and Landlock would
+        # otherwise allow reading it. /proc and /dev stay readable so the
+        # interpreter can start; they are not writable.
+        for item in [*roots, "/usr", "/lib", "/lib64", "/proc", "/dev", str(folder)]:
+            path = Path(item)
+            if not path.exists():
+                continue
+            resolved = path.resolve()
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            access = fs_read | fs_write if resolved == folder else fs_read
+            handle = os.open(key, os.O_PATH | getattr(os, "O_CLOEXEC", 0))
+            rule = PathBeneath(access, handle)
+            try:
+                _ok(libc.syscall(445, rules, 1, ctypes.byref(rule), 0), key)
+            except OSError:
+                continue
+            finally:
+                os.close(handle)
+        _ok(libc.prctl(38, 1, 0, 0, 0), "no_new_privs")
+        _ok(libc.syscall(446, rules, 0), "landlock restrict")
+        os.close(rules)
+        label = "landlock"
+        try:
+            import struct
+            blocked = {
+                0xC000003E: (59, 322, 41, 42, 43, 44, 45, 46, 47, 49, 50, 53, 288, 299, 307, 101, 310, 311),
+                0xC00000B7: (221, 281, 198, 203, 202, 206, 207, 211, 212, 200, 201, 199, 242, 243, 269, 117, 270, 271),
+            }
+            machine = struct.calcsize("P")
+            arch = 0xC000003E if machine == 8 and sys.byteorder == "little" else 0
+            # aarch64 is also 64-bit little-endian; platform tells them apart.
+            import platform
+            if platform.machine() in {"aarch64", "arm64"}:
+                arch = 0xC00000B7
+            elif platform.machine() in {"x86_64", "amd64"}:
+                arch = 0xC000003E
+            numbers = blocked.get(arch)
+            if numbers:
+                def stmt(code, k):
+                    return struct.pack("HBBI", code, 0, 0, k & 0xFFFFFFFF)
+                def jump(code, k, jt, jf):
+                    return struct.pack("HBBI", code, jt, jf, k & 0xFFFFFFFF)
+                allow, errno_ret = 0x7FFF0000, 0x00050000 | 1
+                kill = 0x80000000
+                instr = [
+                    stmt(0x20, 4),
+                    jump(0x15, arch, 1, 0),
+                    stmt(0x06, kill),
+                    stmt(0x20, 0),
+                ]
+                for number in numbers:
+                    instr.append(jump(0x15, number, 0, 1))
+                    instr.append(stmt(0x06, errno_ret))
+                instr.append(stmt(0x06, allow))
+                blob = b"".join(instr)
+                buf = ctypes.create_string_buffer(blob)
+
+                class Prog(Structure):
+                    _fields_ = [("len", ctypes.c_ushort), ("filt", c_void_p)]
+
+                prog = Prog(len(blob) // 8, ctypes.cast(buf, c_void_p))
+                _ok(libc.prctl(22, 2, ctypes.byref(prog)), "seccomp")
+                label = "landlock+seccomp"
+        except (OSError, struct.error):
+            pass
+    except (OSError, AttributeError):
+        label = "audit"
+    finally:
+        sys.modules.pop("ctypes", None)
+        sys.modules.pop("_ctypes", None)
+    if os.environ.get("IRIS_CHECK_NETNS") == "1" and label != "audit":
+        label += "+netns"
+    elif os.environ.get("IRIS_CHECK_NETNS") == "1":
+        label = "audit+netns"
+    return label
+
+isolation = _kernel_isolation(sandbox, read_roots)
+
 def _inside(path, roots) -> bool:
     try:
         resolved = Path(os.fsdecode(path)).resolve()
@@ -279,14 +397,23 @@ def _inside(path, roots) -> bool:
     return any(resolved == root or root in resolved.parents for root in roots)
 
 _SPAWN = {"os.system", "os.fork", "os.forkpty", "os.posix_spawn", "os.spawn", "subprocess.Popen"}
-_NET = {"socket.connect", "socket.bind", "socket.sendto", "socket.sendmsg", "socket.getaddrinfo"}
+_NET = {
+    "socket.connect", "socket.bind", "socket.sendto", "socket.sendmsg", "socket.getaddrinfo",
+    "socket.gethostbyname", "socket.gethostbyname_ex", "socket.gethostbyaddr", "socket.getnameinfo",
+}
 _MUTATE = {
-    "os.remove", "os.unlink", "os.rmdir", "os.rename", "os.replace", "os.truncate",
+    "os.remove", "os.unlink", "os.rmdir", "os.rename", "os.replace", "os.truncate", "os.utime",
     "os.mkdir", "os.makedirs", "os.chmod", "os.chown", "os.lchown", "os.link",
     "os.symlink", "os.chflags", "shutil.rmtree",
 }
+_NATIVE = {"ctypes", "_ctypes", "cffi", "_cffi_backend"}
 
 def _audit(event, args):
+    if event == "import" and args:
+        name = str(args[0] or "")
+        root = name.split(".", 1)[0]
+        if name in _NATIVE or root in _NATIVE:
+            raise PermissionError(f"native loader blocked in component sandbox: {name}")
     if event in _SPAWN or event.startswith(("os.exec", "os.spawn", "os.posix_spawn")):
         raise PermissionError(f"process spawn blocked in component sandbox: {event}")
     if event in _NET:
@@ -312,6 +439,7 @@ def _audit(event, args):
 sys.addaudithook(_audit)
 from iris_ai.plug import check_folder
 ok, detail = check_folder(sandbox)
+detail = f"{detail}; isolation={isolation}"
 if not ok:
     print(json.dumps({"ok": False, "detail": detail}))
     raise SystemExit(0)
@@ -321,10 +449,11 @@ if test.is_file():
         runpy.run_path(str(test), run_name="__main__")
     except SystemExit as exc:
         if exc.code not in (0, None):
-            print(json.dumps({"ok": False, "detail": f"test_component.py exited {exc.code}"}))
+            print(json.dumps({"ok": False, "detail": f"test_component.py exited {exc.code}; isolation={isolation}"}))
             raise SystemExit(0)
     except Exception as exc:
-        print(json.dumps({"ok": False, "detail": f"test_component.py failed: {type(exc).__name__}: {exc}"}))
+        message = f"test_component.py failed: {type(exc).__name__}: {exc}; isolation={isolation}"
+        print(json.dumps({"ok": False, "detail": message}))
         raise SystemExit(0)
     detail = f"{detail}; test_component.py passed"
 print(json.dumps({"ok": True, "detail": detail}))
@@ -344,21 +473,64 @@ def _check_env(folder: Path) -> dict[str, str]:
     return env
 
 
+_UNSHARE_PREFIX: list[str] | None = None
+
+
+def _sandbox_launcher() -> list[str]:
+    """`unshare` arguments that put the check in a network namespace, when the kernel allows it.
+
+    An empty list means the child has no network namespace. Landlock and seccomp
+    still run inside the child on Linux. The result is cached: probing `unshare`
+    on every check would fork twice.
+    """
+    global _UNSHARE_PREFIX
+    if _UNSHARE_PREFIX is not None:
+        return list(_UNSHARE_PREFIX)
+    prefix: list[str] = []
+    if sys.platform.startswith("linux"):
+        unshare = shutil.which("unshare")
+        if unshare:
+            try:
+                probe = subprocess.run(
+                    [unshare, "--user", "--map-root-user", "--net", "true"],
+                    capture_output=True,
+                    timeout=5,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                probe = None
+            if probe is not None and probe.returncode == 0:
+                prefix = [unshare, "--user", "--map-root-user", "--net"]
+    _UNSHARE_PREFIX = prefix
+    return list(prefix)
+
+
 def check_in_sandbox(folder: Path) -> tuple[bool, str]:
     """Contract-check a component, and run `test_component.py` when it exists.
 
-    The child inherits no API keys. An audit hook blocks writes outside the
-    folder (including mkdir, chmod, and symlink), blocks new processes and
-    network connections, and blocks reads outside the folder, the interpreter,
-    and the `iris_ai` package. Native code loaded through ctypes is not
-    contained. This is the check both the tool and `iris components check` use,
-    so staged code is not imported in the Iris process.
+    The child inherits no API keys. On Linux it applies Landlock (read under the
+    component folder, the interpreter, and a few system dirs; write only inside
+    the folder; execute denied) and a seccomp filter that rejects `execve` and
+    new sockets. `unshare --net` is used when it works, so DNS has no route.
+    An audit hook still turns Python-level spawn, DNS, `os.utime`, and imports
+    of ctypes/cffi into `PermissionError`.
+
+    That stops `ctypes` `system`, timestamp changes outside the folder, and
+    `socket.gethostbyname`. It does not stop a kernel bug, and it does not
+    contain the component after you approve it — approved code runs in-process.
+    Where Landlock is missing, the import ban and the audit hook are the whole
+    guarantee, and the check detail says `isolation=audit`.
     """
     if not (folder / "component.py").is_file():
         return False, f"no component.py in {folder}"
+    env = _check_env(folder)
+    launcher = _sandbox_launcher()
+    if launcher:
+        env["IRIS_CHECK_NETNS"] = "1"
     try:
         proc = subprocess.run(
             [
+                *launcher,
                 sys.executable,
                 "-c",
                 _CHECK_CHILD,
@@ -369,7 +541,7 @@ def check_in_sandbox(folder: Path) -> tuple[bool, str]:
             text=True,
             timeout=30,
             check=False,
-            env=_check_env(folder),
+            env=env,
             cwd=str(folder.resolve()),
         )
     except subprocess.TimeoutExpired:

@@ -616,3 +616,184 @@ def test_a_rate_limit_survives_failover_to_the_next_provider():
         [RateLimit(), ConnectionError("connection refused")],
     )
     assert _is_rate_limit(error)
+
+
+def test_a_refinement_keeps_the_more_specific_fact():
+    current = (
+        "- [9] My main project is called Sparrow, deadline 2026-11-15.  (by owner, 2026-10-03)\n"
+        "- [8] I now live in Bengaluru, having moved from Pune last week.  (by owner, 2026-10-03)\n"
+        "- [5] Owner is allergic to peanuts\n"
+    )
+    marker = "(superseded 2026-10-03)"
+    for fact in (
+        "I am working on a main project called Sparrow.",
+        "My main project is called Sparrow",
+        "I now live in Bengaluru.",
+    ):
+        out = reconcile_contradictions(current, fact, marker)
+        assert "superseded" not in out, fact
+        assert "2026-11-15" in out
+        assert "moved from Pune" in out
+    moved = reconcile_contradictions(
+        "- [8] I live in Pune.  (by owner, 2026-10-03)\n",
+        "I now live in Bengaluru, having moved from Pune last week.",
+        marker,
+    )
+    assert "superseded" in moved
+    assert "allergic" not in moved or "superseded" not in moved.split("allergic")[-1]
+
+
+def test_component_check_blocks_ctypes_dns_and_utime(tmp_path, monkeypatch):
+    marker = tmp_path / "ctypes-escaped"
+    touched = tmp_path / "utime-target"
+    touched.write_text("keep", encoding="utf-8")
+    before = touched.stat().st_mtime_ns
+    cases = {
+        "ctypes": f"import ctypes\nctypes.CDLL(None).system({b'touch ' + str(marker).encode()!r})\n",
+        "dns": "import socket\nsocket.gethostbyname('example.com')\n",
+        "utime": f"import os\nos.utime({str(touched)!r}, None)\n",
+    }
+    for name, attempt in cases.items():
+        ok, detail, folder = _checked(tmp_path, monkeypatch, name, attempt)
+        assert ok, detail
+        assert "landlock" in detail
+        assert (folder / "result.txt").read_text(encoding="utf-8") == "PermissionError"
+    assert not marker.exists()
+    assert touched.stat().st_mtime_ns == before
+
+
+@pytest.mark.asyncio
+async def test_forget_reports_success_when_reindex_fails(tmp_path, monkeypatch):
+    files = WorkspaceFiles(tmp_path)
+    line = "- [8] I am allergic to peanuts.  (by owner, 2026-10-03)"
+    files.write_curated(files.memory, f"# MEMORY.md\n\n{line}\n")
+
+    class Hit:
+        path = "MEMORY.md"
+        content = line
+
+    class Index:
+        async def search(self, *args, **kwargs):
+            return [Hit()]
+
+    class Boom:
+        async def reindex_all(self):
+            raise RuntimeError("all providers failed (groq, ollama)")
+
+    monkeypatch.setattr("iris_ai.agent.tools.interrupt", lambda payload: "approved")
+    runtime = SimpleNamespace(index=Index(), files=files, reindexer=Boom(), telegram=None)
+    handler = {tool.name: tool.handler for tool in build_tools(runtime)}["forget"]
+    payload = json.loads(await handler("peanuts"))
+    assert payload["ok"] is True
+    assert payload["reindex"] == "pending"
+    assert "superseded" in files.read(files.memory)
+
+
+@pytest.mark.asyncio
+async def test_an_ellipsis_reply_is_not_journaled(tmp_path: Path):
+    files = WorkspaceFiles(tmp_path)
+    graph = ChatGraph.__new__(ChatGraph)
+    graph.runtime = SimpleNamespace(files=files)
+    state = {
+        "origin": "owner",
+        "messages": [
+            SimpleNamespace(type="human", content="hello"),
+            SimpleNamespace(type="ai", content="All the the … …", tool_calls=None),
+        ],
+    }
+    assert await graph._journal(state) == {}
+    assert "…" not in files.read_daily(files.today())
+    useful = {
+        "origin": "owner",
+        "messages": [
+            SimpleNamespace(type="human", content="hello"),
+            SimpleNamespace(type="ai", content="Noted, the deadline is 2026-11-15.", tool_calls=None),
+        ],
+    }
+    assert await graph._journal(useful) == {}
+    assert "2026-11-15" in files.read_daily(files.today())
+
+
+def test_forget_approval_names_the_line():
+    text = approval_prompt(
+        {
+            "__interrupt__": [
+                {
+                    "value": {
+                        "action": "forget",
+                        "digest": "b81f615e2e151488ffff",
+                        "hit": "- [8] My cat is called Biscuit",
+                        "query": "biscuit",
+                    }
+                }
+            ]
+        }
+    )
+    assert text is not None
+    assert "Biscuit" in text
+    assert "b81f615e2e151488" in text
+
+
+def test_doctor_probes_a_configured_postgres_dsn(tmp_path):
+    checks = run_checks(
+        tmp_path,
+        environ={
+            "MEMORY_BACKEND": "pgvector",
+            "POSTGRES_DSN": "postgresql://user:secret@127.0.0.1:1/iris",
+        },
+    )
+    postgres = next(check for check in checks if check.name == "postgres")
+    assert postgres.level == "fail"
+    assert "no Postgres" in postgres.detail
+    assert "secret" not in postgres.detail
+    quiet = run_checks(tmp_path, environ={})
+    assert all(check.name != "postgres" for check in quiet)
+
+
+def test_serve_telegram_without_a_token_exits_nonzero(monkeypatch):
+    from iris_ai.cli import serve as serve_mod
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setattr(serve_mod.settings, "telegram_bot_token", "")
+    assert serve_mod.run("telegram") == 1
+
+
+def test_direct_public_bind_prints_a_clean_refusal(monkeypatch, capsys):
+    from iris_ai.api import refuse_public_argv_bind
+
+    monkeypatch.delenv("IRIS_HTTP_INSECURE", raising=False)
+    monkeypatch.setattr("iris_ai.api.settings.iris_api_token", "")
+    with pytest.raises(SystemExit) as raised:
+        refuse_public_argv_bind(["uvicorn", "iris_ai.api:app", "--host", "0.0.0.0", "--port", "9"])
+    assert raised.value.code == 1
+    captured = capsys.readouterr()
+    assert "refusing to listen" in captured.err
+    assert "Traceback" not in captured.err
+    assert "Traceback" not in captured.out
+
+
+@pytest.mark.asyncio
+async def test_model_check_rejects_an_empty_reply():
+    from iris_ai.cli.init import _model_check
+
+    class LLM:
+        async def complete(self, *args, **kwargs):
+            return "  "
+
+    check = await _model_check(LLM())
+    assert check.level == "fail"
+    assert "empty reply" in check.detail
+
+
+def test_semantic_memory_without_an_embedding_key_does_not_target_ollama(monkeypatch):
+    from iris_ai.config import Settings
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("EMBEDDING_MODEL", "gemini/gemini-embedding-001")
+    fresh = Settings()
+    assert fresh.embedding_model == ""
+    assert "GEMINI_API_KEY" in fresh.embedding_notice
+    local = Settings(gemini_api_key="", llm_provider="ollama", embedding_model="gemini/gemini-embedding-001")
+    assert local.embedding_model.startswith("ollama/")

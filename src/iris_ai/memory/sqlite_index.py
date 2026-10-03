@@ -194,6 +194,10 @@ class SqliteIndex:
         conn.executescript(_SCHEMA)
         conn.commit()
         self._conn = conn
+        # Say once, at boot, when semantic recall was asked for and there is
+        # no embedding key. Waiting for the first query is how a dead Ollama
+        # used to be retried four times before the owner saw anything.
+        self._embedding_configured()
 
     async def close(self) -> None:
         await asyncio.to_thread(self._close_sync)
@@ -385,8 +389,15 @@ class SqliteIndex:
         # client with a blank model must not call the provider ("You passed model=").
         if model is not _UNSET and not str(model or "").strip():
             if self._vectors_reason is None:
-                self._vectors_reason = "no embedding model configured"
-                log.info("sqlite memory: vectors off, keyword recall only (no embedding model configured)")
+                notice = getattr(settings, "embedding_notice", "") or "no embedding model configured"
+                self._vectors_reason = notice
+                # A semantic install with no key used to retry Ollama and print
+                # a long provider error. One warning is the whole message.
+                # An owner who turned embeddings off stays at info.
+                if getattr(settings, "embedding_notice", ""):
+                    log.warning("sqlite memory: vectors off, keyword recall only (%s)", notice)
+                else:
+                    log.info("sqlite memory: vectors off, keyword recall only (%s)", notice)
             return False
         return True
 

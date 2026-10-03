@@ -133,7 +133,8 @@ _SLOTS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "project",
         re.compile(
-            r"^(?P<subj>.+?)\s+main project is(?: called)?\s+(?P<obj>.+)$",
+            r"^(?P<subj>.+?)\s+(?:(?:am |is |are )?(?:working on )?)?(?:a |the )?"
+            r"main project(?:\s+is)?(?:\s+called)?\s+(?P<obj>.+)$",
             re.IGNORECASE,
         ),
     ),
@@ -179,6 +180,30 @@ def _object(text: str) -> str:
     return obj.rstrip(".,;")
 
 
+def _head(obj: str) -> str:
+    """The place or project name, without a deadline or a move story."""
+    head = obj.split(",", 1)[0].strip()
+    head = re.split(r"\s+(?:having|deadline|with)\b", head, maxsplit=1)[0].strip()
+    return head
+
+
+def _supersede_object(old: str, new: str) -> bool:
+    """True when `new` names a different value, so the older line should retire.
+
+    The same city or project with less detail is a refinement: "Sparrow" does
+    not retire "Sparrow, deadline 2026-11-15", and "Bengaluru" does not retire
+    "Bengaluru, having moved from Pune". A longer restatement of the same
+    value can retire the shorter line, because the detail lives in the new
+    fact. Different names ("Pune" then "Bengaluru") still supersede.
+    """
+    if old == new:
+        return False
+    old_head, new_head = _head(old), _head(new)
+    if old_head != new_head:
+        return True
+    return len(new) > len(old) and (old == old_head or old in new)
+
+
 def _slot(text: str) -> tuple[str, str, str] | None:
     body = _fact_body(text)
     for name, pattern in _SLOTS:
@@ -192,9 +217,10 @@ def _slot(text: str) -> tuple[str, str, str] | None:
 def reconcile_contradictions(content: str, new_fact: str, marker: str) -> str:
     """Mark older exclusive-slot lines superseded when `new_fact` replaces them.
 
-    "Lives in Pune" then "I now live in Bengaluru" retires the Pune line. A fact
-    that is not one of those slots is left alone, and so is a line that was
-    already superseded.
+    "Lives in Pune" then "I now live in Bengaluru" retires the Pune line. A
+    shorter restatement of the same place or project does not: the deadline
+    and the move stay. A fact that is not one of those slots is left alone,
+    and so is a line that was already superseded.
     """
     incoming = _slot(new_fact)
     if incoming is None or not content.strip():
@@ -208,7 +234,7 @@ def reconcile_contradictions(content: str, new_fact: str, marker: str) -> str:
         existing = _slot(line)
         if existing is None:
             continue
-        if existing[0] == slot and existing[1] == subject and existing[2] != obj:
+        if existing[0] == slot and existing[1] == subject and _supersede_object(existing[2], obj):
             lines[index] = f"{line} {marker}"
             changed = True
     if not changed:

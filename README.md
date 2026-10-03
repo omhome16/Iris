@@ -160,13 +160,17 @@ rollback target). Iris does not edit its own package, so an upgrade does not
 collide with a part you or Iris added. Then type `/reload`.
 
 Components run in-process after you approve them. The check runs in a child
-process that does not inherit API keys. That child cannot write outside the
-component folder (including mkdir, chmod, and symlink), cannot spawn a process,
-cannot open a network connection, and cannot read files outside the folder, the
-interpreter, and the `iris_ai` package. Native code loaded through ctypes is not
-contained. Agent and untrusted turns cannot stage or check a component; only an
-owner turn can, and activation still waits for your approval. Read a component
-before you activate it.
+process that does not inherit API keys. On Linux that child is held by Landlock
+(write and create only inside the component folder, execute denied) and a
+seccomp filter that rejects `execve` and new sockets, plus a network namespace
+when `unshare` can make one. `ctypes`/`cffi` imports are refused as well. That
+stops a staged component from running a shell (including `ctypes.CDLL(None).system`),
+changing timestamps outside its folder, or resolving DNS. It does not contain
+the component after you approve it, and it is not a defence against a kernel
+bug. Where Landlock is unavailable the check detail says `isolation=audit`:
+the import ban and the audit hook are the whole guarantee. Agent and untrusted
+turns cannot stage or check a component; only an owner turn can, and activation
+still waits for your approval. Read a component before you activate it.
 The skill Iris follows is [`skills/component-author/SKILL.md`](skills/component-author/SKILL.md).
 
 ## Use it as a library

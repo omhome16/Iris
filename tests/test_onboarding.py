@@ -147,12 +147,12 @@ def test_init_seeds_a_neutral_workspace_the_first_time(checkout: Path):
     assert (workspace / "AGENTS.md").is_file()
     assert (workspace / "README.md").is_file()
     assert "Never edited by the agent" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
-    # Color codes sit between the path and the colon, and a narrow console wraps.
-    # A long temp path wraps inside the filename (`AGENTS .md`). Collapse
-    # whitespace and allow that break, and still reject a real "kept" label.
-    flat = re.sub(r"\s+", " ", re.sub(r"\x1b\[[0-9;]*m", "", result.stdout))
-    assert re.search(r"workspace/AGENTS\s*\.md:\s*created from", flat)
-    assert not re.search(r"workspace/AGENTS\s*\.md:\s*kept", flat)
+    # Rich wraps a long temp path anywhere, including inside "AGENTS.md".
+    # Dropping every whitespace character makes the label independent of width
+    # and still rejects a real "kept" line.
+    flat = re.sub(r"\s+", "", re.sub(r"\x1b\[[0-9;]*m", "", result.stdout))
+    assert "AGENTS.md:createdfrom" in flat
+    assert "AGENTS.md:kept" not in flat
 
 
 def test_init_never_overwrites_the_workspace_the_owner_edited(checkout: Path):

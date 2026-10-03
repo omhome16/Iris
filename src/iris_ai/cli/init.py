@@ -192,8 +192,9 @@ async def _model_check(llm) -> Check:
         return Check("model check", "fail", detail)
     elapsed = time.monotonic() - started
     said = (reply or "").strip().replace("\n", " ")[:40]
-    shown = repr(said) if said else "empty reply"
-    return Check("model check", "ok", f"cheap tier answered in {elapsed:.1f}s ({shown})")
+    if not said:
+        return Check("model check", "fail", f"cheap tier answered in {elapsed:.1f}s with an empty reply")
+    return Check("model check", "ok", f"cheap tier answered in {elapsed:.1f}s ({said!r})")
 
 
 async def _memory_checks(llm, *, offline: bool) -> list[Check]:
@@ -223,7 +224,9 @@ async def _memory_checks(llm, *, offline: bool) -> list[Check]:
     if offline:
         return [store, Check("recall", "warn", "embeddings not probed (--offline)")]
     if not (settings.embedding_model or "").strip():
-        return [store, Check("recall", "warn", "keyword-only (embeddings off)")]
+        notice = getattr(settings, "embedding_notice", "")
+        detail = f"keyword-only ({notice})" if notice else "keyword-only (embeddings off)"
+        return [store, Check("recall", "warn", detail)]
     try:
         await llm.embed_one("iris embedding probe", max_attempts=1)
     except Exception as exc:  # noqa: BLE001 — a missing embedder is a warn, not a fail

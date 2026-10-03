@@ -76,6 +76,20 @@ def _err_detail(reason: str, **extra: Any) -> str:
     return json.dumps({"ok": False, "error": reason, **extra}, ensure_ascii=False)
 
 
+async def _reindex_after_write(runtime: Any, action: str) -> str:
+    """Reindex after a memory write. A provider failure must not undo the write.
+
+    The Markdown file is already updated. The search index can be rebuilt on
+    a later turn. Returns ``pending`` when that rebuild did not happen.
+    """
+    try:
+        await runtime.reindexer.reindex_all()
+    except Exception as exc:  # noqa: BLE001 - the curated write already succeeded
+        log.warning("%s updated memory; reindex will retry (%s)", action, exc)
+        return "pending"
+    return ""
+
+
 def _channel_result(raw: str, **extra: Any) -> str:
     """Turn a channel transport string into the standard ok/err JSON.
 
@@ -567,9 +581,11 @@ def build_tools(runtime: Runtime) -> list[Tool]:
             if reconciled != current:
                 runtime.files.write_curated(runtime.files.memory, reconciled)
             runtime.files.append_curated(runtime.files.memory, entry)
-            await runtime.reindexer.reindex_all()
         except ConcurrencyError as exc:
             return _err(str(exc))
+        pending = await _reindex_after_write(runtime, "remember")
+        if pending:
+            return _ok(entry=entry, reindex=pending)
         return _ok(entry=entry)
 
     tools.append(
@@ -604,9 +620,13 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         entry += " (note)"
         try:
             runtime.files.append_daily(entry, stamp=False)
-            await runtime.reindexer.index_daily_note(rel=f"memory/{runtime.files.today().isoformat()}.md")
         except Exception as exc:  # noqa: BLE001 - tool errors surface as JSON
             return _err(str(exc))
+        try:
+            await runtime.reindexer.index_daily_note(rel=f"memory/{runtime.files.today().isoformat()}.md")
+        except Exception as exc:  # noqa: BLE001 - the daily note is already written
+            log.warning("note wrote the daily file; reindex will retry (%s)", exc)
+            return _ok(entry=entry, reindex="pending")
         return _ok(entry=entry)
 
     tools.append(
@@ -694,9 +714,11 @@ def build_tools(runtime: Runtime) -> list[Tool]:
             return _err("could not locate the memory text in MEMORY.md; leaving intact")
         try:
             runtime.files.write_curated(runtime.files.memory, new)
-            await runtime.reindexer.reindex_all()
         except ConcurrencyError as exc:
             return _err(str(exc))
+        pending = await _reindex_after_write(runtime, "forget")
+        if pending:
+            return _ok(superseded=hit.content[:120], reindex=pending)
         return _ok(superseded=hit.content[:120])
 
     tools.append(

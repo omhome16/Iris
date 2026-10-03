@@ -57,6 +57,11 @@ def _describe_approval(value: dict) -> str:
         lines.append(f"digest: {digest[:16]}")
     if value.get("active") or value.get("previous"):
         lines.append(f"from {value.get('active') or '(none)'} to {value.get('previous') or '(built-in)'}")
+    hit = value.get("hit")
+    if hit:
+        lines.append(str(hit))
+    elif value.get("query"):
+        lines.append(f"query: {value['query']}")
     change = value.get("changes")
     if change:
         lines.append(str(change))
