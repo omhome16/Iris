@@ -36,6 +36,11 @@ if TYPE_CHECKING:
 # to the conversation they were created in instead of a hardcoded thread.
 current_session: ContextVar[str] = ContextVar("iris_current_session", default="")
 
+# Who is driving the turn (`owner`, `agent`, …). Tools that stamp provenance
+# read this instead of assuming the owner. Set by the tools node; `owner`
+# outside a turn, which is the direct-dispatch case tests use.
+current_origin: ContextVar[str] = ContextVar("iris_current_origin", default="owner")
+
 # The id of the tool call being executed (set by the graph's tools node).
 # Approval payloads carry it so an approval can be granted exactly once — see
 # iris/approval.py. Empty outside a tool call, which is exactly when no approval

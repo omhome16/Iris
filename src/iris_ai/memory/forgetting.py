@@ -13,8 +13,9 @@ entries carry `(superseded <date>)` markers instead.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from iris_ai.config import settings
 from iris_ai.memory.index import MemoryIndex
@@ -52,7 +53,8 @@ class ForgettingEngine:
         rows = await self.index.list_chunks()
         out = []
         for r in rows:
-            age = max(timedelta(0), (today or date.today()) - r["observed_at"]).days
+            observed = as_date(r["observed_at"])
+            age = max(timedelta(0), (today or date.today()) - observed).days
             if r["evergreen"]:
                 retention = 1.0
             else:
@@ -62,7 +64,7 @@ class ForgettingEngine:
                     "path": r["path"],
                     "chunk_index": r["chunk_index"],
                     "content": r["content"][:80],
-                    "observed_at": r["observed_at"].isoformat(),
+                    "observed_at": observed.isoformat(),
                     "age_days": age,
                     "retention": round(retention, 4),
                     "evergreen": r["evergreen"],
@@ -79,7 +81,7 @@ class ForgettingEngine:
         for r in await self.index.list_chunks():
             if r["evergreen"]:
                 continue
-            age = (today - r["observed_at"]).days
+            age = (today - as_date(r["observed_at"])).days
             retention = retention_fraction(age)
             if retention < gate:
                 reason = f"retention {retention:.2f} below gate {gate:.2f} after {age}d"
@@ -95,58 +97,182 @@ class ForgettingEngine:
                 )
         return sorted(out, key=lambda e: e.retention)
 
+def as_date(value: object) -> date:
+    """A date from a date, a datetime, or the ISO text SQLite stores."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
 def _collapse(text: str) -> str:
     """Whitespace-collapsed text, for comparing a chunk against the file it came
     from: chunking flattens a chunk's line breaks into single spaces."""
     return " ".join(text.split())
 
 
-def supersede_in_text(content: str, target: str, marker: str) -> str | None:
+_TOKEN = re.compile(r"[a-z0-9']+")
+_STOP = {"the", "and", "for", "with", "from", "that", "this", "owner", "note"}
+
+# Exclusive slots: a new fact with the same subject retires the older line.
+# Additive facts (allergies, preferences) are not in this list.
+_SLOTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "location",
+        re.compile(
+            r"^(?P<subj>.+?)\s+(?:currently\s+)?(?:lives in|lived in|moved to|is based in|is located in|resides in)\s+(?P<obj>.+)$",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "project",
+        re.compile(
+            r"^(?P<subj>.+?)\s+main project is(?: called)?\s+(?P<obj>.+)$",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _tokens(text: str) -> set[str]:
+    return {token for token in _TOKEN.findall(text.casefold()) if len(token) > 2 and token not in _STOP}
+
+
+def _overlap(left: str, right: str) -> int:
+    return len(_tokens(left) & _tokens(right))
+
+
+def _fact_body(line: str) -> str:
+    """The fact itself, without the bullet, score, triggers or stamps."""
+    text = line.strip()
+    text = re.sub(r"^-\s*", "", text)
+    text = re.sub(r"^\[\d+(?:\.\d+)?\]\s*", "", text)
+    text = re.sub(r"\s*\(triggers:.*?\)", "", text)
+    text = re.sub(r"\s*\(by [^)]*\)", "", text)
+    text = re.sub(r"\s*\(from:.*?\)", "", text)
+    text = re.sub(r"\s*\(superseded [^)]*\)", "", text)
+    text = re.sub(r"\s*\(note\)", "", text)
+    return " ".join(text.split())
+
+
+def _slot(text: str) -> tuple[str, str, str] | None:
+    body = _fact_body(text)
+    for name, pattern in _SLOTS:
+        match = pattern.match(body)
+        if match is None:
+            continue
+        subject = " ".join(match.group("subj").casefold().split())
+        obj = " ".join(match.group("obj").casefold().split()).rstrip(".,;")
+        return name, subject, obj
+    return None
+
+
+def reconcile_contradictions(content: str, new_fact: str, marker: str) -> str:
+    """Mark older exclusive-slot lines superseded when `new_fact` replaces them.
+
+    "Lives in Pune" then "lives in Bengaluru" retires the Pune line. A fact
+    that is not one of those slots is left alone, and so is a line that was
+    already superseded.
+    """
+    incoming = _slot(new_fact)
+    if incoming is None or not content.strip():
+        return content
+    slot, subject, obj = incoming
+    lines = content.splitlines()
+    changed = False
+    for index, line in enumerate(lines):
+        if "(superseded" in line.casefold():
+            continue
+        existing = _slot(line)
+        if existing is None:
+            continue
+        if existing[0] == slot and existing[1] == subject and existing[2] != obj:
+            lines[index] = f"{line} {marker}"
+            changed = True
+    if not changed:
+        return content
+    text = "\n".join(lines)
+    if content.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def locate_memory_line(content: str, target: str, *, query: str = "") -> str | None:
+    """The one MEMORY.md line `target` refers to, or None when that is ambiguous.
+
+    A small file is often one chunk, so every line is "contained" in the hit.
+    Picking the longest line then retires the wrong fact. Several contained
+    lines are resolved by token overlap with the owner's query; a tie refuses.
+    """
+    stripped = str(target).strip()
+    if stripped:
+        exact = [line for line in content.splitlines() if line.strip() == stripped]
+        if len(exact) == 1:
+            return exact[0]
+        contained_probe = [line for line in content.splitlines() if stripped in line]
+        if len(contained_probe) == 1:
+            return contained_probe[0]
+    probes = [
+        line.strip()
+        for line in str(target).splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    found: list[str] = []
+    for probe in probes:
+        probe = probe[:120]
+        hits = [line for line in content.splitlines() if probe in line]
+        if len(hits) == 1:
+            found.append(hits[0])
+    unique = list(dict.fromkeys(found))
+    # One distinctive probe is enough. Several (a whole-file chunk) are not:
+    # the longest of them is the bug this function exists to avoid.
+    if len(unique) == 1:
+        return unique[0]
+    needle = _collapse(str(target))
+    contained = [
+        line
+        for line in content.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and _collapse(line) in needle
+    ]
+    if unique and not contained:
+        contained = unique
+    if len(contained) == 1:
+        return contained[0]
+    if len(contained) > 1:
+        hint = query.strip()
+        if not hint:
+            return None
+        scored = sorted(((_overlap(line, hint), line) for line in contained), key=lambda item: item[0], reverse=True)
+        best, runner = scored[0][0], scored[1][0]
+        if best > 0 and best > runner:
+            return scored[0][1]
+        return None
+    return None
+
+
+def supersede_in_text(content: str, target: str, marker: str, *, query: str = "") -> str | None:
     """Retire one entry in a curated file by appending a supersession marker.
 
     One implementation, shared by the `forget` tool and the HITL
     `/forget/confirm` endpoint, which had drifted apart. Indexed chunks may
     carry a contextual-retrieval header prepended at index time, so an exact
     replace of `target` against the raw file can miss even when the fact is
-    present — fall back to locating the line that contains the hit's probe
-    text. Returns None when the entry cannot be located, so the caller can
-    refuse rather than retire the wrong line.
-
-    Deliberately no looser fuzzy matching: the owner approves a specific hit,
-    and a looser match could supersede a different line than the one shown.
+    present. Returns None when the entry cannot be located uniquely, so the
+    caller can refuse rather than retire the wrong line.
     """
-    new = content.replace(target, f"{target} {marker}")
-    if new != content:
-        return new
-    # Walk the target's own lines, longest first: the longest line is the most
-    # specific, so it identifies the intended entry with the least chance of
-    # matching a neighbour.
-    probes = [line.strip() for line in str(target).splitlines() if line.strip()]
-    for probe_line in sorted(probes, key=len, reverse=True):
-        probe = probe_line[:120]
-        target_line = next((line for line in content.splitlines() if probe in line), None)
-        if target_line is None:
-            continue
-        new = content.replace(target_line, f"{target_line} {marker}")
+    single = str(target)
+    if single and single in content and "\n" not in single.strip("\n") and content.count(single) == 1:
+        # The target is a single span already in the file (the exact-line case).
+        new = content.replace(single, f"{single} {marker}", 1)
         if new != content:
             return new
-    # The reverse direction, and the ordinary case for a *small* curated file:
-    # chunking joins a chunk's tokens with single spaces, so a chunk holding a
-    # heading and an entry arrives as one line that no file line contains. Ask
-    # the other question instead — which file line does the chunk contain —
-    # comparing with whitespace collapsed on both sides, and take the longest,
-    # which is the entry rather than the heading above it.
-    needle = _collapse(str(target))
-    best = max(
-        (line for line in content.splitlines() if line.strip() and _collapse(line) in needle),
-        key=lambda line: len(line),
-        default=None,
-    )
-    if best is not None:
-        new = content.replace(best, f"{best} {marker}")
-        if new != content:
-            return new
-    return None
+    line = locate_memory_line(content, target, query=query)
+    if line is None:
+        return None
+    return content.replace(line, f"{line} {marker}", 1)
 
 
 def supersession_stats(memory_md: str) -> dict:
@@ -161,7 +287,7 @@ def age_distribution(rows: list[dict], *, today: date | None = None) -> list[tup
     today = today or date.today()
     buckets: dict[str, int] = {}
     for r in rows:
-        age = (today - r["observed_at"]).days
+        age = (today - as_date(r["observed_at"])).days
         key = (
             "0-7d" if age <= 7
             else "8-30d" if age <= 30

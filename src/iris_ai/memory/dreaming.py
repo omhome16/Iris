@@ -335,14 +335,20 @@ class DeepPhase:
             current = current.split("\n\n_Empty", 1)[0]
         lines = current.splitlines()
 
-        # supersession: retire entries whose key appears in a signal's target
-        targets = {s.target.casefold() for s in signals if s.target}
-        retired: list[int] = []
-        for i, line in enumerate(lines):
+        # supersession: a signal target, and exclusive-slot contradictions
+        # ("lives in Pune" then Bengaluru) even when the note has no target.
+        from iris_ai.memory.forgetting import reconcile_contradictions
+
+        marker = f"(superseded {record.timestamp[:10]})"
+        already = sum(1 for line in lines if "(superseded" in line.casefold())
+        for fact in [*(signal.content for signal in signals), *(theme.statement for theme in themes)]:
+            lines = reconcile_contradictions("\n".join(lines), fact, marker).splitlines()
+        targets = {signal.target.casefold() for signal in signals if signal.target}
+        for index, line in enumerate(lines):
             low = line.casefold()
-            if any(t and t in low for t in targets) and "(superseded" not in low:
-                lines[i] = f"{line} (superseded {record.timestamp[:10]})"
-                retired.append(i)
+            if any(target and target in low for target in targets) and "(superseded" not in low:
+                lines[index] = f"{line} {marker}"
+        retired = sum(1 for line in lines if "(superseded" in line.casefold()) - already
 
         # new consolidated statements, deduped against what MEMORY.md already
         # says (cosine via the index; deterministic, no model call)
@@ -359,7 +365,7 @@ class DeepPhase:
             body = f"# MEMORY.md — long-term memory\n\n{body}"
 
         record.added = len(additions)
-        record.superseded = len(retired)
+        record.superseded = retired
         try:
             self.files.write_curated(memory, body, expected_hash=snapshot)
         except ConcurrencyError:
