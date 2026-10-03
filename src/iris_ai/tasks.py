@@ -588,16 +588,21 @@ class TaskScheduler:
         self._record_run(task, ok=ok)
 
     def _record_run(self, task: Task, *, ok: bool) -> None:
-        """Persist the outcome of one run and decide whether to keep the job."""
+        """Persist the outcome of one run and decide whether to keep the job.
+
+        The task object closed over at registration time still has the old
+        `runs` count. Read the store first so a recurring job counts every fire.
+        """
         now = datetime.now(zone(settings.iris_timezone)).isoformat(timespec="seconds")
-        if not task.recurring:
-            self.store.remove(task.id)
+        fresh = self.store.get(task.id) or task
+        if not fresh.recurring:
+            self.store.remove(fresh.id)
             return
-        failures = 0 if ok else task.failures + 1
+        failures = 0 if ok else fresh.failures + 1
         disabled = failures >= settings.cron_max_failures
         self.store.update(
-            task.id,
-            runs=task.runs + 1,
+            fresh.id,
+            runs=fresh.runs + 1,
             failures=failures,
             last_run=now,
             last_outcome="ok" if ok else "error",

@@ -36,11 +36,35 @@ def approval_prompt(state: dict | None) -> str | None:
     else:
         value = getattr(first, "value", None)
     if isinstance(value, dict):
-        text = str(value.get("action") or value.get("summary") or "")
+        text = _describe_approval(value)
     else:
         text = "" if value is None else str(value)
     text = text.strip()
     return text or None
+
+
+def _describe_approval(value: dict) -> str:
+    """What the owner is being asked to allow, beyond the tool name."""
+    action = str(value.get("action") or value.get("summary") or "approval")
+    lines = [action]
+    if value.get("component"):
+        lines.append(f"component: {value['component']}")
+    files = value.get("files")
+    if isinstance(files, list) and files:
+        lines.append("files: " + ", ".join(str(item) for item in files))
+    digest = str(value.get("component_digest") or value.get("digest") or "")
+    if digest:
+        lines.append(f"digest: {digest[:16]}")
+    if value.get("active") or value.get("previous"):
+        lines.append(f"from {value.get('active') or '(none)'} to {value.get('previous') or '(built-in)'}")
+    change = value.get("changes")
+    if change:
+        lines.append(str(change))
+    elif action == "component_activate":
+        lines.append("will move the staged component into place and select it")
+    elif action == "component_rollback":
+        lines.append("will switch back to the previous component")
+    return "\n".join(lines)
 
 
 def _copy_state(state: dict) -> dict:

@@ -303,6 +303,10 @@ def apply_safe_fixes(env_dir: Path | None = None) -> list[str]:
     if not env_path.exists() and example.is_file():
         env_path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
         done.append("created .env from .env.example")
+    if env_path.is_file():
+        import stat
+
+        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     return done
 
 

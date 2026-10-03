@@ -89,6 +89,26 @@ def test_register_all_registers_future_and_drops_past(tmp_path: Path):
     assert all(t.id != past.id for t in store.list()), "stale tasks must be dropped"
 
 
+def test_a_recurring_job_counts_every_run(tmp_path: Path):
+    store = TaskStore(tmp_path / "tasks.json")
+    task = store.add(
+        instruction="tick",
+        run_at=datetime.now(ZoneInfo("UTC")),
+        kind="interval",
+        every="1 minutes",
+    )
+    scheduler = AsyncIOScheduler(timezone=settings.iris_timezone)
+    ts = TaskScheduler(store, runtime=None, graph=None, scheduler=scheduler)
+    stale = store.get(task.id)
+    assert stale is not None and stale.runs == 0
+    ts._record_run(stale, ok=True)
+    ts._record_run(stale, ok=True)
+    fresh = store.get(task.id)
+    assert fresh is not None
+    assert fresh.runs == 2
+    assert fresh.last_outcome == "ok"
+
+
 def test_schedule_rejects_past_time(tmp_path: Path):
     store = TaskStore(tmp_path / "tasks.json")
     scheduler = AsyncIOScheduler(timezone=settings.iris_timezone)

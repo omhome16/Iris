@@ -117,11 +117,16 @@ _STOP = {"the", "and", "for", "with", "from", "that", "this", "owner", "note"}
 
 # Exclusive slots: a new fact with the same subject retires the older line.
 # Additive facts (allergies, preferences) are not in this list.
+# Location covers first person and the short forms people actually say
+# ("I now live in Bengaluru", "I moved to", "My home is in").
 _SLOTS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "location",
         re.compile(
-            r"^(?P<subj>.+?)\s+(?:currently\s+)?(?:lives in|lived in|moved to|is based in|is located in|resides in)\s+(?P<obj>.+)$",
+            r"^(?P<subj>.+?)\s+(?:(?:now|currently|still)\s+)?"
+            r"(?:(?:live|lives|lived)\s+in|(?:move|moved|moves)\s+to|"
+            r"(?:reside|resides|resided)\s+in|(?:am|is|are)\s+(?:based|located)\s+in|"
+            r"home\s+is\s+in)\s+(?P<obj>.+)$",
             re.IGNORECASE,
         ),
     ),
@@ -133,6 +138,9 @@ _SLOTS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
 )
+
+# First person, "the user", and "the owner" are the same person in curated memory.
+_OWNER_SUBJECTS = frozenset({"i", "im", "i'm", "me", "my", "we", "our", "owner", "user"})
 
 
 def _tokens(text: str) -> set[str]:
@@ -156,22 +164,35 @@ def _fact_body(line: str) -> str:
     return " ".join(text.split())
 
 
+def _subject(text: str) -> str:
+    folded = " ".join(text.casefold().split())
+    if folded.startswith("the "):
+        folded = folded[4:]
+    if folded in _OWNER_SUBJECTS:
+        return "owner"
+    return folded
+
+
+def _object(text: str) -> str:
+    obj = " ".join(text.casefold().split())
+    obj = re.sub(r"\s*\([^)]*\)\s*$", "", obj)
+    return obj.rstrip(".,;")
+
+
 def _slot(text: str) -> tuple[str, str, str] | None:
     body = _fact_body(text)
     for name, pattern in _SLOTS:
         match = pattern.match(body)
         if match is None:
             continue
-        subject = " ".join(match.group("subj").casefold().split())
-        obj = " ".join(match.group("obj").casefold().split()).rstrip(".,;")
-        return name, subject, obj
+        return name, _subject(match.group("subj")), _object(match.group("obj"))
     return None
 
 
 def reconcile_contradictions(content: str, new_fact: str, marker: str) -> str:
     """Mark older exclusive-slot lines superseded when `new_fact` replaces them.
 
-    "Lives in Pune" then "lives in Bengaluru" retires the Pune line. A fact
+    "Lives in Pune" then "I now live in Bengaluru" retires the Pune line. A fact
     that is not one of those slots is left alone, and so is a line that was
     already superseded.
     """

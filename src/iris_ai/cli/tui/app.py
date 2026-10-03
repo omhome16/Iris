@@ -368,8 +368,12 @@ class ChatApp(App):
             if self._brain is None:
                 await self._write(note_line("still starting"))
                 return
-            await self._write(note_line(await self._brain.reload()))
-            self._set_status("reloaded")
+            message = await self._brain.reload()
+            await self._write(note_line(message))
+            if "built-in persona" in message:
+                self._set_status("persona fell back to the built-in")
+            else:
+                self._set_status("reloaded")
             return
         if head == "/components":
             from iris_ai.components import OPTIONS

@@ -18,11 +18,12 @@ from iris_ai.agent.chat import (
     ChatGraph,
 )
 from iris_ai.agent.runtime import current_origin
-from iris_ai.agent.tools import build_tools, component_tools
+from iris_ai.agent.tools import build_tools, component_tools, dispatch
 from iris_ai.cli.doctor import run_checks
 from iris_ai.cli.setup import write_env_key
 from iris_ai.components import attach
 from iris_ai.kernel.pause import GraphInterrupt, set_resume_decision
+from iris_ai.kernel.threads import approval_prompt
 from iris_ai.memory.files import WorkspaceFiles
 from iris_ai.memory.forgetting import (
     ForgettingEngine,
@@ -33,7 +34,7 @@ from iris_ai.memory.index import ChunkRecord
 from iris_ai.memory.provenance import Origin, Provenance
 from iris_ai.memory.sqlite_index import SqliteIndex
 from iris_ai.onboarding import OnboardingWizard
-from iris_ai.plug import check_in_sandbox, scaffold, staging_dir
+from iris_ai.plug import activate, check_folder, check_in_sandbox, rollback, rollback_target, scaffold, staging_dir
 
 
 def _persona(root: Path, name: str, source: str) -> None:
@@ -70,8 +71,10 @@ def test_a_local_persona_loads_and_a_broken_one_does_not_brick_boot(tmp_path: Pa
     assert "SPEAKS IN HAIKU ONLY" in persona_text(tmp_path, "haiku")
 
     _persona(tmp_path, "broken", "raise RuntimeError('persona exploded')\n")
-    attach(runtime, {"components": {"persona": "broken"}})
+    notice = attach(runtime, {"components": {"persona": "broken"}})
     assert runtime.persona_choice == "file"
+    assert "built-in persona" in notice
+    assert "rollback persona" in notice
     checks = run_checks(tmp_path, environ={})
     failed = [c for c in checks if c.name == "component persona" and c.level == "fail"]
     assert failed
@@ -389,3 +392,227 @@ def test_scaffold_check_names_the_test_file(tmp_path: Path, monkeypatch):
     ok, detail = check_in_sandbox(folder)
     assert ok, detail
     assert "test_component.py passed" in detail
+
+
+def _escape_body(attempt: str) -> str:
+    indented = "\n".join(f"    {line}" if line else "" for line in attempt.splitlines())
+    return (
+        "from pathlib import Path\n"
+        "outcome = 'escaped'\n"
+        "try:\n"
+        f"{indented}\n"
+        "except Exception as exc:\n"
+        "    outcome = type(exc).__name__\n"
+        "Path('result.txt').write_text(outcome, encoding='utf-8')\n"
+        "class Component:\n"
+        "    def __init__(self, ctx, **options):\n"
+        "        pass\n"
+        "    def text(self) -> str:\n"
+        "        return 'ok'\n"
+    )
+
+
+def _checked(tmp_path: Path, monkeypatch, name: str, attempt: str) -> tuple[bool, str, Path]:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir(exist_ok=True)
+    harness = tmp_path / "config" / "harness.toml"
+    if not harness.exists():
+        harness.write_text("", encoding="utf-8")
+    folder = _stage("persona", name, _escape_body(attempt))
+    ok, detail = check_in_sandbox(folder)
+    return ok, detail, folder
+
+
+def test_component_check_blocks_process_spawn_and_network(tmp_path, monkeypatch):
+    touched = tmp_path / "escaped-touch"
+    made = tmp_path / "escaped-dir"
+    link = tmp_path / "escaped-link"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep", encoding="utf-8")
+    victim.chmod(0o600)
+    secret = tmp_path / ".env"
+    secret.write_text("LEAK_SENTINEL=not-a-real-secret\n", encoding="utf-8")
+    cases = {
+        "sub": f"import subprocess\nsubprocess.run(['touch', {str(touched)!r}], check=False)\n",
+        "system": f"import os\nos.system('touch {touched}')\n",
+        "mkdir": f"import os\nos.mkdir({str(made)!r})\n",
+        "chmod": f"import os\nos.chmod({str(victim)!r}, 0o644)\n",
+        "symlink": f"import os\nos.symlink({str(victim)!r}, {str(link)!r})\n",
+        "socket": "import socket\nsocket.socket().connect(('127.0.0.1', 9))\n",
+        "dotenv": (
+            "from pathlib import Path\n"
+            "text = ''\n"
+            "here = Path(__file__).resolve()\n"
+            "for parent in (here, *here.parents):\n"
+            "    candidate = parent / '.env'\n"
+            "    if candidate.is_file():\n"
+            "        text = candidate.read_text(encoding='utf-8')\n"
+            "        break\n"
+            "if 'LEAK_SENTINEL' in text:\n"
+            "    Path('result.txt').write_text('leaked', encoding='utf-8')\n"
+        ),
+    }
+    for name, attempt in cases.items():
+        ok, detail, folder = _checked(tmp_path, monkeypatch, name, attempt)
+        assert ok, detail
+        assert (folder / "result.txt").read_text(encoding="utf-8") == "PermissionError"
+        assert "LEAK_SENTINEL" not in detail
+        assert "not-a-real-secret" not in (folder / "result.txt").read_text(encoding="utf-8")
+    assert not touched.exists()
+    assert not made.exists()
+    assert not link.exists()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+
+
+def test_check_and_doctor_reject_text_with_an_extra_argument(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "harness.toml").write_text(
+        '[components]\npersona = "wordy"\n', encoding="utf-8"
+    )
+    body = (
+        "class Component:\n"
+        "    def __init__(self, ctx, **options):\n"
+        "        pass\n"
+        "    def text(self, original):\n"
+        "        return str(original)\n"
+    )
+    folder = tmp_path / "components" / "persona" / "wordy"
+    folder.mkdir(parents=True)
+    (folder / "component.toml").write_text(
+        'kind = "persona"\nname = "wordy"\nentry = "component:Component"\n',
+        encoding="utf-8",
+    )
+    (folder / "component.py").write_text(body, encoding="utf-8")
+    ok, detail = check_folder(folder)
+    assert not ok
+    assert "text()" in detail
+    sandboxed, sandboxed_detail = check_in_sandbox(folder)
+    assert not sandboxed
+    assert "text()" in sandboxed_detail
+    failed = [c for c in run_checks(tmp_path, environ={}) if c.name == "component persona"]
+    assert failed and failed[0].level == "fail"
+
+
+@pytest.mark.asyncio
+async def test_untrusted_turns_cannot_stage_or_check_components():
+    checked = await dispatch(
+        SimpleNamespace(), "component_check", {"kind": "persona", "name": "x"}, origin="untrusted"
+    )
+    written = await dispatch(
+        SimpleNamespace(),
+        "component_write",
+        {"kind": "persona", "name": "x", "filename": "component.py", "content": "pass"},
+        origin="agent",
+    )
+    assert "not available" in checked
+    assert "not available" in written
+
+
+@pytest.mark.asyncio
+async def test_approval_without_a_bound_payload_is_refused(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "harness.toml").write_text("", encoding="utf-8")
+    _stage(
+        "persona",
+        "loose",
+        "class Component:\n    def __init__(self, ctx, **options):\n        pass\n    def text(self) -> str:\n        return 'one'\n",
+    )
+    handler = {tool.name: tool.handler for tool in component_tools(SimpleNamespace())}["component_activate"]
+    set_resume_decision(None)
+    with pytest.raises(GraphInterrupt):
+        await handler(kind="persona", name="loose")
+    set_resume_decision("approved")
+    refused = json.loads(await handler(kind="persona", name="loose"))
+    set_resume_decision(None)
+    assert refused["ok"] is False
+    assert "missing" in refused["error"]
+    assert not (tmp_path / "components" / "persona" / "loose").exists()
+
+
+def test_approval_prompt_names_the_component_and_the_change():
+    text = approval_prompt(
+        {
+            "__interrupt__": [
+                {
+                    "value": {
+                        "action": "component_activate",
+                        "component": "persona/haiku",
+                        "files": ["component.py", "component.toml"],
+                        "component_digest": "abcdef1234567890ffff",
+                        "changes": "move staged persona/haiku into components/ and select it",
+                    }
+                }
+            ]
+        }
+    )
+    assert text is not None
+    assert "persona/haiku" in text
+    assert "component.py" in text
+    assert "abcdef1234567890" in text
+    assert "move staged" in text
+
+
+def test_reactivating_does_not_point_previous_at_itself(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    harness = tmp_path / "config" / "harness.toml"
+    harness.write_text('[components]\npersona = "file"\n', encoding="utf-8")
+    from iris_ai.config import settings
+
+    monkeypatch.setattr(settings, "harness_config", str(harness))
+    body = (
+        "class Component:\n"
+        "    def __init__(self, ctx, **options):\n"
+        "        pass\n"
+        "    def text(self) -> str:\n"
+        "        return 'voice'\n"
+    )
+    _stage("persona", "voice", body)
+    assert "activated" in activate("persona", "voice")
+    _stage("persona", "voice", body.replace("voice", "voice-again"))
+    assert "activated" in activate("persona", "voice")
+    active, previous = rollback_target("persona")
+    assert active == "voice"
+    assert previous == "file"
+    assert rollback("persona") == "persona rolled back to file"
+
+
+def test_first_person_location_supersedes_on_write_and_in_a_dream():
+    current = "- [6] The user lives in Pune  (by owner, 2026-01-01)\n- [5] Owner is allergic to peanuts\n"
+    marker = "(superseded 2026-02-01)"
+    phrases = (
+        "I now live in Bengaluru (moved from Pune)",
+        "I live in Bengaluru",
+        "I moved to Bengaluru",
+        "I currently reside in Bengaluru",
+        "My home is in Bengaluru",
+        "The user now lives in Bengaluru",
+    )
+    for phrase in phrases:
+        out = reconcile_contradictions(current, phrase, marker)
+        assert "superseded" in out, phrase
+        assert "Pune" in out
+        assert "allergic to peanuts" in out
+        assert "superseded" not in out.split("allergic")[1]
+    # A different person is not the owner.
+    named = reconcile_contradictions(current, "Aarav lives in Bengaluru", marker)
+    assert "superseded" not in named
+
+
+def test_a_rate_limit_survives_failover_to_the_next_provider():
+    from iris_ai.agent.chat import _is_rate_limit
+    from iris_ai.memory.llm import _failover_error
+
+    class RateLimit(Exception):
+        status_code = 429
+
+        def __str__(self) -> str:
+            return "RateLimitError"
+
+    error = _failover_error(
+        [("groq", "", {}), ("ollama", "", {})],
+        [RateLimit(), ConnectionError("connection refused")],
+    )
+    assert _is_rate_limit(error)

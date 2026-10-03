@@ -144,12 +144,17 @@ def _install(runtime: Any, kind: str, name: str, *, fallback: Any = None) -> Any
     return inner
 
 
-def attach(runtime: Any, manifest: dict) -> None:
-    """Set context_builder and capture_policy on the runtime from the manifest."""
+def attach(runtime: Any, manifest: dict) -> str:
+    """Set context_builder and capture_policy on the runtime from the manifest.
+
+    Returns a notice when a selected persona could not load and the built-in
+    is used instead. An empty string means nothing fell back.
+    """
     section = manifest.get("components") or {}
     if not isinstance(section, dict):
         log.warning("[components] must be a table; ignoring %r", section)
-        return
+        return ""
+    notice = ""
 
     context = str(section.get("context") or "default")
     if context not in ("default", ""):
@@ -172,13 +177,12 @@ def attach(runtime: Any, manifest: dict) -> None:
         try:
             _probe_persona(persona)
         except Exception as exc:  # noqa: BLE001 - a persona must not brick boot
-            log.error(
-                "persona %s failed to load (%s: %s). Using the built-in persona "
-                "for this process. Recover with: iris components rollback persona",
-                persona,
-                type(exc).__name__,
-                exc,
+            notice = (
+                f"persona {persona} failed to load ({type(exc).__name__}: {exc}). "
+                "Using the built-in persona for this process. "
+                "Recover with: iris components rollback persona"
             )
+            log.error(notice)
             runtime.persona_choice = "file"
     log.info("persona: %s", runtime.persona_choice)
 
@@ -203,6 +207,7 @@ def attach(runtime: Any, manifest: dict) -> None:
         if built is not None:
             runtime.dreams = built
             log.info("consolidator: %s", consolidator)
+    return notice
 
 
 def _looks_local(kind: str, name: str) -> bool:

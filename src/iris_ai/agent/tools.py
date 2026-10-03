@@ -1226,6 +1226,29 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     return tools
 
 
+def _honour_approval(shown: dict) -> str:
+    """``approved``, or the reason a resume must not proceed.
+
+    The first call raises `GraphInterrupt`. A later call grants the decision
+    only when the bound payload matches this one.
+    """
+    from iris_ai.kernel.pause import approval_pin_failure
+
+    reason = approval_pin_failure(shown)
+    decision = interrupt(shown)
+    if decision == "approved":
+        return "approved"
+    if reason and "digest" in reason:
+        if shown.get("action") == "component_rollback":
+            return "rollback target changed after approval; refused"
+        return "staged files changed after approval; activation refused"
+    if reason:
+        return f"approval refused: {reason}"
+    if shown.get("action") == "component_rollback":
+        return "rollback cancelled"
+    return "activation cancelled"
+
+
 def component_tools(runtime: Runtime) -> list[Tool]:
     """Write a component into staging, check it, and activate it after approval."""
 
@@ -1275,25 +1298,16 @@ def component_tools(runtime: Runtime) -> list[Tool]:
         digest = component_digest(folder)
         files = sorted(path.name for path in folder.iterdir() if path.is_file())
         args = {"kind": kind, "name": name, "digest": digest}
-        payload = approval_payload("component_activate", args)
-        from iris_ai.kernel.pause import bound_approval
-
-        bound = bound_approval()
-        if bound is not None and bound.get("action") == "component_activate" and bound.get("digest") != payload["digest"]:
-            interrupt({"component": f"{kind}/{name}", "files": files, "component_digest": digest, **payload})
-            return _err("staged files changed after approval; activation refused")
-        decision = interrupt(
-            {
-                "component": f"{kind}/{name}",
-                "files": files,
-                "component_digest": digest,
-                **payload,
-            }
-        )
+        shown = {
+            "component": f"{kind}/{name}",
+            "files": files,
+            "component_digest": digest,
+            "changes": f"move staged {kind}/{name} into components/ and select it",
+            **approval_payload("component_activate", args),
+        }
+        decision = _honour_approval(shown)
         if decision != "approved":
-            return _err("activation cancelled")
-        if component_digest(folder) != digest:
-            return _err("staged files changed after approval; activation refused")
+            return _err(decision)
         try:
             return _ok(detail=activate(kind, name))
         except Exception as exc:  # noqa: BLE001 - the tool reports why activation stopped
@@ -1304,25 +1318,16 @@ def component_tools(runtime: Runtime) -> list[Tool]:
 
         active, previous = rollback_target(kind)
         args = {"kind": kind, "active": active, "previous": previous}
-        payload = approval_payload("component_rollback", args)
-        from iris_ai.kernel.pause import bound_approval
-
-        bound = bound_approval()
-        if bound is not None and bound.get("action") == "component_rollback" and bound.get("digest") != payload["digest"]:
-            interrupt({"kind": kind, "active": active, "previous": previous, **payload})
-            return _err("rollback target changed after approval; refused")
-        decision = interrupt(
-            {
-                "kind": kind,
-                "active": active,
-                "previous": previous,
-                **payload,
-            }
-        )
+        shown = {
+            "kind": kind,
+            "active": active,
+            "previous": previous,
+            "changes": f"switch {kind} from {active or '(none)'} back to {previous}",
+            **approval_payload("component_rollback", args),
+        }
+        decision = _honour_approval(shown)
         if decision != "approved":
-            return _err("rollback cancelled")
-        if rollback_target(kind) != (active, previous):
-            return _err("rollback target changed after approval; refused")
+            return _err(decision)
         return _ok(detail=rollback(kind))
 
     del runtime  # tools jail writes to components/.staging, not the sandbox
@@ -1334,9 +1339,18 @@ def component_tools(runtime: Runtime) -> list[Tool]:
             "component.toml is flat keys, not a [component] table: "
             'kind, name, entry = "component:ClassName", description. '
             "The class is ClassName(ctx, **options). "
-            "persona defines text(); context defines async assemble_turn; "
-            "capture defines async maybe_capture; consolidator defines async sleep. "
-            "Nothing outside that folder can be written.",
+            "persona defines text(self) -> str and nothing else: do not add "
+            "original, text, or message parameters. component_check calls text() "
+            "with no arguments, and so does iris doctor. Example: "
+            "class Haiku:\\n"
+            "    def __init__(self, ctx, **options):\\n"
+            "        self.ctx = ctx\\n"
+            "    def text(self) -> str:\\n"
+            "        return 'Answer in haiku.'\\n"
+            "context defines async assemble_turn; capture defines async maybe_capture; "
+            "consolidator defines async sleep. "
+            "Nothing outside that folder can be written. "
+            "Agent and untrusted turns cannot call this tool.",
             {
                 "type": "object",
                 "properties": {
@@ -1351,9 +1365,12 @@ def component_tools(runtime: Runtime) -> list[Tool]:
         ),
         Tool(
             "component_check",
-            "Import a staged component in a sandboxed process (no API keys, writes "
-            "confined to the component folder) and run test_component.py when that "
-            "file is present. Report whether it matches its contract.",
+            "Import a staged component in a child process and run test_component.py "
+            "when that file is present. The child has no API keys. It cannot write "
+            "outside the component folder, spawn a process, open a network connection, "
+            "or read files outside that folder, the interpreter, and the iris_ai package. "
+            "A persona's text() is called with no arguments. "
+            "Agent and untrusted turns cannot call this tool.",
             {
                 "type": "object",
                 "properties": {"kind": {"type": "string"}, "name": {"type": "string"}},
@@ -1486,7 +1503,16 @@ TOOL_NAMES: frozenset[str] = frozenset(
 # twice: tool_schemas hides them from non-owner prompts, and dispatch
 # refuses them even if a model hallucinates a call (a scheduled task that
 # emits `remember` must not write curated memory).
-NON_OWNER_BLOCKED = {"note", "remember", "dream_now", "skill_write"}
+NON_OWNER_BLOCKED = {
+    "note",
+    "remember",
+    "dream_now",
+    "skill_write",
+    # Staging and checking run code. An agent or untrusted turn cannot ask
+    # the owner, so it cannot reach them at all.
+    "component_write",
+    "component_check",
+}
 
 
 def _channel_promotions(runtime: Runtime) -> list[str]:

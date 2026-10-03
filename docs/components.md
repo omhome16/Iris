@@ -53,10 +53,14 @@ component fails its first few calls.
 ## Asking Iris to build one
 
 Say "implement this context technique in yourself." Iris writes into
-`components/.staging`, checks the code in a sandboxed process (no API keys,
-writes confined to the folder, and `test_component.py` runs when it is present),
-and calls `component_activate` only after showing you the result. Activation and
-rollback wait for your approval, pinned to the digest of the staged files.
+`components/.staging`, checks the code in a child process (no API keys, no
+writes outside the folder, no new processes, no network, no reads of `.env` or
+other files outside the folder and the interpreter, and `test_component.py`
+runs when it is present), and calls `component_activate` only after showing you
+the result. Activation and rollback wait for your approval, pinned to the digest
+of the staged files. A resume that arrives without that payload, or with a
+different one, is refused. Agent and untrusted turns cannot stage or check a
+component.
 Iris does not edit its own package, so upgrading Iris does not conflict with a
 component you or Iris added.
 

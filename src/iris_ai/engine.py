@@ -233,7 +233,9 @@ class Harness:
         from iris_ai.manifest import load_manifest
 
         reload_settings()
-        attach(self.runtime, load_manifest(Path(settings.harness_config)))
+        notice = attach(self.runtime, load_manifest(Path(settings.harness_config)))
+        if notice:
+            return f"reloaded config and components. {notice}"
         return "reloaded config and components"
 
     async def aclose(self) -> None:

@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import stat
 import sys
 import time
 from contextlib import AsyncExitStack
@@ -348,9 +349,16 @@ def run(
         if plan is not None:
             apply_plan(plan)
     files = files + _workspace_checks()
+    _restrict_env(Path(".env"))
     checks, recall_ok = asyncio.run(_verify(offline=offline))
     _render(files, checks, recall_ok=recall_ok)
     _next_steps()
     from iris_ai.cli.doctor import exit_code
 
     return exit_code(checks)
+
+
+def _restrict_env(path: Path) -> None:
+    """`.env` is owner-only, including a copy of the sample that holds no key yet."""
+    if path.is_file():
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)

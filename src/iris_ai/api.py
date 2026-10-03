@@ -51,9 +51,42 @@ def _postgres_mode() -> str:
     return "auto"
 
 
+def argv_bind_host(argv: list[str] | None = None) -> str | None:
+    """The ``--host`` uvicorn was started with, if the process argv names one."""
+    args = list(sys.argv if argv is None else argv)
+    for index, arg in enumerate(args):
+        if arg == "--host" and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith("--host="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def refuse_public_argv_bind(argv: list[str] | None = None) -> None:
+    """Fail closed before serving a non-loopback host with no token.
+
+    Per-request middleware sees the connection's local address, which is
+    ``127.0.0.1`` for a client on the same machine even when uvicorn was
+    started with ``--host 0.0.0.0``. The process arguments are what name the
+    bind. ``IRIS_HTTP_INSECURE=1`` is the explicit override.
+    """
+    host = argv_bind_host(argv)
+    if not host or host_is_loopback(host):
+        return
+    if settings.iris_api_token or os.environ.get("IRIS_HTTP_INSECURE", "").strip() == "1":
+        return
+    raise RuntimeError(
+        "refusing to listen on a non-loopback host without IRIS_API_TOKEN. "
+        "Set the token, or IRIS_HTTP_INSECURE=1 to override."
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Boot the engine through the library (`iris_ai.harness`), then serve.
+
+    A direct ``uvicorn --host 0.0.0.0`` without a token or
+    ``IRIS_HTTP_INSECURE=1`` stops here, before any route is served.
 
     The API is a *client* of the library, exactly like `iris chat`: it opens the
     same harness and hands the route handlers `app.state.runtime` /
@@ -65,6 +98,7 @@ async def lifespan(app: FastAPI):
     release connections) lives in `Harness.aclose`, which is where it ran
     before this module delegated — there is nothing left to do here.
     """
+    refuse_public_argv_bind()
     async with harness(postgres=_postgres_mode()) as brain:
         app.state.brain = brain
         app.state.runtime = brain.runtime
@@ -78,11 +112,13 @@ warn_if_unset()
 
 @app.middleware("http")
 async def refuse_public_bind_without_token(request: Request, call_next):
-    """A non-loopback bind without ``IRIS_API_TOKEN`` does not serve traffic.
+    """A request that arrived on a non-loopback address needs a token.
 
-    ``IRIS_HTTP_INSECURE=1`` is the explicit override. The ASGI server host is
-    what matters: uvicorn bound to ``0.0.0.0`` reports that host even when the
-    client is local. Test clients use ``testserver`` and stay allowed.
+    ``IRIS_HTTP_INSECURE=1`` is the explicit override. This sees the
+    connection's local address. A client on the same machine as
+    ``uvicorn --host 0.0.0.0`` still shows ``127.0.0.1`` here, so a public
+    bind is also refused at startup in ``refuse_public_argv_bind``. Test
+    clients use ``testserver`` and stay allowed.
     """
     insecure = os.environ.get("IRIS_HTTP_INSECURE", "").strip() == "1"
     server = request.scope.get("server")

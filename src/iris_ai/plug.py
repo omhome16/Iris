@@ -242,33 +242,72 @@ _CHECK_ENV = (
     "PYTHONDONTWRITEBYTECODE",
 )
 
+# Interpreter locations a check may read so `import` still works. The project
+# directory is not in this list: an editable install puts the repo on
+# `sys.path`, and allowing it would let staged code open `.env`.
+def _interpreter_read_roots() -> list[str]:
+    import iris_ai
+
+    roots: list[Path] = []
+    if sys.prefix:
+        roots.append(Path(sys.prefix).resolve())
+    roots.append(Path(os.__file__).resolve().parent)
+    roots.append(Path(iris_ai.__file__).resolve().parent)
+    unique: list[str] = []
+    for root in roots:
+        text = str(root)
+        if text not in unique:
+            unique.append(text)
+    return unique
+
+
 _CHECK_CHILD = r"""
 import json, os, runpy, sys
 from pathlib import Path
 
 sandbox = Path(sys.argv[1]).resolve()
+read_roots = [sandbox]
+for item in json.loads(sys.argv[2]):
+    read_roots.append(Path(item).resolve())
 os.chdir(sandbox)
 
-def _allowed(path) -> bool:
+def _inside(path, roots) -> bool:
     try:
-        resolved = Path(path).resolve()
-    except (OSError, ValueError):
+        resolved = Path(os.fsdecode(path)).resolve()
+    except (OSError, ValueError, TypeError):
         return False
-    return resolved == sandbox or sandbox in resolved.parents
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+_SPAWN = {"os.system", "os.fork", "os.forkpty", "os.posix_spawn", "os.spawn", "subprocess.Popen"}
+_NET = {"socket.connect", "socket.bind", "socket.sendto", "socket.sendmsg", "socket.getaddrinfo"}
+_MUTATE = {
+    "os.remove", "os.unlink", "os.rmdir", "os.rename", "os.replace", "os.truncate",
+    "os.mkdir", "os.makedirs", "os.chmod", "os.chown", "os.lchown", "os.link",
+    "os.symlink", "os.chflags", "shutil.rmtree",
+}
 
 def _audit(event, args):
-    if event == "open":
+    if event in _SPAWN or event.startswith(("os.exec", "os.spawn", "os.posix_spawn")):
+        raise PermissionError(f"process spawn blocked in component sandbox: {event}")
+    if event in _NET:
+        raise PermissionError(f"network blocked in component sandbox: {event}")
+    if event == "open" and args:
         path = args[0]
         mode = args[1] if len(args) > 1 else "r"
         flags = args[2] if len(args) > 2 else 0
         writing = isinstance(mode, str) and any(flag in mode for flag in "wax+")
         if isinstance(flags, int):
             writing = writing or bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT))
-        if writing and not _allowed(path):
-            raise PermissionError(f"write outside component sandbox: {path}")
-    elif event in {"os.remove", "os.unlink", "os.rmdir", "os.rename", "shutil.rmtree"} and args:
-        if not _allowed(args[0]):
-            raise PermissionError(f"write outside component sandbox: {args[0]}")
+        if writing:
+            if not _inside(path, [sandbox]):
+                raise PermissionError(f"write outside component sandbox: {path}")
+        elif not _inside(path, read_roots):
+            raise PermissionError(f"read outside component sandbox: {path}")
+        return
+    if event in _MUTATE:
+        for arg in args:
+            if isinstance(arg, (str, bytes, os.PathLike)) and not _inside(arg, [sandbox]):
+                raise PermissionError(f"write outside component sandbox: {arg}")
 
 sys.addaudithook(_audit)
 from iris_ai.plug import check_folder
@@ -308,15 +347,24 @@ def _check_env(folder: Path) -> dict[str, str]:
 def check_in_sandbox(folder: Path) -> tuple[bool, str]:
     """Contract-check a component, and run `test_component.py` when it exists.
 
-    The child process inherits no API keys and cannot write outside the
-    component folder. This is the check both the tool and `iris components
-    check` use, so staged code is not imported in the Iris process.
+    The child inherits no API keys. An audit hook blocks writes outside the
+    folder (including mkdir, chmod, and symlink), blocks new processes and
+    network connections, and blocks reads outside the folder, the interpreter,
+    and the `iris_ai` package. Native code loaded through ctypes is not
+    contained. This is the check both the tool and `iris components check` use,
+    so staged code is not imported in the Iris process.
     """
     if not (folder / "component.py").is_file():
         return False, f"no component.py in {folder}"
     try:
         proc = subprocess.run(
-            [sys.executable, "-c", _CHECK_CHILD, str(folder.resolve())],
+            [
+                sys.executable,
+                "-c",
+                _CHECK_CHILD,
+                str(folder.resolve()),
+                json.dumps(_interpreter_read_roots()),
+            ],
             capture_output=True,
             text=True,
             timeout=30,
@@ -357,6 +405,17 @@ def check_folder(folder: Path) -> tuple[bool, str]:
         cls = load_class(folder)
     except Exception as exc:  # noqa: BLE001 - the check reports the import error
         return False, f"import failed: {type(exc).__name__}: {exc}"
+    if kind == "persona":
+        # `iris doctor` calls `text()` with no arguments. The check has to do
+        # the same, or a persona whose signature is `text(self, original)`
+        # passes here and then fails the next boot.
+        try:
+            rendered = construct(cls, None).text()
+        except Exception as exc:  # noqa: BLE001 - the check reports the contract error
+            return False, f"persona text() failed: {type(exc).__name__}: {exc}"
+        if not isinstance(rendered, str):
+            return False, "persona text() must return str"
+        return True, f"{kind}/{folder.name} matches the text contract"
     if required and not hasattr(cls, required):
         return False, f"{kind} component must define {required}()"
     return True, f"{kind}/{folder.name} matches the {required or kind} contract"
@@ -438,8 +497,9 @@ def rollback(kind: str) -> str:
     """Select the previous component for this kind."""
     data = _read_lock()
     entry = data.get(kind) or {}
+    active = str(entry.get("active") or "")
     previous = str(entry.get("previous") or "")
-    if not previous:
+    if not previous or previous == active:
         previous = _builtin_default(kind)
     _select(kind, previous)
     entry["active"] = previous
@@ -532,8 +592,17 @@ def _select(kind: str, name: str) -> None:
 
 def _remember(kind: str, name: str) -> None:
     data = _read_lock()
-    current = str((data.get(kind) or {}).get("active") or _builtin_default(kind))
-    data[kind] = {"active": name, "previous": current, "fails": 0}
+    entry = data.get(kind) or {}
+    current = str(entry.get("active") or _builtin_default(kind))
+    if current == name:
+        # Re-activating the component that is already selected must not point
+        # `previous` at itself, or rollback reports success and changes nothing.
+        previous = str(entry.get("previous") or "")
+        if not previous or previous == name:
+            previous = _builtin_default(kind)
+    else:
+        previous = current
+    data[kind] = {"active": name, "previous": previous, "fails": 0}
     _write_lock(data)
 
 

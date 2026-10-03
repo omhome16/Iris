@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import stat
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,7 @@ def checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         "[channels]\nenabled = []\n", encoding="utf-8"
     )
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
     monkeypatch.setattr(settings, "harness_config", "config/harness.toml")
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path / "workspace"))
     monkeypatch.setattr(settings, "sandbox_dir", str(tmp_path / "workspace" / "sandbox"))
@@ -99,6 +101,7 @@ def test_init_creates_the_sample_config_and_proves_the_setup(checkout: Path):
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 0
     assert (checkout / ".env").is_file()
+    assert stat.S_IMODE((checkout / ".env").stat().st_mode) == 0o600
     assert (checkout / "config" / "harness.toml").is_file()
 
     out = result.stdout
@@ -145,8 +148,11 @@ def test_init_seeds_a_neutral_workspace_the_first_time(checkout: Path):
     assert (workspace / "README.md").is_file()
     assert "Never edited by the agent" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
     # Color codes sit between the path and the colon, and a narrow console wraps.
-    flat = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout).replace("\n", "")
-    assert "AGENTS.md: created from" in flat
+    # A long temp path wraps inside the filename (`AGENTS .md`). Collapse
+    # whitespace and allow that break, and still reject a real "kept" label.
+    flat = re.sub(r"\s+", " ", re.sub(r"\x1b\[[0-9;]*m", "", result.stdout))
+    assert re.search(r"workspace/AGENTS\s*\.md:\s*created from", flat)
+    assert not re.search(r"workspace/AGENTS\s*\.md:\s*kept", flat)
 
 
 def test_init_never_overwrites_the_workspace_the_owner_edited(checkout: Path):
