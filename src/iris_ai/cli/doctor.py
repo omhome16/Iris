@@ -181,6 +181,79 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
         )
 
     checks.append(_secret_store_check(env))
+    checks.extend(_component_checks(root))
+    return checks
+
+
+def _component_checks(root: Path) -> list[Check]:
+    """Import and construct every selected local or dotted component.
+
+    A name that cannot load is a failure, with the rollback command as the fix.
+    Built-in names are skipped: they have no folder to import.
+    """
+    import tomllib
+
+    manifest = root / "config" / "harness.toml"
+    if not manifest.is_file():
+        return []
+    try:
+        with manifest.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return [Check("components", "fail", f"harness.toml could not be read ({exc})", fix=cli_cmd("init"))]
+    section = data.get("components") or {}
+    if not isinstance(section, dict):
+        return []
+    from iris_ai.components import OPTIONS, load_symbol
+    from iris_ai.plug import check_folder, construct, load_class, local_folder
+
+    checks: list[Check] = []
+    components_dir = root / "components"
+    for kind in ("context", "persona", "capture", "consolidator", "memory", "channel"):
+        name = str(section.get(kind) or "").strip()
+        if not name:
+            continue
+        builtin = set(OPTIONS.get(kind, ()))
+        folder = local_folder(kind, name, root=components_dir)
+        dotted = ":" in name
+        if folder is None and not dotted:
+            if name in builtin or name in {"default", "off", "dreaming", "sqlite", "terminal"}:
+                continue
+            checks.append(
+                Check(
+                    f"component {kind}",
+                    "fail",
+                    f"{name} is selected but there is no components/{kind}/{name} folder",
+                    fix=cli_cmd("components", "rollback", kind),
+                )
+            )
+            continue
+        if folder is None and name in builtin:
+            continue
+        try:
+            if folder is not None:
+                ok, detail = check_folder(folder)
+                if not ok:
+                    raise RuntimeError(detail)
+                component = construct(load_class(folder), None)
+            else:
+                component = construct(load_symbol(name), None)
+                detail = name
+            if kind == "persona":
+                text = component.text()
+                if not isinstance(text, str):
+                    raise TypeError("text() must return a string")
+            checks.append(Check(f"component {kind}", "ok", str(detail)))
+        except Exception as exc:  # noqa: BLE001 - doctor reports the load failure
+            checks.append(
+                Check(
+                    f"component {kind}",
+                    "fail",
+                    f"{name} cannot load ({type(exc).__name__}: {exc}). "
+                    "Iris will boot with the built-in instead.",
+                    fix=cli_cmd("components", "rollback", kind),
+                )
+            )
     return checks
 
 
