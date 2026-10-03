@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli.main import app
 from iris_ai.tasks import CALENDAR, INTERVAL, TaskStore, next_run_at
 
@@ -38,7 +39,7 @@ def test_an_empty_schedule_explains_the_built_ins(tmp_path: Path, monkeypatch):
     _workspace(tmp_path, monkeypatch)
     result = runner.invoke(app, ["cron", "list"])
     assert result.exit_code == 0
-    assert "no scheduled jobs" in result.stdout.lower()
+    assert "no scheduled jobs" in flat(result.stdout).lower()
     assert "nightly" in result.stdout.lower()  # says where the built-ins live
 
 
@@ -48,9 +49,10 @@ def test_list_shows_a_job_with_its_schedule_and_counters(tmp_path: Path, monkeyp
     store.add(instruction="weekly review", run_at=_now(), kind=CALENDAR, at="18:00", weekdays="sun")
     result = runner.invoke(app, ["cron", "list"])
     assert result.exit_code == 0
-    assert "every 2 hours" in result.stdout
-    assert "at 18:00 on sun" in result.stdout
-    assert "water the plants" not in result.stdout  # the table shows metadata, not prose
+    shown = flat(result.stdout)
+    assert "every 2 hours" in shown
+    assert "at 18:00 on sun" in shown
+    assert "water the plants" not in shown  # the table shows metadata, not prose
 
 
 def test_a_disabled_job_is_visible_as_disabled(tmp_path: Path, monkeypatch):
@@ -67,7 +69,7 @@ def test_add_requires_exactly_one_schedule(tmp_path: Path, monkeypatch):
     _workspace(tmp_path, monkeypatch)
     none = runner.invoke(app, ["cron", "add", "-i", "do a thing"])
     assert none.exit_code == 2
-    assert "pick exactly one schedule" in none.stdout
+    assert "pick exactly one schedule" in flat(none.stdout)
 
     both = runner.invoke(app, ["cron", "add", "--every", "1 hour", "--at", "09:00", "-i", "x"])
     assert both.exit_code == 2

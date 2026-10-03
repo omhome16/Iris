@@ -18,7 +18,7 @@ into place only after the owner approves `component_activate`.
 
 - `context`: `async def assemble_turn(self, user_message, *, session_id) -> tuple[str, list[str]]`
 - `memory`: `async def search(self, query, **kwargs)` plus `connect` and `close`
-- `persona`: `def text(self) -> str`
+- `persona`: `def text(self) -> str`. `text` takes no arguments besides `self`. Do not add `original`, `text`, or `message`. `component_check` and `iris doctor` both call `text()` that way; a signature that needs another argument fails both.
 - `capture`: `async def maybe_capture(self, *, user_message, reply, known_context) -> str`
 - `consolidator`: `async def sleep(self)`
 

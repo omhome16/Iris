@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+import stat
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.capabilities.memory import MEMORY_BACKENDS
 from iris_ai.capabilities.models import MODELS
 from iris_ai.cli.main import app
@@ -78,6 +80,7 @@ def checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         "[channels]\nenabled = []\n", encoding="utf-8"
     )
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WORKSPACE_DIR", str(tmp_path / "workspace"))
     monkeypatch.setattr(settings, "harness_config", "config/harness.toml")
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path / "workspace"))
     monkeypatch.setattr(settings, "sandbox_dir", str(tmp_path / "workspace" / "sandbox"))
@@ -99,9 +102,10 @@ def test_init_creates_the_sample_config_and_proves_the_setup(checkout: Path):
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 0
     assert (checkout / ".env").is_file()
+    assert stat.S_IMODE((checkout / ".env").stat().st_mode) == 0o600
     assert (checkout / "config" / "harness.toml").is_file()
 
-    out = result.stdout
+    out = flat(result.stdout)
     assert "Iris setup" in out
     assert "model check" in out and "answered in" in out  # the probe actually ran
     assert "memory store" in out and "sqlite" in out
@@ -144,9 +148,12 @@ def test_init_seeds_a_neutral_workspace_the_first_time(checkout: Path):
     assert (workspace / "AGENTS.md").is_file()
     assert (workspace / "README.md").is_file()
     assert "Never edited by the agent" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
-    # Color codes sit between the path and the colon, and a narrow console wraps.
-    flat = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout).replace("\n", "")
-    assert "AGENTS.md: created from" in flat
+    # Rich wraps a long temp path anywhere, including inside "AGENTS.md".
+    # Dropping every whitespace character makes the label independent of width
+    # and still rejects a real "kept" line.
+    flat = re.sub(r"\s+", "", re.sub(r"\x1b\[[0-9;]*m", "", result.stdout))
+    assert "AGENTS.md:createdfrom" in flat
+    assert "AGENTS.md:kept" not in flat
 
 
 def test_init_never_overwrites_the_workspace_the_owner_edited(checkout: Path):
@@ -159,7 +166,7 @@ def test_init_never_overwrites_the_workspace_the_owner_edited(checkout: Path):
     assert runner.invoke(app, ["init"]).exit_code == 0
     assert runner.invoke(app, ["init", "--force"]).exit_code == 0
     assert (workspace / "AGENTS.md").read_text(encoding="utf-8") == mine
-    assert "kept (already exists)" in runner.invoke(app, ["init"]).stdout
+    assert "kept (already exists)" in flat(runner.invoke(app, ["init"]).stdout)
 
 
 def test_init_fails_when_the_provider_cannot_answer(checkout: Path, monkeypatch):
@@ -167,7 +174,7 @@ def test_init_fails_when_the_provider_cannot_answer(checkout: Path, monkeypatch)
     _install_model(monkeypatch, SetupLLM(fail=True))
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 1
-    assert "no provider key accepted" in result.stdout
+    assert "no provider key accepted" in flat(result.stdout)
 
 
 def test_init_offline_writes_config_without_calling_anything(checkout: Path, monkeypatch):
@@ -176,7 +183,7 @@ def test_init_offline_writes_config_without_calling_anything(checkout: Path, mon
     result = runner.invoke(app, ["init", "--offline"])
     assert result.exit_code == 0
     assert llm.completions == 0
-    assert "skipped (--offline)" in result.stdout
+    assert "skipped (--offline)" in flat(result.stdout)
     assert (checkout / "config" / "harness.toml").is_file()
 
 
@@ -201,7 +208,7 @@ def test_migrate_rebuilds_the_index_from_the_markdown(checkout: Path):
 
     result = runner.invoke(app, ["migrate"])
     assert result.exit_code == 0
-    assert "re-indexed into sqlite" in result.stdout
+    assert "re-indexed into sqlite" in flat(result.stdout)
 
     text = env.read_text(encoding="utf-8")
     assert "MEMORY_BACKEND=sqlite" in text
@@ -219,7 +226,7 @@ def test_migrate_dry_run_touches_nothing(checkout: Path):
     env.write_text("MEMORY_BACKEND=pgvector\n", encoding="utf-8")
     result = runner.invoke(app, ["migrate", "--dry-run"])
     assert result.exit_code == 0
-    assert "would change" in result.stdout
+    assert "would change" in flat(result.stdout)
     assert env.read_text(encoding="utf-8") == "MEMORY_BACKEND=pgvector\n"
     assert not Path(settings.sqlite_path).exists(), "a dry run must not create the store"
 
@@ -228,11 +235,11 @@ def test_migrate_refuses_the_degraded_stand_in(checkout: Path):
     """`null` stores nothing: migrating to it would lose recall while reporting ok."""
     result = runner.invoke(app, ["migrate", "--to", "null"])
     assert result.exit_code == 1
-    assert "degraded stand-in" in result.stdout
+    assert "degraded stand-in" in flat(result.stdout)
 
 
 def test_migrate_names_the_known_backends_on_a_typo(checkout: Path):
     result = runner.invoke(app, ["migrate", "--to", "sqlit"])
     assert result.exit_code == 1
-    assert "unknown memory backend" in result.stdout
+    assert "unknown memory backend" in flat(result.stdout)
     assert "sqlite" in result.stdout

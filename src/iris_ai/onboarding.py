@@ -143,7 +143,8 @@ class OnboardingWizard:
         self.state.owner_name = owner_name.strip()
         self.state.personality = persona.strip()
         self.state.tone = tone.strip()
-        self.state.timezone = timezone.strip() or "UTC"
+        requested = timezone.strip() or "UTC"
+        self.state.timezone = requested if try_zone(requested) is not None else "UTC"
         self.state.sleep_pref = str(sleep_hour).strip() or "4"
         self.state.asked = True
         self.save()

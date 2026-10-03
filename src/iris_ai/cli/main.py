@@ -355,10 +355,13 @@ def components(
 @app.command()
 def serve(
     channel: str = typer.Argument("terminal", help="terminal | telegram | http"),
+    host: str = typer.Option("127.0.0.1", "--host", help="HTTP bind address."),
+    port: int = typer.Option(8000, "--port", help="HTTP port."),
+    insecure: bool = typer.Option(False, "--insecure", help="Allow a non-loopback HTTP bind without IRIS_API_TOKEN."),
 ) -> None:
     """Start a face: the terminal, Telegram, or the HTTP API."""
     serve_mod = _load("serve")
-    raise typer.Exit(code=serve_mod.run(channel))
+    raise typer.Exit(code=serve_mod.run(channel, host=host, port=port, insecure=insecure))
 
 
 @app.command("new")

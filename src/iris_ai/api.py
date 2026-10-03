@@ -21,11 +21,11 @@ from pathlib import Path
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from iris_ai import background
+from iris_ai import __version__, background
 from iris_ai.agent.chat import ApprovalRequired, ChatGraph
 from iris_ai.agent.runtime import Runtime
 from iris_ai.config import settings
@@ -35,35 +35,115 @@ from iris_ai.memory.forgetting import ForgettingEngine, decay_curve, supersede_i
 from iris_ai.memory.index import MemoryIndex
 from iris_ai.memory.provenance import Origin
 from iris_ai.onboarding import OnboardingWizard
-from iris_ai.security import require_token, warn_if_unset
+from iris_ai.security import host_is_loopback, require_token, warn_if_unset
 from iris_ai.text import text_of
 from iris_ai.voice import transcribe
 
 log = logging.getLogger("iris")
 
 
+def _postgres_mode() -> str:
+    """SQLite installs boot. pgvector or a pinned Postgres checkpointer still require it."""
+    memory = (settings.memory_backend or "").strip().lower()
+    threads = (settings.checkpointer_backend or "").strip().lower()
+    if memory == "pgvector" or threads == "postgres":
+        return "require"
+    return "auto"
+
+
+def argv_bind_host(argv: list[str] | None = None) -> str | None:
+    """The ``--host`` uvicorn was started with, if the process argv names one."""
+    args = list(sys.argv if argv is None else argv)
+    for index, arg in enumerate(args):
+        if arg == "--host" and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith("--host="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def refuse_public_argv_bind(argv: list[str] | None = None) -> None:
+    """Fail closed before serving a non-loopback host with no token.
+
+    Per-request middleware sees the connection's local address, which is
+    ``127.0.0.1`` for a client on the same machine even when uvicorn was
+    started with ``--host 0.0.0.0``. The process arguments are what name the
+    bind. ``IRIS_HTTP_INSECURE=1`` is the explicit override.
+    """
+    host = argv_bind_host(argv)
+    if not host or host_is_loopback(host):
+        return
+    if settings.iris_api_token or os.environ.get("IRIS_HTTP_INSECURE", "").strip() == "1":
+        return
+    # SystemExit is a BaseException, so Starlette's lifespan handler (which
+    # catches Exception and prints a traceback) does not wrap it. The message
+    # is the whole refusal.
+    print(
+        "refusing to listen on a non-loopback host without IRIS_API_TOKEN. "
+        "Set the token, or IRIS_HTTP_INSECURE=1 to override.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Boot the engine through the library (`iris_ai.harness`), then serve.
 
+    A direct ``uvicorn --host 0.0.0.0`` without a token or
+    ``IRIS_HTTP_INSECURE=1`` stops here, before any route is served. The
+    refusal is a one-line message and ``os._exit``: raising out of the
+    lifespan makes Starlette print a traceback.
+
     The API is a *client* of the library, exactly like `iris chat`: it opens the
     same harness and hands the route handlers `app.state.runtime` /
-    `app.state.graph`. `postgres="require"` is the API's contract — a missing
-    database is a boot failure here, whereas the CLI degrades instead.
+    `app.state.graph`. A default SQLite install uses `postgres="auto"`.
+    `MEMORY_BACKEND=pgvector` or `CHECKPOINTER_BACKEND=postgres` still fails
+    the boot when that database is missing.
 
     Shutdown ordering (stop taking work, drain the fire-and-forget passes,
     release connections) lives in `Harness.aclose`, which is where it ran
     before this module delegated — there is nothing left to do here.
     """
-    async with harness(postgres="require") as brain:
+    try:
+        refuse_public_argv_bind()
+    except SystemExit as exc:
+        os._exit(exc.code if isinstance(exc.code, int) else 1)
+    async with harness(postgres=_postgres_mode()) as brain:
         app.state.brain = brain
         app.state.runtime = brain.runtime
         app.state.graph = brain.graph
         yield
 
 
-app = FastAPI(title="Iris", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Iris", version=__version__, lifespan=lifespan)
 warn_if_unset()
+
+
+@app.middleware("http")
+async def refuse_public_bind_without_token(request: Request, call_next):
+    """A request that arrived on a non-loopback address needs a token.
+
+    ``IRIS_HTTP_INSECURE=1`` is the explicit override. This sees the
+    connection's local address. A client on the same machine as
+    ``uvicorn --host 0.0.0.0`` still shows ``127.0.0.1`` here, so a public
+    bind is also refused at startup in ``refuse_public_argv_bind``. Test
+    clients use ``testserver`` and stay allowed.
+    """
+    insecure = os.environ.get("IRIS_HTTP_INSECURE", "").strip() == "1"
+    server = request.scope.get("server")
+    server_host = server[0] if isinstance(server, tuple) and server else ""
+    if not insecure and not settings.iris_api_token and server_host and not host_is_loopback(server_host):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": (
+                    "refusing a non-loopback bind without IRIS_API_TOKEN. "
+                    "Set the token, or IRIS_HTTP_INSECURE=1 to override."
+                )
+            },
+        )
+    return await call_next(request)
 
 
 class ChatRequest(BaseModel):

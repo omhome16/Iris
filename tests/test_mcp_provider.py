@@ -479,6 +479,36 @@ async def test_a_boot_with_no_declared_file_has_no_pool_capability(tmp_path, mon
         assert pool.tools(None) == []  # type: ignore[arg-type]
 
 
+async def test_an_ask_mcp_tool_can_be_approved_when_the_payload_matches(monkeypatch):
+    """Policy `ask` used to interrupt without a digest, so a resume was always refused."""
+    from iris_ai.kernel.pause import GraphInterrupt, set_resume_decision
+
+    spec = McpServerSpec(
+        name=PROBE,
+        transport="http",
+        url="http://127.0.0.1:9/mcp",
+        trust="owner",
+        approval="always",
+    )
+    real = client_mod.open_server
+    monkeypatch.setattr(provider_mod, "open_server", lambda spec: real(spec, server=_probe_server()))
+    set_resume_decision(None)
+    async with McpPool([spec]) as pool:
+        handler = {tool.name: tool for tool in pool.tools(None)}[f"{PROBE}/echo"]
+        with pytest.raises(GraphInterrupt) as raised:
+            await handler.handler(text="hi")
+        pending = raised.value.value
+        assert pending["type"] == "approval"
+        assert pending["digest"]
+        set_resume_decision("approved")
+        refused = json.loads(await handler.handler(text="hi"))
+        assert refused["ok"] is False
+        set_resume_decision("approved", bound=pending)
+        allowed = json.loads(await handler.handler(text="hi"))
+        assert allowed["ok"] is True
+    set_resume_decision(None)
+
+
 async def test_every_mcp_tool_is_described_as_untrusted_data(no_services):
     """The model is told the source, not just the name — the cheapest boundary."""
     async with harness(services=False) as brain:

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli import guards as guards_mod
 from iris_ai.cli.main import app
 from iris_ai.config import settings
@@ -45,8 +46,9 @@ def test_the_command_prints_the_chain_and_todays_spend(monkeypatch, tmp_path: Pa
     result = runner.invoke(app, ["guards"])
 
     assert result.exit_code == 0
+    shown = flat(result.stdout)
     for expected in ("budget", "circuit", "spiral", "spend", "1,234", "no ceiling"):
-        assert expected in result.stdout
+        assert expected in shown
     # The reserved bucket is declared in code but not shown as a metric.
     assert "tool_schema" not in result.stdout
 
@@ -91,4 +93,4 @@ def test_it_says_that_live_circuit_state_is_not_in_this_view(monkeypatch, tmp_pa
     printing \"none\" would be a lie told confidently."""
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     result = runner.invoke(app, ["guards"])
-    assert "GET /guards" in result.stdout
+    assert "GET /guards" in flat(result.stdout)

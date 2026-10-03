@@ -22,12 +22,13 @@ that was simply not up yet is retried in the background (`start_retry`), because
 find that out is not a workflow. A server that *cannot* be reached — stdio under
 an event loop that cannot spawn it — is a distinct, permanent outcome, so nothing
 pretends it might fix itself.
-- **Nothing is wrapped in approval *here*.** The verdict from `policy_for` is
-  registered as the tool's policy, so a denied tool never reaches the surface and
-  never reaches `dispatch`. The one thing a plain policy cannot do is *pause a
-  turn*, so an `ask` verdict raises the approval interrupt inside the handler —
-  the same pattern `forget` and the computer session already use, and the reason
-  the gate is enforced rather than merely declared.
+- **An `ask` verdict pauses inside the handler.** The verdict from `policy_for`
+  is registered as the tool's policy, so a denied tool never reaches the surface
+  and never reaches `dispatch`. The one thing a plain policy cannot do is *pause a
+  turn*, so an `ask` verdict raises an approval interrupt that carries a digest
+  of the call — the same pattern `forget` and the computer session already use.
+  Without that digest a resume is refused, because an approval that cannot be
+  pinned to the call the owner saw is not an approval.
 
 Deliberately not here: screening a server's *output* for injected instructions
 (Phase 4 — the tool result is untrusted data either way, and `memory_result_payload`
@@ -301,6 +302,14 @@ class McpPool:
             if decision.denied:
                 return json.dumps({"ok": False, "tool": name, "error": decision.reason}, ensure_ascii=False)
             if decision.needs_approval:
+                from iris_ai.agent.runtime import current_tool_call
+                from iris_ai.approval import Envelope
+
+                envelope = Envelope(
+                    action=name,
+                    call_id=current_tool_call.get(),
+                    args={"server": server.name, "tool": tool.name, "arguments": arguments},
+                ).payload()
                 decision_payload = interrupt(
                     {
                         "external_tool": name,
@@ -310,6 +319,8 @@ class McpPool:
                         "read_only": tool.read_only,
                         "trust": server.spec.trust,
                         "policy_reason": decision.reason,
+                        "changes": f"call {tool.name} on the {server.name} MCP server",
+                        **envelope,
                     }
                 )
                 if decision_payload != "approved":

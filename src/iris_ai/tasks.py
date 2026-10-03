@@ -287,6 +287,7 @@ class Task:
     failures: int = 0
     last_run: str = ""
     last_outcome: str = ""
+    last_reply: str = ""
     disabled: bool = False
 
     def to_dict(self) -> dict:
@@ -347,6 +348,7 @@ class TaskStore:
             failures=int(t.get("failures", 0) or 0),
             last_run=str(t.get("last_run", "")),
             last_outcome=str(t.get("last_outcome", "")),
+            last_reply=str(t.get("last_reply", "")),
             disabled=bool(t.get("disabled", False)),
         )
 
@@ -584,23 +586,37 @@ class TaskScheduler:
             except Exception as exc:  # noqa: BLE001
                 ok = False
                 log.warning("delivering scheduled task %s failed: %s", task.id, exc)
+        shown = " ".join(str(reply).split())[:240]
+        log.info("scheduled task %s fired: %s", task.id, shown or "(empty reply)")
+        files = getattr(self.runtime, "files", None)
+        if files is not None and shown:
+            try:
+                files.append_daily(f"Scheduled task {task.id}: {shown}", stamp=True)
+            except Exception as exc:  # noqa: BLE001 - the job already ran
+                log.warning("scheduled task %s reply was not written to the daily note: %s", task.id, exc)
 
-        self._record_run(task, ok=ok)
+        self._record_run(task, ok=ok, reply=shown)
 
-    def _record_run(self, task: Task, *, ok: bool) -> None:
-        """Persist the outcome of one run and decide whether to keep the job."""
+    def _record_run(self, task: Task, *, ok: bool, reply: str = "") -> None:
+        """Persist the outcome of one run and decide whether to keep the job.
+
+        The task object closed over at registration time still has the old
+        `runs` count. Read the store first so a recurring job counts every fire.
+        """
         now = datetime.now(zone(settings.iris_timezone)).isoformat(timespec="seconds")
-        if not task.recurring:
-            self.store.remove(task.id)
+        fresh = self.store.get(task.id) or task
+        if not fresh.recurring:
+            self.store.remove(fresh.id)
             return
-        failures = 0 if ok else task.failures + 1
+        failures = 0 if ok else fresh.failures + 1
         disabled = failures >= settings.cron_max_failures
         self.store.update(
-            task.id,
-            runs=task.runs + 1,
+            fresh.id,
+            runs=fresh.runs + 1,
             failures=failures,
             last_run=now,
             last_outcome="ok" if ok else "error",
+            last_reply=reply[:240],
             disabled=disabled,
         )
         if disabled:

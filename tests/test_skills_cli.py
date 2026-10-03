@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli.main import app
 from iris_ai.config import settings
 
@@ -75,8 +76,8 @@ def test_list_marks_disabled_and_scored_skills(workspace: Path):
 def test_show_prints_the_manifest_and_the_procedure(workspace: Path):
     result = _run("show", "pdf-notes")
     assert result.exit_code == 0, result.output
-    assert "Extract notes" in result.output
-    assert "Step 1: open the document." in result.output
+    assert "Extract notes" in flat(result.output)
+    assert "Step 1: open the document." in flat(result.output)
     assert "memory_search" in result.output
     assert "1.2" in result.output
 

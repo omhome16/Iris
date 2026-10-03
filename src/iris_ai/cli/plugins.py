@@ -179,8 +179,8 @@ def _mcp(live: bool = False) -> int:
         out.print(f"[dim]switched off in config: {', '.join(offline)}[/dim]")
     if not live:
         out.print(
-            "[dim]tool lists come from a connection: re-run with --live to connect and "
-            "show what each server offers, and the policy each tool would get.[/dim]"
+            "[dim]tool lists come from a connection: `iris plugins mcp --live` connects and "
+            "shows what each server offers, and the policy each tool would get.[/dim]"
         )
     out.print(
         "[dim]edit the file (MCP_SERVERS_FILE), or set `trust: owner` / "

@@ -27,6 +27,11 @@ services:
       #   sudo chown -R 10001:10001 ./workspace
       WORKSPACE_DIR: /data/workspace
       TELEGRAM_MCP_URL: http://telegram-mcp:8100/mcp
+      # uvicorn listens on 0.0.0.0 inside the container. The published port is
+      # loopback. IRIS_HTTP_INSECURE lets that in-container bind serve the
+      # healthcheck; a raw `docker run` without this (and without a token)
+      # refuses the public bind.
+      IRIS_HTTP_INSECURE: "1"
       # The bridge persists the owner chat id it learns from /start. Share that
       # file with the core, otherwise `_sync_owner_chat_id` can never find it
       # inside the container and morning briefs / scheduled-task delivery stay

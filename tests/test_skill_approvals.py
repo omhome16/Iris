@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli.main import app
 from iris_ai.config import settings
 from iris_ai.memory.files import WorkspaceFiles
@@ -241,10 +242,8 @@ def test_the_cli_approves_a_changed_third_party_skill(tmp_path, monkeypatch):
     )
     refused = runner.invoke(app, ["skills", "validate"])
     assert refused.exit_code == 1
-    # Collapse whitespace first: the CLI wraps its output to the console width,
-    # so a phrase can be split across lines (the message embeds a filesystem path
-    # and a digest, and a narrow console breaks it mid-phrase).
-    assert "approve from-a-package" in " ".join(refused.output.split())
+    # The message embeds a path and a digest, so a narrow console wraps mid-phrase.
+    assert "approve from-a-package" in flat(refused.output)
 
     approved = runner.invoke(app, ["skills", "approve", "from-a-package"])
     assert approved.exit_code == 0, approved.output
@@ -265,7 +264,7 @@ def test_the_cli_will_not_approve_an_owner_authored_skill(tmp_path, monkeypatch)
 
     result = CliRunner().invoke(app, ["skills", "approve", "mine"])
     assert result.exit_code == 1
-    assert "nothing to re-approve" in result.output
+    assert "nothing to re-approve" in flat(result.output)
 
 
 def test_the_cli_names_the_skill_when_approve_has_no_argument(tmp_path, monkeypatch):
@@ -273,4 +272,4 @@ def test_the_cli_names_the_skill_when_approve_has_no_argument(tmp_path, monkeypa
     monkeypatch.setattr(settings, "skills_builtin_dir", "")
     result = CliRunner().invoke(app, ["skills", "approve"])
     assert result.exit_code == 2
-    assert "needs a skill name" in result.output
+    assert "needs a skill name" in flat(result.output)

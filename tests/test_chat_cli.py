@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 import pytest
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli import chat as chat_mod
 from iris_ai.cli.main import app
 
@@ -69,7 +70,7 @@ def test_once_runs_a_single_turn_and_exits(install):
     brain = install()
     result = runner.invoke(app, ["chat", "--once", "hi"])
     assert result.exit_code == 0
-    assert "hello from iris" in result.stdout
+    assert "hello from iris" in flat(result.stdout)
     assert brain.sessions == ["cli"]
     # The CLI is a client, not a service: it must not start the scheduler or
     # claim the Telegram channel.
@@ -89,8 +90,8 @@ def test_degraded_mode_is_announced_before_the_reply(install):
     result = runner.invoke(app, ["chat", "--once", "hi"])
     assert result.exit_code == 0
     assert "degraded" in result.stderr
-    assert "no Postgres" in result.stderr
-    assert "hello from iris" in result.stdout
+    assert "no Postgres" in flat(result.stderr)
+    assert "hello from iris" in flat(result.stdout)
     assert "degraded" not in result.stdout
 
 
@@ -98,7 +99,7 @@ def test_repl_runs_a_turn_then_exits_on_command(install):
     brain = install()
     result = runner.invoke(app, ["chat"], input="hello\n/exit\n")
     assert result.exit_code == 0
-    assert "hello from iris" in result.stdout
+    assert "hello from iris" in flat(result.stdout)
     assert brain.sessions == ["cli"]
 
 
@@ -136,8 +137,8 @@ def test_missing_provider_key_is_actionable(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(chat_mod, "_provider_configured", lambda: False)
     result = runner.invoke(app, ["chat", "--once", "hi"])
     assert result.exit_code == 1
-    assert "no LLM provider key" in result.stdout
-    assert "iris doctor" in result.stdout
+    assert "no LLM provider key" in flat(result.stdout)
+    assert "iris doctor" in flat(result.stdout)
 
 
 def test_provider_detection_accepts_ollama(monkeypatch: pytest.MonkeyPatch):

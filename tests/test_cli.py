@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai import __version__
 from iris_ai.cli.main import app
 
@@ -70,7 +71,7 @@ def test_help_short_and_long_flag(flag: str):
 def test_version_output():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert f"iris {__version__}" in result.stdout
+    assert f"iris {__version__}" in flat(result.stdout)
     assert "python" in result.stdout
     assert "package" in result.stdout
 
@@ -79,7 +80,7 @@ def test_version_output():
 def test_version_global_flags(flag: str):
     result = runner.invoke(app, [flag])
     assert result.exit_code == 0
-    assert f"iris {__version__}" in result.stdout
+    assert f"iris {__version__}" in flat(result.stdout)
 
 
 def test_no_args_is_help():
@@ -153,7 +154,7 @@ def test_doctor_missing_env_is_warn_not_fail(tmp_path: Path, monkeypatch: pytest
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "warn" in result.stdout
-    assert "cp .env.example .env" in result.stdout
+    assert "cp .env.example .env" in flat(result.stdout)
 
 
 def test_doctor_sees_keys_only_in_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -165,7 +166,7 @@ def test_doctor_sees_keys_only_in_dotenv(tmp_path: Path, monkeypatch: pytest.Mon
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
     assert "GEMINI_API_KEY" in result.stdout
-    assert "none set" not in result.stdout
+    assert "none set" not in flat(result.stdout)
     assert "from-dotenv-not-process-env" not in result.stdout
 
 
@@ -181,7 +182,7 @@ def test_doctor_crash_without_debug_prints_hint(tmp_path: Path, monkeypatch: pyt
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
-    assert "doctor crashed" in result.stdout
+    assert "doctor crashed" in flat(result.stdout)
     assert "hint:" in result.stdout
     assert "--debug" in result.stdout
 

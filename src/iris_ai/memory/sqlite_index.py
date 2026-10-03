@@ -43,7 +43,7 @@ import re
 import sqlite3
 import threading
 import time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,18 @@ from iris_ai.memory.provenance import Origin
 from iris_ai.memory.scoring import mmr_select
 
 log = logging.getLogger("iris_ai.memory.sqlite")
+
+_UNSET = object()
+
+
+def _as_date(value: object) -> date:
+    """SQLite stores observed_at as text. Callers subtract it from a date."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
 
 #: How long a failed embed probe suppresses the vector term before retrying.
 #: A transient provider blip must not disable semantic recall for the lifetime
@@ -182,6 +194,10 @@ class SqliteIndex:
         conn.executescript(_SCHEMA)
         conn.commit()
         self._conn = conn
+        # Say once, at boot, when semantic recall was asked for and there is
+        # no embedding key. Waiting for the first query is how a dead Ollama
+        # used to be retried four times before the owner saw anything.
+        self._embedding_configured()
 
     async def close(self) -> None:
         await asyncio.to_thread(self._close_sync)
@@ -365,13 +381,33 @@ class SqliteIndex:
         await asyncio.to_thread(work)
 
     # ── embeddings (optional by design) ──────────────────────────────────
+    def _embedding_configured(self) -> bool:
+        if self.llm is None:
+            return False
+        model = getattr(self.llm, "embedding_model", _UNSET)
+        # A test double with no embedding_model attribute still embeds. A real
+        # client with a blank model must not call the provider ("You passed model=").
+        if model is not _UNSET and not str(model or "").strip():
+            if self._vectors_reason is None:
+                notice = getattr(settings, "embedding_notice", "") or "no embedding model configured"
+                self._vectors_reason = notice
+                # A semantic install with no key used to retry Ollama and print
+                # a long provider error. One warning is the whole message.
+                # An owner who turned embeddings off stays at info.
+                if getattr(settings, "embedding_notice", ""):
+                    log.warning("sqlite memory: vectors off, keyword recall only (%s)", notice)
+                else:
+                    log.info("sqlite memory: vectors off, keyword recall only (%s)", notice)
+            return False
+        return True
+
     async def _embed(self, texts: list[str]) -> list[Any]:
         """Embed for the write path; `None` per text when vectors are off.
 
         Not an error: an owner with no embedding key still gets keyword recall
         and a durable index. The dimension is whatever the provider returns.
         """
-        if self.llm is None or not await self._vectors_usable():
+        if self.llm is None or not self._embedding_configured() or not await self._vectors_usable():
             return [None] * len(texts)
         try:
             vectors = await self.llm.embed(texts)  # type: ignore[attr-defined]
@@ -381,7 +417,7 @@ class SqliteIndex:
         return [np.asarray(v, dtype=np.float32) for v in vectors]
 
     async def _query_vector(self, query: str) -> np.ndarray | None:
-        if self.llm is None or not await self._vectors_usable():
+        if self.llm is None or not self._embedding_configured() or not await self._vectors_usable():
             return None
         try:
             vector = await self.llm.embed_one(query)  # type: ignore[attr-defined]
@@ -734,7 +770,7 @@ class SqliteIndex:
                     "importance": r[4],
                     "supersedes": r[5],
                     "trigger_phrases": json.loads(r[6] or "[]"),
-                    "observed_at": r[7],
+                    "observed_at": _as_date(r[7]),
                     "evergreen": bool(r[8]),
                 }
                 for r in rows

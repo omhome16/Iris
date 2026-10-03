@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import stat
 import sys
 import time
 from contextlib import AsyncExitStack
@@ -191,6 +192,8 @@ async def _model_check(llm) -> Check:
         return Check("model check", "fail", detail)
     elapsed = time.monotonic() - started
     said = (reply or "").strip().replace("\n", " ")[:40]
+    if not said:
+        return Check("model check", "fail", f"cheap tier answered in {elapsed:.1f}s with an empty reply")
     return Check("model check", "ok", f"cheap tier answered in {elapsed:.1f}s ({said!r})")
 
 
@@ -221,7 +224,9 @@ async def _memory_checks(llm, *, offline: bool) -> list[Check]:
     if offline:
         return [store, Check("recall", "warn", "embeddings not probed (--offline)")]
     if not (settings.embedding_model or "").strip():
-        return [store, Check("recall", "warn", "keyword-only (embeddings off)")]
+        notice = getattr(settings, "embedding_notice", "")
+        detail = f"keyword-only ({notice})" if notice else "keyword-only (embeddings off)"
+        return [store, Check("recall", "warn", detail)]
     try:
         await llm.embed_one("iris embedding probe", max_attempts=1)
     except Exception as exc:  # noqa: BLE001 — a missing embedder is a warn, not a fail
@@ -315,11 +320,14 @@ def run(
 ) -> int:
     """Create the sample config, probe the setup, and report what it can do."""
     config_path = Path(config) if config is not None else Path(settings.harness_config)
-    # The manifest is applied **first**, before anything is written: it can name the
-    # workspace, the index files and the store, and a seed or a sample written to
-    # the default path would be a file no boot ever reads. (It used to be applied
-    # inside `_verify`, which meant `iris init` reported one configuration and set
-    # up another — visible the moment a profile shipped its own `workspace_dir`.)
+    # Copy a missing sample *before* the wizard writes into it. Otherwise
+    # `apply_plan` creates a sparse harness.toml and the sample step reports
+    # "kept (already exists)" for a file this run just invented, and the
+    # example template is never copied.
+    files = _write_samples(config_path, force=force)
+    # The manifest is applied before workspace files: it can name the workspace,
+    # the index files and the store. (It used to be applied inside `_verify`,
+    # which meant `iris init` reported one configuration and set up another.)
     apply_manifest(settings, load_manifest(config_path))
     if provider or (yes and model):
         from iris_ai.setup.flow import SetupPlan, apply_plan
@@ -343,10 +351,17 @@ def run(
         plan = collect(prompter_for(), skip_verify=offline)
         if plan is not None:
             apply_plan(plan)
-    files = _write_samples(config_path, force=force) + _workspace_checks()
+    files = files + _workspace_checks()
+    _restrict_env(Path(".env"))
     checks, recall_ok = asyncio.run(_verify(offline=offline))
     _render(files, checks, recall_ok=recall_ok)
     _next_steps()
     from iris_ai.cli.doctor import exit_code
 
     return exit_code(checks)
+
+
+def _restrict_env(path: Path) -> None:
+    """`.env` is owner-only, including a copy of the sample that holds no key yet."""
+    if path.is_file():
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)

@@ -8,7 +8,10 @@ Until that file has text, the assistant has no personality of its own.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+log = logging.getLogger("iris.prompt")
 
 CONTRACT = """You are {name}. You run on the Iris harness.
 
@@ -96,7 +99,14 @@ def _custom_persona(picked: str) -> str:
             from iris_ai.components import load_symbol
 
             return str(construct(load_symbol(picked), None).text())
-    except Exception:  # noqa: BLE001 - a bad persona falls through to PERSONA.md
+    except Exception as exc:  # noqa: BLE001 - a bad persona falls through to PERSONA.md
+        log.error(
+            "persona %s failed to load (%s: %s). Using PERSONA.md. "
+            "Recover with: iris components rollback persona",
+            picked,
+            type(exc).__name__,
+            exc,
+        )
         return ""
     return ""
 

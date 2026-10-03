@@ -149,6 +149,38 @@ def _attempts_of(exc: Exception, default: int) -> int:
     return int(getattr(exc, "attempts", default) or default)
 
 
+def _looks_like_rate_limit(exc: BaseException) -> bool:
+    """True when `exc` or the error it wraps is a provider 429."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = getattr(current, "status_code", None) or getattr(current, "status", None)
+        if status == 429:
+            return True
+        text = str(current).lower()
+        if "rate limit" in text or "rate_limit" in text or "too many requests" in text:
+            return True
+        current = current.__cause__
+    return False
+
+
+def _failover_error(candidates: Sequence[tuple], failures: list[Exception]) -> LLMError:
+    """The error after every candidate failed.
+
+    A rate limit on an earlier provider must stay in the message. Otherwise
+    failover to a later candidate (often a connection error) hides the 429
+    and the chat describes it as a generic provider failure.
+    """
+    names = [item[0] for item in candidates]
+    rate = next((exc for exc in failures if _looks_like_rate_limit(exc)), None)
+    chosen = rate or (failures[-1] if failures else None)
+    summary = _failure_summary(chosen) if chosen else "unknown"
+    if rate is not None and "rate limit" not in summary.lower() and "rate_limit" not in summary.lower():
+        summary = f"rate limit ({summary})"
+    return LLMError(f"all providers failed ({names}): {summary}")
+
+
 async def _with_retries(fn, *, max_attempts: int = 4, base_delay: float = 1.0, cap: float = 45.0):
     last: Exception | None = None
     attempts = 0
@@ -262,7 +294,7 @@ class LLMClient:
     ) -> str:
         messages = _to_provider_messages(messages)
         candidates = settings.llm_candidates(tier)
-        last_exc: Exception | None = None
+        failures: list[Exception] = []
         for idx, (provider, model, auth) in enumerate(candidates):
             async def call(_model=model, _auth=auth):
                 if tier == "strong":
@@ -286,7 +318,7 @@ class LLMClient:
             try:
                 return await _with_retries(call, max_attempts=max_attempts)
             except Exception as exc:  # noqa: BLE001 - heterogeneous provider failures
-                last_exc = exc
+                failures.append(exc)
                 if idx + 1 < len(candidates):
                     log.warning(
                         "provider %s failed after %d attempt(s) (%s); failing over to %s",
@@ -295,9 +327,8 @@ class LLMClient:
                         _failure_summary(exc),
                         candidates[idx + 1][0],
                     )
-        raise LLMError(
-            f"all providers failed ({[c[0] for c in candidates]}): {_failure_summary(last_exc) if last_exc else 'unknown'}"
-        ) from last_exc
+        last_exc = failures[-1] if failures else None
+        raise _failover_error(candidates, failures) from last_exc
 
     async def complete_with_tools(
         self,
@@ -318,7 +349,7 @@ class LLMClient:
         """
         messages = _to_provider_messages(messages)
         candidates = settings.llm_candidates(tier)
-        last_exc: Exception | None = None
+        failures: list[Exception] = []
         for idx, (provider, model, auth) in enumerate(candidates):
             async def call(_model=model, _auth=auth):
                 if tier == "strong":
@@ -356,7 +387,7 @@ class LLMClient:
             try:
                 return await _with_retries(call, max_attempts=max_attempts)
             except Exception as exc:  # noqa: BLE001 - heterogeneous provider failures
-                last_exc = exc
+                failures.append(exc)
                 if idx + 1 < len(candidates):
                     log.warning(
                         "provider %s failed after %d attempt(s) (%s); failing over to %s",
@@ -365,9 +396,8 @@ class LLMClient:
                         _failure_summary(exc),
                         candidates[idx + 1][0],
                     )
-        raise LLMError(
-            f"all providers failed ({[c[0] for c in candidates]}): {_failure_summary(last_exc) if last_exc else 'unknown'}"
-        ) from last_exc
+        last_exc = failures[-1] if failures else None
+        raise _failover_error(candidates, failures) from last_exc
 
     async def stream_complete_with_tools(
         self,
@@ -393,6 +423,7 @@ class LLMClient:
         """
         messages = _to_provider_messages(messages)
         candidates = settings.llm_candidates(tier)
+        failures: list[Exception] = []
         last: Exception | None = None
         for idx, (provider, model, auth) in enumerate(candidates):
             started = False
@@ -472,6 +503,8 @@ class LLMClient:
             if started:
                 yield ("done", "")  # mid-stream failure: flush what we buffered
                 return
+            if last is not None:
+                failures.append(last)
             if idx + 1 < len(candidates):
                 used = attempt + 1 if last is not None else 1
                 log.warning(
@@ -482,9 +515,7 @@ class LLMClient:
                     candidates[idx + 1][0],
                 )
                 continue
-            raise LLMError(
-                f"all providers failed ({[c[0] for c in candidates]}): {last}"
-            ) from last
+            raise _failover_error(candidates, failures) from last
 
     async def embed(
         self, texts: Sequence[str], *, timeout: float = 60.0, max_attempts: int = 4

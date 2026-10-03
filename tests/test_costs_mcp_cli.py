@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from cli_text import flat
 from iris_ai.cli.main import app
 from iris_ai.cli.mcp import run as mcp_run
 from iris_ai.config import settings
@@ -55,7 +56,7 @@ def _ledger_line(tmp_path: Path, *, ts: str, model: str, cost: float, prompt: in
 def test_an_empty_ledger_says_so_instead_of_zero(tmp_path: Path):
     result = runner.invoke(app, ["costs"])
     assert result.exit_code == 0
-    assert "No model calls recorded yet" in result.stdout
+    assert "No model calls recorded yet" in flat(result.stdout)
 
 
 def test_the_summary_groups_by_model_and_names_unpriced_ones(tmp_path: Path):
@@ -66,7 +67,7 @@ def test_the_summary_groups_by_model_and_names_unpriced_ones(tmp_path: Path):
     assert "gemini/gemini-3.5-flash" in result.stdout
     assert "some-local-model" in result.stdout
     # The honesty rule: a $0.00 row for an unpriced model must be called out.
-    assert "lower bound" in result.stdout
+    assert "lower bound" in flat(result.stdout)
     assert "some-local-model" in result.stdout
 
 
@@ -74,7 +75,7 @@ def test_a_explicitly_priced_ledger_is_reported_as_measured(tmp_path: Path):
     _ledger_line(tmp_path, ts="2026-09-27T10:00:00+00:00", model="gemini/gemini-3.5-flash", cost=0.05)
     result = runner.invoke(app, ["costs", "summary"])
     assert result.exit_code == 0
-    assert "lower bound" not in result.stdout
+    assert "lower bound" not in flat(result.stdout)
     assert "$0.05" in result.stdout
 
 
@@ -131,7 +132,7 @@ def test_add_refuses_a_declaration_the_loader_would_reject(tmp_path: Path):
     """Writing an invalid file would be worse than refusing the edit."""
     result = runner.invoke(app, ["mcp", "add", "wiki", "--url", "http://x/mcp", "--trust", "friend"])
     assert result.exit_code == 1
-    assert "not valid" in result.stdout
+    assert "not valid" in flat(result.stdout)
     assert not (tmp_path / ".mcp.json").exists()
 
 
@@ -179,7 +180,7 @@ def test_list_delegates_to_the_plugins_readout(tmp_path: Path):
 def test_test_reports_a_server_that_is_not_declared(tmp_path: Path):
     result = runner.invoke(app, ["mcp", "test", "ghost"])
     assert result.exit_code == 1
-    assert "not declared" in result.stdout
+    assert "not declared" in flat(result.stdout)
 
 
 def test_test_connects_one_server_in_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

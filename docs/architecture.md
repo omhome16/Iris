@@ -158,7 +158,7 @@ starts the HTTP API. `iris serve telegram` names the token and the mcp extra.
 | Extra | What it adds |
 |---|---|
 | `postgres` | pgvector memory and shared threads |
-| `api` | `iris api` |
+| `api` | `iris serve http` |
 | `mcp` | MCP servers and the Telegram channel |
 | `schedule` | Nightly consolidation and reminders |
 | `judge` | Typed probability judgments |

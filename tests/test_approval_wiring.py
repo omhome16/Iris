@@ -83,7 +83,9 @@ async def test_the_digest_pins_the_arguments_the_action_actually_uses(tmp_path: 
     with pytest.raises(ApprovalRequired) as exc:
         await graph.respond("forget about my lease", session_id="t-digest")
     payload = exc.value.payload
-    shown = {"query": payload["query"], "path": payload["path"]}
+    # `line` is the exact MEMORY.md line the resume will retire. It is part of
+    # the pin, so an approval cannot be stretched onto a different fact.
+    shown = {"query": payload["query"], "path": payload["path"], "line": payload["hit"]}
 
     assert payload["digest"] == effective_digest(shown)
     # The other half of the property: any different argument set digests

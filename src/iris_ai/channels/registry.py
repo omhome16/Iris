@@ -9,8 +9,10 @@ Precedence for which channels are live:
 
     registered  →  channels_enabled (allow-list)  →  channels_disabled (deny)
 
-An empty ``CHANNELS_ENABLED`` means "every registered channel"; ``CHANNELS_DISABLED``
-always wins, so a single env var can turn one off on a shared host. URLs are
+An empty ``CHANNELS_ENABLED`` means "every registered channel". The value
+``none`` means no external channel (the default, so a fresh install does not
+try Telegram). ``CHANNELS_DISABLED`` always wins, so a single env var can turn
+one off on a shared host. URLs are
 resolved per channel from ``CHANNEL_<NAME>_URL``, falling back to the
 channel's own setting (Telegram keeps ``TELEGRAM_MCP_URL`` so existing
 installs are unchanged).
@@ -72,6 +74,8 @@ def _channel_url(name: str) -> str:
 def channel_specs() -> list[ChannelSpec]:
     """The channels config asks for, in registry order, with URLs resolved."""
     allow = _split(settings.channels_enabled)
+    if allow == {"none"}:
+        return []
     deny = _split(settings.channels_disabled)
     specs: list[ChannelSpec] = []
     for reg in CHANNELS.enabled():

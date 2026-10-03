@@ -144,12 +144,17 @@ def _install(runtime: Any, kind: str, name: str, *, fallback: Any = None) -> Any
     return inner
 
 
-def attach(runtime: Any, manifest: dict) -> None:
-    """Set context_builder and capture_policy on the runtime from the manifest."""
+def attach(runtime: Any, manifest: dict) -> str:
+    """Set context_builder and capture_policy on the runtime from the manifest.
+
+    Returns a notice when a selected persona could not load and the built-in
+    is used instead. An empty string means nothing fell back.
+    """
     section = manifest.get("components") or {}
     if not isinstance(section, dict):
         log.warning("[components] must be a table; ignoring %r", section)
-        return
+        return ""
+    notice = ""
 
     context = str(section.get("context") or "default")
     if context not in ("default", ""):
@@ -164,11 +169,22 @@ def attach(runtime: Any, manifest: dict) -> None:
 
     persona = str(section.get("persona") or "file")
     runtime.persona_choice = persona
-    if (persona not in ("file", "blank", "") and ":" in persona) or _looks_local("persona", persona):
-        built = _install(runtime, "persona", persona)
-        if built is not None:
-            runtime.persona_source = built
-    log.info("persona: %s", persona)
+    if _is_custom_persona(persona):
+        # `Runtime` is slots-only and the prompt loads the persona from
+        # `persona_choice`. Probing here is what stops a broken component from
+        # taking down boot: a failure falls back to the file persona and names
+        # the recovery command. `iris doctor` still reports the broken selection.
+        try:
+            _probe_persona(persona)
+        except Exception as exc:  # noqa: BLE001 - a persona must not brick boot
+            notice = (
+                f"persona {persona} failed to load ({type(exc).__name__}: {exc}). "
+                "Using the built-in persona for this process. "
+                "Recover with: iris components rollback persona"
+            )
+            log.error(notice)
+            runtime.persona_choice = "file"
+    log.info("persona: %s", runtime.persona_choice)
 
     capture = str(section.get("capture") or "default")
     if capture == "off":
@@ -191,9 +207,36 @@ def attach(runtime: Any, manifest: dict) -> None:
         if built is not None:
             runtime.dreams = built
             log.info("consolidator: %s", consolidator)
+    return notice
 
 
 def _looks_local(kind: str, name: str) -> bool:
     from iris_ai.plug import local_folder
 
     return local_folder(kind, name) is not None
+
+
+def _is_custom_persona(persona: str) -> bool:
+    """A local folder or `pkg:Class`, rather than a built-in persona name."""
+    if not persona or persona in {"file", "blank"}:
+        return False
+    if _looks_local("persona", persona):
+        return True
+    return ":" in persona
+
+
+def _probe_persona(persona: str) -> str:
+    """Import, construct, and call `text()`. Raises when the component cannot load."""
+    from iris_ai.plug import construct, load_class, local_folder
+
+    folder = local_folder("persona", persona)
+    if folder is not None:
+        component = construct(load_class(folder), None)
+    elif ":" in persona:
+        component = construct(load_symbol(persona), None)
+    else:
+        raise ValueError(f"persona {persona!r} is not a local folder or a class path")
+    text = component.text()
+    if not isinstance(text, str):
+        raise TypeError("persona text() must return a string")
+    return text
