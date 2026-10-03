@@ -23,8 +23,9 @@ class GraphRecursionError(RuntimeError):
 class Command:
     """Resume a paused turn. `resume` is the owner's decision string."""
 
-    def __init__(self, resume: str | None = None) -> None:
+    def __init__(self, resume: str | None = None, bound: dict | None = None) -> None:
         self.resume = resume
+        self.bound = bound
 
 
 class Interrupt:
@@ -97,7 +98,10 @@ class NativeGraph:
         state["session_id"] = thread_id
 
         if isinstance(incoming, Command):
-            set_resume_decision(None if incoming.resume is None else str(incoming.resume))
+            set_resume_decision(
+                None if incoming.resume is None else str(incoming.resume),
+                bound=getattr(incoming, "bound", None),
+            )
             state.pop("__interrupt__", None)
             node = "tools"
         else:
@@ -115,35 +119,13 @@ class NativeGraph:
             if steps > limit:
                 await self.store.save(thread_id, state)
                 raise GraphRecursionError(f"turn exceeded {limit} steps")
-            if node == "onboarding":
-                _apply(state, await self.chat._onboarding(state))
-                node = "end"
-            elif node == "assemble_context":
-                _apply(state, await self.chat._assemble(state))
-                node = self.chat._after_assemble(state)
-            elif node == "compact":
-                _apply(state, await self.chat._compact(state))
-                node = "agent"
-            elif node == "agent":
-                _apply(state, await self.chat._agent(state))
-                node = self.chat._after_agent(state)
-            elif node == "tools":
-                try:
-                    _apply(state, await self.chat._tools(state))
-                except GraphInterrupt as paused:
-                    state["__interrupt__"] = [Interrupt(paused.value)]
-                    await self.store.save(thread_id, state)
-                    set_resume_decision(None)
-                    return state
-                node = self.chat._after_tools(state)
-            elif node == "journal":
-                _apply(state, await self.chat._journal(state))
-                node = "capture"
-            elif node == "capture":
-                _apply(state, await self.chat._capture(state))
-                node = "end"
-            else:
-                raise RuntimeError(f"unknown turn node {node!r}")
+            try:
+                _update, node = await self._run_node(state, node)
+            except GraphInterrupt as paused:
+                state["__interrupt__"] = [Interrupt(paused.value)]
+                await self.store.save(thread_id, state)
+                set_resume_decision(None)
+                return state
         state.pop("__interrupt__", None)
         await self.store.save(thread_id, state)
         set_resume_decision(None)
@@ -163,7 +145,10 @@ class NativeGraph:
             state = await self.store.load(thread_id) or _blank(thread_id)
             state["session_id"] = thread_id
             if isinstance(incoming, Command):
-                set_resume_decision(None if incoming.resume is None else str(incoming.resume))
+                set_resume_decision(
+                    None if incoming.resume is None else str(incoming.resume),
+                    bound=getattr(incoming, "bound", None),
+                )
                 state.pop("__interrupt__", None)
                 node = "tools"
             else:
@@ -184,45 +169,15 @@ class NativeGraph:
                         yield usage
                     raise GraphRecursionError(f"turn exceeded {limit} steps")
                 before = len(collected)
-                update: dict = {}
-                if node == "onboarding":
-                    update = await self.chat._onboarding(state) or {}
-                    _apply(state, update)
-                    nxt = "end"
-                elif node == "assemble_context":
-                    update = await self.chat._assemble(state) or {}
-                    _apply(state, update)
-                    nxt = self.chat._after_assemble(state)
-                elif node == "compact":
-                    update = await self.chat._compact(state) or {}
-                    _apply(state, update)
-                    nxt = "agent"
-                elif node == "agent":
-                    update = await self.chat._agent(state) or {}
-                    _apply(state, update)
-                    nxt = self.chat._after_agent(state)
-                elif node == "tools":
-                    try:
-                        update = await self.chat._tools(state) or {}
-                    except GraphInterrupt as paused:
-                        state["__interrupt__"] = [Interrupt(paused.value)]
-                        await self.store.save(thread_id, state)
-                        for event in collected[before:]:
-                            yield event
-                        yield NodeUpdate("tools", {})
-                        return
-                    _apply(state, update)
-                    nxt = self.chat._after_tools(state)
-                elif node == "journal":
-                    update = await self.chat._journal(state) or {}
-                    _apply(state, update)
-                    nxt = "capture"
-                elif node == "capture":
-                    update = await self.chat._capture(state) or {}
-                    _apply(state, update)
-                    nxt = "end"
-                else:
-                    raise RuntimeError(f"unknown turn node {node!r}")
+                try:
+                    update, nxt = await self._run_node(state, node)
+                except GraphInterrupt as paused:
+                    state["__interrupt__"] = [Interrupt(paused.value)]
+                    await self.store.save(thread_id, state)
+                    for event in collected[before:]:
+                        yield event
+                    yield NodeUpdate(node, {})
+                    return
                 for event in collected[before:]:
                     yield event
                 yield NodeUpdate(node, update)
@@ -234,6 +189,43 @@ class NativeGraph:
                 yield usage
         finally:
             reset_stream_writer(token)
+
+    async def _run_node(self, state: dict, node: str) -> tuple[dict, str]:
+        """Run one node and return ``(update, next)``.
+
+        The update is applied before ``next`` is chosen, because the routing
+        helpers read the state the node just wrote. A tool pause raises
+        ``GraphInterrupt`` before that update is applied.
+        """
+        if node == "onboarding":
+            update = await self.chat._onboarding(state) or {}
+            _apply(state, update)
+            return update, "end"
+        if node == "assemble_context":
+            update = await self.chat._assemble(state) or {}
+            _apply(state, update)
+            return update, self.chat._after_assemble(state)
+        if node == "compact":
+            update = await self.chat._compact(state) or {}
+            _apply(state, update)
+            return update, "agent"
+        if node == "agent":
+            update = await self.chat._agent(state) or {}
+            _apply(state, update)
+            return update, self.chat._after_agent(state)
+        if node == "tools":
+            update = await self.chat._tools(state) or {}
+            _apply(state, update)
+            return update, self.chat._after_tools(state)
+        if node == "journal":
+            update = await self.chat._journal(state) or {}
+            _apply(state, update)
+            return update, "capture"
+        if node == "capture":
+            update = await self.chat._capture(state) or {}
+            _apply(state, update)
+            return update, "end"
+        raise RuntimeError(f"unknown turn node {node!r}")
 
     async def aget_state(self, config: dict):
         thread_id = config["configurable"]["thread_id"]

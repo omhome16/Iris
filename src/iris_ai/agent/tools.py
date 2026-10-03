@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,6 +20,7 @@ from iris_ai import turnlog
 from iris_ai.agent.runtime import (
     Runtime,
     current_loaded_tools,
+    current_origin,
     current_session,
     current_tool_call,
     current_tool_scope,
@@ -32,7 +32,7 @@ from iris_ai.ingest import fetch_text, ingest_url, web_search
 from iris_ai.jev import GuardAction, screen_untrusted, screen_untrusted_many
 from iris_ai.kernel.pause import interrupt
 from iris_ai.memory.files import ConcurrencyError
-from iris_ai.memory.forgetting import supersede_in_text
+from iris_ai.memory.forgetting import locate_memory_line, reconcile_contradictions
 from iris_ai.memory.provenance import Origin
 from iris_ai.memory.skills import Skill
 from iris_ai.skills.guard import screen_script
@@ -547,16 +547,25 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     )
 
     async def remember(content: str, importance: float = 6.0, triggers: list[str] | None = None) -> str:
-        """Explicit owner-requested memory. Written to MEMORY.md immediately
-        with owner provenance (bypasses staging — the human is the writer)."""
+        """Explicit memory write. Provenance follows the turn's origin, and a
+        new fact that contradicts an exclusive slot (where someone lives, which
+        project is the main one) retires the older line instead of stacking."""
         if len(content) > 500:
             return _err("content too long (max 500 chars)")
+        origin = current_origin.get() or "owner"
+        if origin not in {"owner", "agent", "untrusted", "system"}:
+            origin = "agent"
         entry = f"- [{importance:.0f}] {content}"
         if triggers:
             entry += f"  (triggers: {', '.join(triggers[:5])})"
         stamp = datetime.now().isoformat(timespec="seconds")
-        entry += f"  (by owner, {stamp[:10]})"
+        entry += f"  (by {origin}, {stamp[:10]})"
+        marker = f"(superseded {stamp[:10]})"
         try:
+            current = runtime.files.read(runtime.files.memory)
+            reconciled = reconcile_contradictions(current, content, marker)
+            if reconciled != current:
+                runtime.files.write_curated(runtime.files.memory, reconciled)
             runtime.files.append_curated(runtime.files.memory, entry)
             await runtime.reindexer.reindex_all()
         except ConcurrencyError as exc:
@@ -662,20 +671,26 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         if not hits:
             return _err("no matching memory in MEMORY.md")
         hit = hits[0]
+        current = runtime.files.read(runtime.files.memory)
+        line = locate_memory_line(current, hit.content, query=query)
+        if line is None:
+            return _err("could not locate a single matching line in MEMORY.md; leaving it intact")
         decision = interrupt(
             {
                 "query": query,
-                "hit": hit.content[:120],
+                "hit": line[:200],
                 "path": hit.path,
-                **approval_payload("forget", {"query": query, "path": hit.path}),
+                **approval_payload("forget", {"query": query, "path": hit.path, "line": line}),
             }
         )
         if decision != "approved":
             return _err("forget cancelled")
         current = runtime.files.read(runtime.files.memory)
         marker = f"(superseded {datetime.now().isoformat()[:10]})"
-        new = supersede_in_text(current, hit.content, marker)
-        if new is None:
+        if line not in current:
+            return _err("could not locate the memory text in MEMORY.md; leaving intact")
+        new = current.replace(line, f"{line} {marker}", 1)
+        if new == current:
             return _err("could not locate the memory text in MEMORY.md; leaving intact")
         try:
             runtime.files.write_curated(runtime.files.memory, new)
@@ -1232,55 +1247,82 @@ def component_tools(runtime: Runtime) -> list[Tool]:
         return _ok(path=str(target.relative_to(folder.parent.parent.parent)))
 
     async def component_check(kind: str, name: str) -> str:
-        import json as _json
-        import subprocess
+        from iris_ai.plug import check_in_sandbox, local_folder, staging_dir
 
-        from iris_ai.plug import local_folder, staging_dir
-
-        folder = staging_dir(kind, name)
+        try:
+            folder = staging_dir(kind, name)
+        except ValueError as exc:
+            return _err(str(exc))
         if not (folder / "component.py").is_file():
             found = local_folder(kind, name)
             if found is None:
                 return _err(f"no staged or local component {kind}/{name}")
             folder = found
-        code = (
-            "import json, sys\n"
-            "from pathlib import Path\n"
-            "from iris_ai.plug import check_folder\n"
-            "ok, detail = check_folder(Path(sys.argv[1]))\n"
-            "print(json.dumps({'ok': ok, 'detail': detail}))\n"
-        )
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-c", code, str(folder)],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return _err("component check timed out")
-        if proc.returncode != 0 and not proc.stdout.strip():
-            return _err(proc.stderr.strip()[:300] or "check failed")
-        try:
-            payload = _json.loads(proc.stdout.strip().splitlines()[-1])
-        except (IndexError, _json.JSONDecodeError):
-            return _err(proc.stderr.strip()[:300] or proc.stdout.strip()[:300] or "check failed")
-        if not payload.get("ok"):
-            return _err(str(payload.get("detail") or "check failed"))
-        return _ok(detail=payload.get("detail"))
+        ok, detail = check_in_sandbox(folder)
+        if not ok:
+            return _err(detail)
+        return _ok(detail=detail)
 
     async def component_activate(kind: str, name: str) -> str:
-        from iris_ai.plug import activate
+        from iris_ai.plug import activate, component_digest, staging_dir
 
+        try:
+            folder = staging_dir(kind, name)
+        except ValueError as exc:
+            return _err(str(exc))
+        if not (folder / "component.py").is_file():
+            return _err(f"nothing staged at {kind}/{name}")
+        digest = component_digest(folder)
+        files = sorted(path.name for path in folder.iterdir() if path.is_file())
+        args = {"kind": kind, "name": name, "digest": digest}
+        payload = approval_payload("component_activate", args)
+        from iris_ai.kernel.pause import bound_approval
+
+        bound = bound_approval()
+        if bound is not None and bound.get("action") == "component_activate" and bound.get("digest") != payload["digest"]:
+            interrupt({"component": f"{kind}/{name}", "files": files, "component_digest": digest, **payload})
+            return _err("staged files changed after approval; activation refused")
+        decision = interrupt(
+            {
+                "component": f"{kind}/{name}",
+                "files": files,
+                "component_digest": digest,
+                **payload,
+            }
+        )
+        if decision != "approved":
+            return _err("activation cancelled")
+        if component_digest(folder) != digest:
+            return _err("staged files changed after approval; activation refused")
         try:
             return _ok(detail=activate(kind, name))
         except Exception as exc:  # noqa: BLE001 - the tool reports why activation stopped
             return _err(f"{type(exc).__name__}: {exc}")
 
     async def component_rollback(kind: str) -> str:
-        from iris_ai.plug import rollback
+        from iris_ai.plug import rollback, rollback_target
 
+        active, previous = rollback_target(kind)
+        args = {"kind": kind, "active": active, "previous": previous}
+        payload = approval_payload("component_rollback", args)
+        from iris_ai.kernel.pause import bound_approval
+
+        bound = bound_approval()
+        if bound is not None and bound.get("action") == "component_rollback" and bound.get("digest") != payload["digest"]:
+            interrupt({"kind": kind, "active": active, "previous": previous, **payload})
+            return _err("rollback target changed after approval; refused")
+        decision = interrupt(
+            {
+                "kind": kind,
+                "active": active,
+                "previous": previous,
+                **payload,
+            }
+        )
+        if decision != "approved":
+            return _err("rollback cancelled")
+        if rollback_target(kind) != (active, previous):
+            return _err("rollback target changed after approval; refused")
         return _ok(detail=rollback(kind))
 
     del runtime  # tools jail writes to components/.staging, not the sandbox
@@ -1289,6 +1331,11 @@ def component_tools(runtime: Runtime) -> list[Tool]:
             "component_write",
             "Write one file of a new component into components/.staging. "
             "Allowed files: component.py, component.toml, test_component.py. "
+            "component.toml is flat keys, not a [component] table: "
+            'kind, name, entry = "component:ClassName", description. '
+            "The class is ClassName(ctx, **options). "
+            "persona defines text(); context defines async assemble_turn; "
+            "capture defines async maybe_capture; consolidator defines async sleep. "
             "Nothing outside that folder can be written.",
             {
                 "type": "object",
@@ -1304,7 +1351,9 @@ def component_tools(runtime: Runtime) -> list[Tool]:
         ),
         Tool(
             "component_check",
-            "Import a staged component in a separate process and report whether it matches its contract.",
+            "Import a staged component in a sandboxed process (no API keys, writes "
+            "confined to the component folder) and run test_component.py when that "
+            "file is present. Report whether it matches its contract.",
             {
                 "type": "object",
                 "properties": {"kind": {"type": "string"}, "name": {"type": "string"}},
@@ -1314,7 +1363,8 @@ def component_tools(runtime: Runtime) -> list[Tool]:
         ),
         Tool(
             "component_activate",
-            "After the owner approves, move a staged component into components/ and select it. "
+            "Move a staged component into components/ and select it. This waits for "
+            "the owner's approval, pinned to the digest of the staged files. "
             "Then tell them to type /reload.",
             {
                 "type": "object",
@@ -1325,7 +1375,7 @@ def component_tools(runtime: Runtime) -> list[Tool]:
         ),
         Tool(
             "component_rollback",
-            "Switch a component kind back to the previous selection.",
+            "Switch a component kind back to the previous selection. Waits for the owner's approval.",
             {
                 "type": "object",
                 "properties": {"kind": {"type": "string"}},

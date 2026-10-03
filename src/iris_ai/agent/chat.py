@@ -42,6 +42,25 @@ from iris_ai.text import text_of
 
 log = logging.getLogger("iris.graph")
 
+RATE_LIMIT_REPLY = (
+    "I hit a rate limit or a provider hiccup just now — give me a minute and say that again."
+)
+EMPTY_REPLY = "The model returned an empty reply. Say that again and I will retry."
+PROVIDER_REPLY = "The model provider failed just now. Give me a minute and say that again."
+DIAGNOSTIC_REPLIES = (RATE_LIMIT_REPLY, EMPTY_REPLY, PROVIDER_REPLY)
+
+
+def _is_rate_limit(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status == 429:
+        return True
+    text = str(exc).lower()
+    return "rate limit" in text or "rate_limit" in text or "too many requests" in text
+
+
+def _reply_for_failure(exc: BaseException) -> str:
+    return RATE_LIMIT_REPLY if _is_rate_limit(exc) else PROVIDER_REPLY
+
 
 class ApprovalRequired(Exception):
     """A tool hit a human-in-the-loop interrupt; the turn is paused.
@@ -331,15 +350,7 @@ class ChatGraph:
                 )
         except Exception as exc:  # noqa: BLE001 - a provider outage must not 500 the turn
             log.warning("agent LLM call failed: %s", exc)
-            return {
-                "messages": [
-                    {
-                        "type": "ai",
-                        "content": "I hit a rate limit or a provider hiccup just now — give me a "
-                        "minute and say that again.",
-                    }
-                ]
-            }
+            return {"messages": [{"type": "ai", "content": _reply_for_failure(exc)}]}
         if calls:
             ai = {
                 "type": "ai",
@@ -350,6 +361,8 @@ class ChatGraph:
                 ],
             }
             return {"messages": [ai]}
+        if not (text or "").strip():
+            text = EMPTY_REPLY
         return {"messages": [{"type": "ai", "content": text}]}
 
     async def _agent_streamed(
@@ -394,6 +407,9 @@ class ChatGraph:
         except Exception as exc:  # noqa: BLE001 - a provider outage must not 500 the turn
             log.warning("streamed agent LLM call failed: %s", exc)
             writer({"kind": "error"})
+            failure = _reply_for_failure(exc)
+        else:
+            failure = ""
         finally:
             # Recorded even on failure: a stream that produced one token and
             # died still has a real TTFT, and a stream that produced none still
@@ -416,8 +432,8 @@ class ChatGraph:
                 ],
             }
             return {"messages": [ai]}
-        if not text:
-            text = "I hit a rate limit or a provider hiccup just now — give me a minute and say that again."
+        if not text.strip():
+            text = failure or EMPTY_REPLY
         return {"messages": [{"type": "ai", "content": text}]}
 
     async def _tools(self, state: IrisState) -> dict:
@@ -425,6 +441,7 @@ class ChatGraph:
         results = []
         from iris_ai.agent.runtime import (
             current_loaded_tools,
+            current_origin,
             current_session,
             current_tool_call,
             current_tool_scope,
@@ -433,6 +450,7 @@ class ChatGraph:
         origin = state.get("origin") or "owner"
         active = tuple(state.get("active_skills") or ())
         token = current_session.set(state.get("session_id") or "")
+        origin_token = current_origin.set(origin)
         # A tool cannot return a state update, so `find_tools` appends here and
         # this node folds the result into state. Accumulated, not replaced: the
         # thread keeps what it has already loaded, which is what lets a later
@@ -541,6 +559,7 @@ class ChatGraph:
         finally:
             current_tool_scope.reset(scope_token)
             current_loaded_tools.reset(load_token)
+            current_origin.reset(origin_token)
             current_session.reset(token)
         failed = [r.get("name") or "tool" for r in results if _tool_failed(r.get("content", ""))]
         update: dict = {"messages": results, "tool_failures": ", ".join(failed)}
@@ -558,6 +577,10 @@ class ChatGraph:
             return {}
         user_msg, ai_msg = _turn_texts(state["messages"])
         if not user_msg or not ai_msg:
+            return {}
+        # Diagnostic replies are not evidence of the conversation. Saving them
+        # would teach the next turn that a rate limit or an empty reply happened.
+        if ai_msg.strip() in DIAGNOSTIC_REPLIES or ai_msg.startswith("I hit an unexpected error"):
             return {}
 
         has_photo = any(
@@ -638,7 +661,20 @@ class ChatGraph:
             note = await custom.maybe_capture(
                 user_message=user_msg, reply=ai_msg, known_context=state.get("memory_context", "")
             )
-            return {"last_capture": note} if note else {}
+            if not note:
+                return {}
+            line = str(note).strip()
+            if not line.startswith("- "):
+                line = f"- {line}"
+            if "(note)" not in line:
+                line = f"{line} (note)"
+            try:
+                day = self.runtime.files.today()
+                self.runtime.files.append_daily(line, day=day, stamp=False)
+                await self.runtime.reindexer.index_daily_note(f"memory/{day.isoformat()}.md")
+            except Exception as exc:  # noqa: BLE001 - capture must never fail a turn
+                log.warning("custom capture was not saved: %s", exc)
+            return {"last_capture": note}
         if state.get("origin", "owner") != "owner" or not settings.capture_enabled:
             turnlog.record("capture", captured=False, reason="not an owner turn")
             return {}
@@ -958,7 +994,10 @@ class ChatGraph:
                 turnlog.record("halt", reason="kill_switch", provider_calls=0)
                 return self._killed_reply()
             try:
-                result = await self.graph.ainvoke(Command(resume=decision), config)
+                result = await self.graph.ainvoke(
+                    Command(resume=decision, bound=pending if isinstance(pending, dict) else None),
+                    config,
+                )
             except GraphRecursionError:
                 log.warning("resume exceeded recursion limit %s; returning best-so-far", settings.graph_recursion_limit)
                 turnlog.record("halt", reason="recursion_limit")
