@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from typing import Any
 
 _DECISION: ContextVar[str | None] = ContextVar("iris_approval_decision", default=None)
+_BOUND: ContextVar[dict | None] = ContextVar("iris_approval_bound", default=None)
 _WRITER: ContextVar[Callable[[dict], None]] = ContextVar(
     "iris_stream_writer", default=lambda _event: None
 )
@@ -35,8 +36,15 @@ def interrupt(value: dict) -> Any:
     raise GraphInterrupt(value)
 
 
-def set_resume_decision(decision: str | None) -> None:
+def set_resume_decision(decision: str | None, *, bound: dict | None = None) -> None:
+    """Remember the owner's decision and the approval payload it was pinned to."""
     _DECISION.set(decision)
+    _BOUND.set(bound)
+
+
+def bound_approval() -> dict | None:
+    """The interrupt payload this resume is allowed to honour, if one was pinned."""
+    return _BOUND.get()
 
 
 def get_stream_writer() -> Callable[[dict], None]:

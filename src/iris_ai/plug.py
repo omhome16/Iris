@@ -12,12 +12,16 @@ explicit approval.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import logging
+import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +79,36 @@ class ComponentInfo:
 
 
 def components_root(root: Path | None = None) -> Path:
-    return Path(root) if root is not None else Path("components")
+    """The components directory.
+
+    An explicit `root` is that directory (callers that scaffold into a chosen
+    folder pass it). Otherwise components live next to the `config/` directory
+    that holds the harness file, found from the working directory or a parent.
+    """
+    if root is not None:
+        return Path(root)
+    return _project_root() / "components"
+
+
+def _project_root() -> Path:
+    """Directory that contains `config/` for the harness file, or the cwd."""
+    from iris_ai.config import settings
+
+    config = Path(settings.harness_config)
+    if config.is_absolute():
+        return _root_from_config(config)
+    here = Path.cwd()
+    for candidate in (here, *here.parents):
+        found = candidate / config
+        if found.is_file():
+            return _root_from_config(found)
+    return here
+
+
+def _root_from_config(config: Path) -> Path:
+    if config.parent.name == "config":
+        return config.parent.parent
+    return config.parent
 
 
 def lock_path() -> Path:
@@ -171,6 +204,143 @@ def construct(cls: type, runtime: Any, options: dict | None = None) -> Any:
         return cls()
 
 
+def component_digest(folder: Path) -> str:
+    """Stable sha256 of every file in a component folder."""
+    digest = hashlib.sha256()
+    if not folder.is_dir():
+        return digest.hexdigest()
+    files = sorted(path for path in folder.rglob("*") if path.is_file())
+    for path in files:
+        digest.update(path.relative_to(folder).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def rollback_target(kind: str) -> tuple[str, str]:
+    """`(active, previous)` for a kind. Previous falls back to the built-in."""
+    entry = _read_lock().get(kind) or {}
+    active = str(entry.get("active") or "")
+    previous = str(entry.get("previous") or "") or _builtin_default(kind)
+    return active, previous
+
+
+# What a component check may inherit. API keys, tokens and the rest of the
+# parent environment are not in this list, so staged code cannot read them.
+_CHECK_ENV = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "LANG",
+    "LC_ALL",
+    "PYTHONIOENCODING",
+    "PYTHONUTF8",
+    "PYTHONDONTWRITEBYTECODE",
+)
+
+_CHECK_CHILD = r"""
+import json, os, runpy, sys
+from pathlib import Path
+
+sandbox = Path(sys.argv[1]).resolve()
+os.chdir(sandbox)
+
+def _allowed(path) -> bool:
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, ValueError):
+        return False
+    return resolved == sandbox or sandbox in resolved.parents
+
+def _audit(event, args):
+    if event == "open":
+        path = args[0]
+        mode = args[1] if len(args) > 1 else "r"
+        flags = args[2] if len(args) > 2 else 0
+        writing = isinstance(mode, str) and any(flag in mode for flag in "wax+")
+        if isinstance(flags, int):
+            writing = writing or bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT))
+        if writing and not _allowed(path):
+            raise PermissionError(f"write outside component sandbox: {path}")
+    elif event in {"os.remove", "os.unlink", "os.rmdir", "os.rename", "shutil.rmtree"} and args:
+        if not _allowed(args[0]):
+            raise PermissionError(f"write outside component sandbox: {args[0]}")
+
+sys.addaudithook(_audit)
+from iris_ai.plug import check_folder
+ok, detail = check_folder(sandbox)
+if not ok:
+    print(json.dumps({"ok": False, "detail": detail}))
+    raise SystemExit(0)
+test = sandbox / "test_component.py"
+if test.is_file():
+    try:
+        runpy.run_path(str(test), run_name="__main__")
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            print(json.dumps({"ok": False, "detail": f"test_component.py exited {exc.code}"}))
+            raise SystemExit(0)
+    except Exception as exc:
+        print(json.dumps({"ok": False, "detail": f"test_component.py failed: {type(exc).__name__}: {exc}"}))
+        raise SystemExit(0)
+    detail = f"{detail}; test_component.py passed"
+print(json.dumps({"ok": True, "detail": detail}))
+"""
+
+
+def _check_env(folder: Path) -> dict[str, str]:
+    """A child environment with no secrets. Home and temp stay inside the folder."""
+    env = {key: os.environ[key] for key in _CHECK_ENV if key in os.environ}
+    root = str(folder.resolve())
+    env["HOME"] = root
+    env["USERPROFILE"] = root
+    env["TMPDIR"] = root
+    env["TMP"] = root
+    env["TEMP"] = root
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
+def check_in_sandbox(folder: Path) -> tuple[bool, str]:
+    """Contract-check a component, and run `test_component.py` when it exists.
+
+    The child process inherits no API keys and cannot write outside the
+    component folder. This is the check both the tool and `iris components
+    check` use, so staged code is not imported in the Iris process.
+    """
+    if not (folder / "component.py").is_file():
+        return False, f"no component.py in {folder}"
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _CHECK_CHILD, str(folder.resolve())],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=_check_env(folder),
+            cwd=str(folder.resolve()),
+        )
+    except subprocess.TimeoutExpired:
+        return False, "component check timed out"
+    line = ""
+    for candidate in reversed(proc.stdout.splitlines()):
+        if candidate.strip().startswith("{"):
+            line = candidate.strip()
+            break
+    if not line:
+        detail = (proc.stderr or proc.stdout or "check failed").strip()
+        return False, detail[:300]
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return False, line[:300]
+    return bool(payload.get("ok")), str(payload.get("detail") or "check failed")
+
+
 def check_folder(folder: Path) -> tuple[bool, str]:
     """Import the component and confirm it has the method its kind requires."""
     meta = _read_toml(folder / "component.toml")
@@ -252,6 +422,10 @@ def activate(kind: str, name: str) -> str:
         raise RuntimeError(detail)
     dest = components_root() / kind / name
     if dest.exists():
+        stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        backup = components_root() / ".backup" / kind / f"{name}-{stamp}"
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(dest, backup)
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(staged), str(dest))

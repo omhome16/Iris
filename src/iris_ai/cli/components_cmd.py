@@ -57,13 +57,13 @@ def run(action: str = "list", kind: str = "", option: str = "") -> int:
         out.print(f"wrote {folder}")
         return 0
     if action == "check":
-        from iris_ai.plug import check_folder, local_folder
+        from iris_ai.plug import check_in_sandbox, local_folder
 
         folder = local_folder(kind, option) if kind else Path(option)
         if folder is None:
             ui.failed(out, "not found", option or kind)
             return 2
-        ok, detail = check_folder(folder)
+        ok, detail = check_in_sandbox(folder)
         ui.status(out, "ok" if ok else "fail", "component", detail)
         return 0 if ok else 1
     if action == "rollback":
