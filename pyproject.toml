@@ -106,7 +106,9 @@ packages = ["src/iris_ai"]
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "iris_ai/builtin_skills"
 "assets/mermaid" = "iris_ai/assets/mermaid"
-"src/iris_ai/eval/suites" = "iris_ai/eval/suites"
+# Eval suites already live under src/iris_ai/eval/suites, so the package
+# builder ships them. A force-include of that same path adds each JSON file
+# twice and the wheel build fails.
 
 [tool.uv]
 package = true
