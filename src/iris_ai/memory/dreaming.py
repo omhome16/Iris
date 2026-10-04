@@ -388,6 +388,48 @@ class DeepPhase:
         return any(hit["path"] == "MEMORY.md" and hit["cos"] >= 0.85 for hit in near)
 
 
+async def _fold_consolidator(engine: DreamEngine, plan) -> None:
+    """Run every consolidator stage after dreaming's own propose. The kernel still writes."""
+    from iris_ai import turnlog
+    from iris_ai.pipeline import record_stage
+
+    names = list(getattr(engine, "pipeline", []) or [])
+    if not names:
+        return
+    fails = getattr(engine, "pipeline_fails", None)
+    if not isinstance(fails, dict):
+        fails = {}
+        engine.pipeline_fails = fails
+    stages: list[dict] = []
+    conflicts = list(getattr(plan, "conflicts", ()) or ())
+    for name in names:
+        if name in {"dreaming", "default", "off", ""}:
+            record_stage(stages, "consolidator", name)
+            continue
+        key = f"consolidator:{name}"
+        if int(fails.get(key) or 0) >= 3:
+            continue
+        try:
+            stage = getattr(engine, "extra_stage", None) if name == "conflict-resolver" else None
+            if stage is None:
+                from iris_ai.components import _builtin
+                from iris_ai.plug import construct
+
+                cls = _builtin("consolidator", name)
+                stage = construct(cls, None) if cls is not None else None
+            if stage is None or not hasattr(stage, "propose"):
+                continue
+            from iris_ai.sdk.types import ConsolidationRequest
+
+            proposed = await stage.propose(ConsolidationRequest())
+            conflicts.extend(getattr(proposed, "conflicts", ()) or ())
+            record_stage(stages, "consolidator", name)
+        except Exception:  # noqa: BLE001 - one stage must not stop the rest of the plan
+            fails[key] = int(fails.get(key) or 0) + 1
+    plan.conflicts = tuple(conflicts)
+    turnlog.record("pipeline", pipeline="consolidator", stages=stages)
+
+
 class DreamEngine:
     """Sleep orchestration: Light → REM → Deep."""
 
@@ -397,7 +439,10 @@ class DreamEngine:
         self.deep = DeepPhase(files, index)
         self.files = files
 
-    async def sleep(self) -> DreamRecord:
+    async def propose(self):
+        """Light and REM decide. They do not write MEMORY.md."""
+        from types import SimpleNamespace
+
         promoted, staged = self.light.run(
             self.files.staging_dir(),
             daily_dir=self.files.root / "memory",
@@ -405,11 +450,24 @@ class DreamEngine:
             scan_days=settings.dream_note_scan_days,
         )
         themes = await self.rem.run(promoted)
-        record = await self.deep.run(themes, promoted)
-        record.staged = staged
-        if promoted:
-            self._consume(promoted)
+        return SimpleNamespace(promoted=promoted, staged=staged, themes=themes)
+
+    async def apply_plan(self, plan) -> DreamRecord:
+        """The kernel writes. A flagged conflict is stored, not applied."""
+        record = await self.deep.run(plan.themes, plan.promoted)
+        record.staged = plan.staged
+        if plan.promoted:
+            self._consume(plan.promoted)
+        for conflict in getattr(plan, "conflicts", ()) or ():
+            from iris_ai.memory.conflicts import append_conflict
+
+            append_conflict(self.files.root, conflict)
         return record
+
+    async def sleep(self) -> DreamRecord:
+        plan = await self.propose()
+        await _fold_consolidator(self, plan)
+        return await self.apply_plan(plan)
 
     def _consume(self, promoted: list[StagedSignal]) -> None:
         """Remove promoted (now consolidated) signals from staging files AND

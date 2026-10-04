@@ -86,13 +86,21 @@ def test_new_memory_skeleton_implements_the_backend(
         "delete_file_chunks",
         "replace_file_chunks",
         "forget_entry",
+        "nearest",
+        "list_chunks",
     ):
         assert f"async def {name}" in source
 
 
 def test_each_seam_has_at_least_two_options():
-    for kind in ("context", "memory", "persona", "channel"):
+    for kind in ("context", "memory", "persona"):
         assert len(OPTIONS[kind]) >= 2
+    from iris_ai.components import list_options
+
+    # Channel names are registered transports, not the terminal and HTTP faces.
+    assert "telegram" in list_options("channel")
+    assert "terminal" not in list_options("channel")
+    assert "http" not in list_options("channel")
 
 
 async def test_markdown_memory_finds_a_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

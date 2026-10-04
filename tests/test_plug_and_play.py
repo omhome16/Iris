@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -190,7 +191,10 @@ def test_api_key_file_is_owner_only(tmp_path: Path):
     os.chmod(path, 0o644)
     write_env_key(path, "GROQ_API_KEY", "not-printed")
     mode = stat.S_IMODE(path.stat().st_mode)
-    assert mode == 0o600
+    # Windows does not store the Unix mode bits os.chmod asks for, so 0600
+    # only round-trips on POSIX. The key still must be written and not printed.
+    if os.name == "posix":
+        assert mode == 0o600
     assert "not-printed" in path.read_text(encoding="utf-8")
 
 
@@ -264,8 +268,10 @@ async def test_custom_capture_is_written_to_the_daily_note(tmp_path: Path):
     files = WorkspaceFiles(tmp_path)
 
     class Policy:
-        async def maybe_capture(self, *, user_message, reply, known_context):
-            return "Owner moved to Bengaluru"
+        async def extract(self, request):
+            from iris_ai.sdk.types import MemoryCandidate
+
+            return [MemoryCandidate(content="Owner moved to Bengaluru", kind="decision", importance=5)]
 
     class Index:
         def __init__(self) -> None:
@@ -354,9 +360,11 @@ def test_public_bind_without_a_token_is_refused(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_an_empty_model_reply_is_not_a_rate_limit(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("iris_ai.agent.chat.tool_schemas", lambda *a, **k: [])
-    monkeypatch.setattr("iris_ai.agent.chat.tool_surface", lambda *a, **k: ([], ""))
-    monkeypatch.setattr("iris_ai.agent.chat.render_system", lambda *a, **k: "sys")
+    # The prompt and the tool list moved into the kernel services. Patch them
+    # where those services import them, or the empty-reply path never runs.
+    monkeypatch.setattr("iris_ai.agent.tools.tool_schemas", lambda *a, **k: [])
+    monkeypatch.setattr("iris_ai.agent.tools.tool_surface", lambda *a, **k: ([], ""))
+    monkeypatch.setattr("iris_ai.prompt.render_system", lambda *a, **k: "sys")
 
     class LLM:
         async def complete_with_tools(self, messages, tools, max_attempts=2):
@@ -434,7 +442,9 @@ def test_component_check_blocks_process_spawn_and_network(tmp_path, monkeypatch)
     secret.write_text("LEAK_SENTINEL=not-a-real-secret\n", encoding="utf-8")
     cases = {
         "sub": f"import subprocess\nsubprocess.run(['touch', {str(touched)!r}], check=False)\n",
-        "system": f"import os\nos.system('touch {touched}')\n",
+        # repr, not interpolation: a Windows path contains \U and would be a
+        # broken unicode escape inside a single-quoted source string.
+        "system": f"import os\nos.system('touch ' + {str(touched)!r})\n",
         "mkdir": f"import os\nos.mkdir({str(made)!r})\n",
         "chmod": f"import os\nos.chmod({str(victim)!r}, 0o644)\n",
         "symlink": f"import os\nos.symlink({str(victim)!r}, {str(link)!r})\n",
@@ -461,7 +471,8 @@ def test_component_check_blocks_process_spawn_and_network(tmp_path, monkeypatch)
     assert not touched.exists()
     assert not made.exists()
     assert not link.exists()
-    assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o600
 
 
 def test_check_and_doctor_reject_text_with_an_extra_argument(tmp_path, monkeypatch):
@@ -656,7 +667,13 @@ def test_component_check_blocks_ctypes_dns_and_utime(tmp_path, monkeypatch):
     for name, attempt in cases.items():
         ok, detail, folder = _checked(tmp_path, monkeypatch, name, attempt)
         assert ok, detail
-        assert "landlock" in detail
+        # Landlock is a Linux kernel feature. Elsewhere the audit hook is the
+        # whole guarantee, and the check says so. Asserting the jail on Windows
+        # made the offline suite fail on a machine that cannot apply it.
+        if sys.platform.startswith("linux"):
+            assert "landlock" in detail
+        else:
+            assert "isolation=audit" in detail
         assert (folder / "result.txt").read_text(encoding="utf-8") == "PermissionError"
     assert not marker.exists()
     assert touched.stat().st_mtime_ns == before

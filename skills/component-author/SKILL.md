@@ -14,16 +14,20 @@ Iris does not edit its own package. A new part is a folder under
 `components/.staging/<kind>/<name>/`, checked in a separate process, and moved
 into place only after the owner approves `component_activate`.
 
-## Contract
+## Contract (iris/v1)
 
-- `context`: `async def assemble_turn(self, user_message, *, session_id) -> tuple[str, list[str]]`
-- `memory`: `async def search(self, query, **kwargs)` plus `connect` and `close`
-- `persona`: `def text(self) -> str`. `text` takes no arguments besides `self`. Do not add `original`, `text`, or `message`. `component_check` and `iris doctor` both call `text()` that way; a signature that needs another argument fails both.
-- `capture`: `async def maybe_capture(self, *, user_message, reply, known_context) -> str`
-- `consolidator`: `async def sleep(self)`
+Set `api_version = "iris/v1"` in `component.toml` and list `permissions`
+(`llm`, `memory.read`, `files.read`, `state`). `ctx.runtime` is not granted.
 
-The constructor is `__init__(self, ctx, **options)`. `ctx` has `llm`, `memory`,
-`files`, and `options`. Do not import Iris internals beyond that.
+- `context`: `async def assemble(self, request) -> ContextResult`
+- `memory`: every name in `MemoryBackend.REQUIRED`, including `nearest` and `list_chunks`
+- `persona`: `def text(self) -> str`. No arguments besides `self`.
+- `capture`: `async def extract(self, request) -> list[MemoryCandidate]`
+- `consolidator`: `async def propose(self, request) -> ConsolidationPlan`
+
+Import the types from `iris_ai.sdk`. The kernel writes memory. You return candidates or a plan.
+
+The v0 `ComponentContext(runtime)` adapter was removed in 0.6. Write `assemble`, `extract`, and `propose`.
 
 ## Procedure
 

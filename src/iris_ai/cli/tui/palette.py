@@ -25,7 +25,8 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/tools", "list the tools the assistant can call"),
     ("/skills", "list installed skills"),
     ("/costs", "what this process has spent"),
-    ("/trace", "where the trace log is"),
+    ("/explain", "why the last turn looked like that"),
+    ("/trace", "the same explanation, plus the trace file"),
     ("/clear", "clear the transcript on screen"),
     ("/exit", "leave the chat"),
 )

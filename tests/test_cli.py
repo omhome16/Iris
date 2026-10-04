@@ -37,9 +37,12 @@ def test_help_lists_only_real_commands():
         "costs",
         "cron",
         "doctor",
+        "eval",
+        "evolve",
         "guards",
         "init",
         "mcp",
+        "memory",
         "migrate",
         "models",
         "new",
@@ -49,6 +52,7 @@ def test_help_lists_only_real_commands():
         "serve",
         "skills",
         "tools",
+        "trace",
         "version",
     }
     for name in names:

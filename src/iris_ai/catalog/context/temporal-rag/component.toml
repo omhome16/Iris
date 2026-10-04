@@ -1,0 +1,7 @@
+kind = "context"
+name = "temporal-rag"
+entry = "component:Component"
+api_version = "iris/v1"
+permissions = ["memory.read"]
+description = "Newest fact first. Older overlaps go in a history block."
+requires = ["iris>=0.5,<1.0"]

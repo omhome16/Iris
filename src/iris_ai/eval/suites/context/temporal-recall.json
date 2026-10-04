@@ -1,0 +1,25 @@
+{
+  "metrics": ["stale_as_current", "evidence_recall", "context_chars"],
+  "baseline": {"component": "default", "stale_as_current": 1.0, "evidence_recall": 1.0},
+  "split": {"search": ["rust"], "heldout": ["editor"]},
+  "cases": [
+    {
+      "id": "rust",
+      "input": "What do I use for AI work?",
+      "corpus": [
+        {"path": "memory/2026-01-01.md", "content": "I prefer Python for AI work.", "days_ago": 40, "importance": 6},
+        {"path": "memory/2026-06-01.md", "content": "I have moved to Rust for AI work.", "days_ago": 2, "importance": 8}
+      ],
+      "expect": {"current": "Rust", "stale": "Python"}
+    },
+    {
+      "id": "editor",
+      "input": "Which editor do I use?",
+      "corpus": [
+        {"path": "memory/2026-02-01.md", "content": "I prefer Vim for editing.", "days_ago": 20, "importance": 5},
+        {"path": "memory/2026-06-02.md", "content": "I have moved to Helix for editing.", "days_ago": 1, "importance": 7}
+      ],
+      "expect": {"current": "Helix", "stale": "Vim"}
+    }
+  ]
+}

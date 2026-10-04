@@ -130,6 +130,11 @@ def apply_content_policy(entry: dict, *, mode: str = "", sample: bool = False) -
                 if not isinstance(call, dict):
                     continue
                 item: dict[str, Any] = {"name": call.get("name", "")}
+                # Policy is metadata, not content. /explain reads it after redaction.
+                if call.get("policy_class"):
+                    item["policy_class"] = str(call["policy_class"])
+                if call.get("decision"):
+                    item["decision"] = str(call["decision"])
                 raw = call.get("args")
                 if mode == "metadata":
                     item["args_hash"] = args_hash(raw)

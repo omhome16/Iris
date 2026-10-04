@@ -43,5 +43,13 @@ def run(channel: str = "terminal", *, host: str = "127.0.0.1", port: int = 8000,
             return 1
         ui.note(out, "Telegram uses the bridge. The token is set; start the bridge process.")
         return 0
-    ui.failed(out, "unknown channel", f"{channel!r}. known: terminal, telegram, http")
-    return 2
+    from iris_ai.channels.runner import ChannelRunner
+    from iris_ai.components.resolve import resolve
+
+    found = resolve("channel", name)
+    if found is None:
+        ui.failed(out, "unknown channel", f"{channel!r}. known: terminal, telegram, http")
+        return 2
+    runner = ChannelRunner(channel=name)
+    ui.note(out, f"{name} is ready. session={runner.channel}:conversation origin follows the owner list")
+    return 0

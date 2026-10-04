@@ -1,9 +1,24 @@
 # Iris
 
-**A plug-and-play agent harness.** Pick a provider, then swap context, memory,
-persona, capture, consolidation, or a channel with one line of config. A new
-part is a folder next to `config/`. You can write it, or ask Iris to write it
-and approve it before it goes live.
+**Swap how an agent thinks, remembers, speaks, and listens without forking the runtime.**
+The kernel keeps approvals, policy, budgets, and the trace. The engine, context,
+memory, persona, capture, consolidator, and channel are components: a folder, a
+package, or one line in `config/harness.toml`. You can write one, or ask Iris to
+write it, and it loads only at the digest you approved.
+
+On the shipped stale-fact suite, the default context scores `stale_as_current=1.00`
+and `temporal-rag` scores `0.00` (`uv run iris eval context`). Both still recall
+the current fact. The command is the measurement.
+
+| component | suite | metric | default | catalog | command |
+|---|---|---|---|---|---|
+| temporal-rag | context/temporal-recall | stale_as_current | 1.00 | 0.00 | `uv run iris eval context --component temporal-rag` |
+| evidence-memory | memory/supersession | stale_at_5 | 1.00 | 0.00 | `uv run iris eval memory --component evidence-memory` |
+| decision-only | capture/decision-signal | f1 | 0.25 | 1.00 | `uv run iris eval capture --component decision-only` |
+| conflict-resolver | consolidator/conflicts | silent_overwrite | 1.00 | 0.00 | `uv run iris eval consolidator --component conflict-resolver` |
+| strict-reviewer | persona/format | format_compliance | 0.00 | 1.00 | `uv run iris eval persona --component strict-reviewer` |
+
+The paired interval on each of those rows excludes zero. `iris components simulate <kind> <name>` prints it. `iris evolve` archives a run and does not activate anything.
 
 ```bash
 uv sync
@@ -71,7 +86,7 @@ and `iris doctor` names the fix.
 | persona | `blank`, `file`, `assistant`, `coder`, `researcher`, `tutor` | The voice in the system prompt |
 | capture | `default`, `off` | Facts kept from a finished turn |
 | consolidator | `dreaming`, `off` | Promotion into `MEMORY.md` |
-| channel | `terminal`, `telegram`, `http` | Where a session is reached |
+| channel | registered transports (`telegram`) | Where a message is delivered. `terminal` and `http` are faces: `iris serve` |
 
 `default` context reads `MEMORY.md` and `USER.md` and does not search the index.
 The model recalls with `memory_search`. `recall-first` searches every turn and

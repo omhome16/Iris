@@ -1,0 +1,15 @@
+{
+  "metrics": ["precision", "recall", "f1", "stored_per_turn"],
+  "baseline": {"component": "default", "precision": 0.25, "f1": 0.25},
+  "split": {"search": ["keep-decision", "drop-question"], "heldout": ["drop-someday", "keep-prefer"]},
+  "cases": [
+    {"id": "keep-decision", "input": "We decided to use uv.", "expect": {"store": true}},
+    {"id": "drop-question", "input": "What is 2 + 2?", "expect": {"store": false}},
+    {"id": "drop-someday", "input": "I am thinking about Rust someday.", "expect": {"store": false}},
+    {"id": "keep-prefer", "input": "From now on I always use ruff.", "expect": {"store": true}},
+    {"id": "drop-hypothetical", "input": "What if we used Java?", "expect": {"store": false}},
+    {"id": "drop-arithmetic", "input": "What is 12 + 7?", "expect": {"store": false}},
+    {"id": "drop-chat", "input": "Hello, how are you?", "expect": {"store": false}},
+    {"id": "drop-maybe", "input": "I might try Go someday.", "expect": {"store": false}}
+  ]
+}

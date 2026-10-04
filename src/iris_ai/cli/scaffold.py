@@ -11,17 +11,13 @@ from __future__ import annotations
 
 
 class CustomContext:
-    def __init__(self, runtime) -> None:
-        self.runtime = runtime
+    def __init__(self, ctx, **options) -> None:
+        self.ctx = ctx
 
-    async def assemble_turn(self, user_message: str, *, session_id: str) -> tuple[str, list[str]]:
-        # Start from the built-in prefix, then add your own block.
-        from iris_ai.agent.context import ContextAssembler
+    async def assemble(self, request):
+        from iris_ai.sdk.types import ContextBlock, ContextResult
 
-        text, skills = await ContextAssembler(self.runtime).assemble_turn(
-            user_message, session_id=session_id
-        )
-        return text + "\\n\\n## Extra\\n(your context goes here)", skills
+        return ContextResult(blocks=(ContextBlock(title="Extra", text="your context goes here", priority=30),))
 '''
 
 _MEMORY = '''\
@@ -79,6 +75,12 @@ class JsonMemory:
             if not (row.get("path") == path and row.get("chunk_index") == chunk_index)
         ]
         self._save()
+
+    async def nearest(self, text: str, *, top_k: int = 3) -> list:
+        return await self.search(text, top_k=top_k)
+
+    async def list_chunks(self) -> list:
+        return list(self.rows)
 '''
 
 _PERSONA = '''\
@@ -95,28 +97,10 @@ class CustomPersona:
         return "Be direct. Say when you do not know."
 '''
 
-_CHANNEL = '''\
-"""A channel. Start it with `iris serve` once you wire the transport."""
-
-from __future__ import annotations
-
-
-class CustomChannel:
-    def __init__(self, runtime) -> None:
-        self.runtime = runtime
-
-    async def start(self) -> None:
-        return None
-
-    async def close(self) -> None:
-        return None
-'''
-
 _BODIES = {
     "context": (_CONTEXT, "CustomContext"),
     "memory": (_MEMORY, "JsonMemory"),
     "persona": (_PERSONA, "CustomPersona"),
-    "channel": (_CHANNEL, "CustomChannel"),
 }
 
 
@@ -147,6 +131,10 @@ def write_new(kind: str, name: str, dest: Path) -> Path:
             manifest.write_text(existing.rstrip() + "\n\n" + block, encoding="utf-8")
         return path
 
+    if kind not in _BODIES:
+        from iris_ai.plug import entry_point_hint
+
+        raise ValueError(entry_point_hint(kind))
     body, cls = _BODIES[kind]
     folder = dest / name
     folder.mkdir(parents=True, exist_ok=True)
@@ -162,7 +150,7 @@ def write_new(kind: str, name: str, dest: Path) -> Path:
     if kind == "memory":
         upsert(manifest, "memory_backend", dotted)
     else:
-        upsert(manifest, kind if kind != "channel" else "channel", dotted, table="components")
+        upsert(manifest, kind, dotted, table="components")
     return path
 
 

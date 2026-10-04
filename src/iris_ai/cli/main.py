@@ -55,7 +55,7 @@ app = typer.Typer(
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("start", ("init", "chat", "serve", "config", "doctor", "version")),
     ("configure", ("secrets", "mcp", "models", "components", "policy", "new")),
-    ("inspect", ("tools", "plugins", "guards", "costs", "agents", "skills", "cron")),
+    ("inspect", ("tools", "plugins", "guards", "costs", "agents", "skills", "cron", "trace", "eval", "evolve", "memory")),
     ("maintain", ("migrate",)),
 )
 
@@ -222,14 +222,15 @@ def tools(
 
 @app.command()
 def plugins(
-    action: str = typer.Argument("channels", help="channels | tools | hooks | mcp"),
+    action: str = typer.Argument("channels", help="channels | tools | hooks | mcp | add"),
+    target: str = typer.Argument("", help="For add: a plugin directory."),
     live: bool = typer.Option(
         False, "--live", help="For mcp: connect the declared servers and list their tools."
     ),
 ) -> None:
-    """Inspect registered capabilities (read-only): channels, tools, hooks, mcp."""
+    """Inspect registered capabilities, or install an Agent Plugin."""
     plugins_mod = _load("plugins")
-    raise typer.Exit(code=plugins_mod.run(action, live=live))
+    raise typer.Exit(code=plugins_mod.run(action, target=target, live=live))
 
 
 @app.command()
@@ -276,6 +277,110 @@ def costs(
     """What the model calls actually cost, from the append-only ledger."""
     costs_mod = _load("costs")
     raise typer.Exit(code=costs_mod.run(action, days=days))
+
+
+@app.command("eval")
+def eval_command(
+    kind: str = typer.Argument("", help="context | memory | persona | capture | consolidator | engine"),
+    suite: str = typer.Option("", "--suite", help="Suite name. Empty runs every suite for the kind."),
+    component: str = typer.Option("default", "--component", help="Component to score."),
+    json_output: bool = typer.Option(False, "--json", help="Print the scores as JSON."),
+    live: bool = typer.Option(False, "--live", help="Score with the configured model. Refused for staged code."),
+) -> None:
+    """Score a component offline. No arguments prints the shipped suites."""
+    eval_mod = _load("eval_cmd")
+    raise typer.Exit(code=eval_mod.run(kind, suite=suite, component=component, json_output=json_output, live=live))
+
+
+@app.command()
+def evolve(
+    kind: str = typer.Argument(..., help="context | memory | persona | capture | consolidator"),
+    suite: str = typer.Option("temporal-recall", "--suite", help="Suite to search."),
+    iterations: int = typer.Option(2, "--iterations", help="How many proposer rounds."),
+    budget_usd: float = typer.Option(1.0, "--budget-usd", help="Stop when the ledger would exceed this."),
+    allow_audit_isolation: bool = typer.Option(
+        False, "--allow-audit-isolation", help="Run where the jail is audit-only. WSL2 is the alternative."
+    ),
+) -> None:
+    """Search a suite. The kernel scores. Nothing is activated."""
+    from pathlib import Path
+
+    from iris_ai.config import settings
+    from iris_ai.evolve.run import run_evolve
+
+    def proposer(index: int) -> list[dict[str, str]]:
+        if index:
+            return []
+        names = {
+            "context": "temporal-rag",
+            "memory": "evidence-memory",
+            "capture": "decision-only",
+            "consolidator": "conflict-resolver",
+            "persona": "strict-reviewer",
+        }
+        return [{"name": names.get(kind, kind), "source": f"class {kind}:\n    pass\n", "notes": "shipped candidate"}]
+
+    try:
+        report = run_evolve(
+            kind,
+            suite,
+            root=Path(settings.workspace_dir),
+            proposer=proposer,
+            iterations=iterations,
+            budget_usd=budget_usd,
+            allow_audit=allow_audit_isolation,
+        )
+    except PermissionError as exc:
+        console().print(str(exc))
+        raise typer.Exit(code=1) from exc
+    frontier = ", ".join(row["name"] for row in report["frontier"]) or "(empty)"
+    console().print(f"frontier: {frontier}")
+    console().print("activated: no")
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def memory(
+    action: str = typer.Argument("conflicts", help="conflicts"),
+    conflict_id: str = typer.Argument("", help="Conflict id, with --resolve."),
+    resolve: str = typer.Option("", "--resolve", help="keep | replace | both"),
+) -> None:
+    """List open memory conflicts, or resolve one."""
+    from pathlib import Path
+
+    from iris_ai.config import settings
+    from iris_ai.memory.conflicts import list_conflicts, resolve_conflict
+
+    root = Path(settings.workspace_dir)
+    if resolve:
+        if resolve not in {"keep", "replace", "both"} or not conflict_id:
+            console().print("usage: iris memory conflicts ID --resolve keep|replace|both")
+            raise typer.Exit(code=2)
+        try:
+            resolve_conflict(root, conflict_id, resolve)
+        except KeyError:
+            console().print(f"no open conflict {conflict_id}")
+            raise typer.Exit(code=1) from None
+        console().print(f"resolved {conflict_id} {resolve}")
+        raise typer.Exit(code=0)
+    rows = list_conflicts(root)
+    if not rows:
+        console().print("no open conflicts")
+        raise typer.Exit(code=0)
+    for row in rows:
+        console().print(f"{row.get('id')}  {row.get('incoming', '')[:80]}")
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def trace(
+    session: str = typer.Option("", "--session", "-s", help="Only turns from this session."),
+    last: int = typer.Option(1, "--last", "-n", help="How many turns to show."),
+    json_output: bool = typer.Option(False, "--json", help="Print the trace records as JSON."),
+) -> None:
+    """Explain the last turn: model, components, tools, tokens, and cost."""
+    trace_mod = _load("trace_cmd")
+    raise typer.Exit(code=trace_mod.run(session=session, last=last, json_output=json_output))
 
 
 @app.command()
@@ -343,13 +448,17 @@ def models(
 
 @app.command()
 def components(
-    action: str = typer.Argument("list", help="list | use | eject | check | rollback | add"),
+    action: str = typer.Argument("list", help="list | use | eject | check | rollback | add | simulate | lock"),
     kind: str = typer.Argument("", help="context | memory | persona | capture | consolidator | channel"),
     option: str = typer.Argument("", help="The option to switch to."),
+    live: bool = typer.Option(False, "--live", help="Score with the configured model. Refused for staged code."),
+    staged: bool = typer.Option(False, "--staged", help="The component is not approved yet."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm an install without a prompt."),
+    as_plugin: str = typer.Option("", "--as-plugin", help="Write an Agent Plugin into this directory."),
 ) -> None:
     """List plug-and-play options, or switch one."""
     mod = _load("components_cmd")
-    raise typer.Exit(code=mod.run(action, kind, option))
+    raise typer.Exit(code=mod.run(action, kind, option, live=live, staged=staged, yes=yes, as_plugin=as_plugin))
 
 
 @app.command()
@@ -366,12 +475,17 @@ def serve(
 
 @app.command("new")
 def new(
-    kind: str = typer.Argument(..., help="context | memory | persona | role | channel | component"),
+    kind: str = typer.Argument(..., help="context | memory | persona | capture | consolidator | role | component"),
     name: str = typer.Argument("", help="Name, or context|memory when kind is component."),
     dest: Path = typer.Option(Path("examples"), "--dest", help="Directory to write the scaffold into."),
 ) -> None:
-    """Scaffold a context, memory, persona, role, or channel and switch to it."""
+    """Scaffold a folder component, or print the entry-point recipe for other kinds."""
     scaffold_mod = _load("scaffold")
+    from iris_ai.plug import FOLDER_KINDS, entry_point_hint
+
+    if kind not in {*FOLDER_KINDS, "role", "component"}:
+        console().print(entry_point_hint(kind))
+        return
     if kind == "component":
         if name not in {"context", "memory"}:
             _fail("usage: iris new component context|memory")
@@ -386,8 +500,8 @@ def new(
         path = scaffold_mod.write_new(kind, name, dest)
         console().print(f"wrote {path}")
         return
-    if kind not in {"context", "memory", "persona", "capture", "consolidator", "channel"} or not name:
-        _fail("usage: iris new context|memory|persona|capture|consolidator|channel|role <name>")
+    if kind not in FOLDER_KINDS or not name:
+        _fail("usage: iris new context|memory|persona|capture|consolidator|role <name>")
         return
     from iris_ai.plug import scaffold
 

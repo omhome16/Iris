@@ -61,7 +61,7 @@ def render_policy() -> int:
     table = ui.table(
         out,
         "Declared tools",
-        ["tool", "class", "namespace", "policy", "source", "surface"],
+        [("tool", {"no_wrap": True, "overflow": "fold"}), "class", "namespace", "policy", "source", "surface"],
     )
     for row in rows:
         style = _POLICY_STYLE.get(row["policy"], "")

@@ -21,6 +21,21 @@ from iris_ai.memory.llm import LLMClient
 from iris_ai.memory.provenance import Origin, Provenance
 
 _DATE_RE = re.compile(r"memory/(\d{4})-(\d{2})-(\d{2})\.md$")
+# Capture writes "- [7] fact (note)". Dreaming writes "- [7] statement (from: ...)".
+# The number is the importance the write path already decided. Reindex has to
+# keep it, or recall treats every promoted fact as importance 0.
+_IMPORTANCE_RE = re.compile(r"(?:^|\n)\s*-\s*\[(\d{1,2}(?:\.\d+)?)\]")
+
+
+def importance_of(text: str) -> float:
+    """The `[N]` on the first bullet in a chunk, or 0 when the line has none."""
+    match = _IMPORTANCE_RE.search(text)
+    if match is None:
+        return 0.0
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return 0.0
 
 
 def observed_date_for(rel: str) -> date | None:
@@ -104,6 +119,7 @@ class Reindexer:
                         ),
                     ),
                     evergreen=evergreen,
+                    importance=importance_of(chunk),
                 )
             )
         await self.index.replace_file_chunks(rel, records)

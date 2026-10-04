@@ -121,6 +121,15 @@ class Runtime:
     # Swappable pieces. None means the built-in context assembler and capture.
     context_builder: object | None = None
     capture_policy: object | None = None
-    # Which persona the prompt should load: blank, file, or a preset name.
+    # A consolidator stage that proposes conflicts. Dreaming still writes.
+    consolidator_stage: object | None = None
+    # Which persona the prompt should load: blank, file, a preset, or a catalog name.
     persona_choice: str = "file"
+    engine_name: str = "react"
+    engine_fails: int = 0
+    pipelines: dict = field(default_factory=dict)
+    pipeline_fails: dict = field(default_factory=dict)
+    # What was attached for this process: kind -> {name, source, digest}.
+    # /explain and the turn trace read it. Empty until `components.attach`.
+    harness_identity: dict = field(default_factory=dict)
     on_onboarded: Callable[[], None] | None = field(default=None, init=False)

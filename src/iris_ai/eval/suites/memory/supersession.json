@@ -1,0 +1,25 @@
+{
+  "metrics": ["recall_at_5", "ndcg_at_5", "stale_at_5"],
+  "baseline": {"component": "default", "stale_at_5": 1.0},
+  "split": {"search": ["rust"], "heldout": ["editor"]},
+  "cases": [
+    {
+      "id": "rust",
+      "input": "AI work",
+      "corpus": [
+        {"id": "old", "content": "I prefer Python for AI work.", "stale": true},
+        {"id": "new", "content": "I have moved to Rust for AI work.", "stale": false}
+      ],
+      "expect": {"relevant": ["new"], "stale": "Python"}
+    },
+    {
+      "id": "editor",
+      "input": "editing",
+      "corpus": [
+        {"id": "old", "content": "I prefer Vim for editing. (superseded 2026-06-01)", "stale": true},
+        {"id": "new", "content": "I have moved to Helix for editing.", "stale": false}
+      ],
+      "expect": {"relevant": ["new"], "stale": "Vim"}
+    }
+  ]
+}

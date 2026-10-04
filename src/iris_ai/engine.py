@@ -207,19 +207,33 @@ class Harness:
     _retry_task: asyncio.Task | None = field(default=None, repr=False)
 
     # ── turn API (one hot path for CLI, API and bridge) ──────────────────
-    async def respond(self, message: str, *, session_id: str = "default", image: str | None = None) -> str:
+    async def respond(
+        self,
+        message: str,
+        *,
+        session_id: str = "default",
+        image: str | None = None,
+        origin: str = "owner",
+    ) -> str:
         """One turn: returns the reply, raises `ApprovalRequired` if paused."""
-        return await self.graph.respond(message, session_id=session_id, image=image)
+        return await self.graph.respond(message, session_id=session_id, image=image, origin=_origin(origin))
 
     async def resume(self, session_id: str, *, decision: str) -> str:
         """Finish an interrupted turn with the owner's decision."""
         return await self.graph.resume(session_id, decision=decision)
 
     def stream(
-        self, message: str, *, session_id: str = "default", image: str | None = None
+        self,
+        message: str,
+        *,
+        session_id: str = "default",
+        image: str | None = None,
+        origin: str = "owner",
     ):
         """Streamed turn. Yields typed events that also unpack as `(mode, payload)`."""
-        return self.graph.respond_stream(message, session_id=session_id, image=image)
+        return self.graph.respond_stream(
+            message, session_id=session_id, image=image, origin=_origin(origin)
+        )
 
     # ── shutdown ─────────────────────────────────────────────────────────
     async def reload(self) -> str:
@@ -233,6 +247,9 @@ class Harness:
         from iris_ai.manifest import load_manifest
 
         reload_settings()
+        from iris_ai.prompt import clear_persona_cache
+
+        clear_persona_cache()
         notice = attach(self.runtime, load_manifest(Path(settings.harness_config)))
         if notice:
             return f"reloaded config and components. {notice}"
@@ -493,6 +510,15 @@ def _apply_harness_overrides(
             overrides[spec.key_field] = api_key
     if overrides:
         reload_settings(**overrides)
+
+
+_ORIGINS = {"owner", "agent", "untrusted", "task", "system"}
+
+
+def _origin(value: str) -> str:
+    if value not in _ORIGINS:
+        raise ValueError(f"origin must be one of {', '.join(sorted(_ORIGINS))}")
+    return value
 
 
 @asynccontextmanager

@@ -33,6 +33,9 @@ REPL_HELP = """\
 [iris.brand]commands[/iris.brand]
   [iris.cmd]/exit[/iris.cmd], [iris.cmd]/quit[/iris.cmd]  leave the chat
   [iris.cmd]/help[/iris.cmd]         this list
+  [iris.cmd]/explain[/iris.cmd]      why the last turn looked like that
+  [iris.cmd]/trace[/iris.cmd]        the same, plus the trace file
+  [iris.cmd]/conflicts[/iris.cmd]    open memory conflicts waiting on you
 
 Anything else is a turn: it goes to the same pipeline the API and the Telegram
 bridge use, so memory, judgments and traces behave identically.
@@ -190,6 +193,21 @@ async def _run_chat(*, session: str, once: str | None, debug: bool, no_banner: b
                 return 0
             if text == "/help":
                 out.print(REPL_HELP)
+                continue
+            if text in {"/explain", "/trace"}:
+                from iris_ai.explain import explain_latest
+
+                path = brain.files.root / "config" / "traces.jsonl"
+                out.print(explain_latest(path, session=session, include_path=text == "/trace"))
+                continue
+            if text == "/conflicts":
+                from iris_ai.memory.conflicts import list_conflicts
+
+                rows = list_conflicts(brain.files.root)
+                if not rows:
+                    out.print("no open conflicts")
+                for row in rows:
+                    out.print(f"{row.get('id')}  {row.get('incoming', '')[:80]}")
                 continue
             if text == "/dream":
                 dreams = getattr(brain.runtime, "dreams", None)

@@ -30,8 +30,13 @@ class ContextAssembler:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
 
-    async def assemble(self, user_message: str, *, session_id: str) -> str:
-        """The prompt prefix. Skill-agnostic callers (tests, tooling) use this."""
+    async def assemble(self, user_message: str | object, *, session_id: str = "") -> str | object:
+        """Prefix string for a message, or a ContextResult when given a request."""
+        if not isinstance(user_message, str):
+            return await self.assemble_result(
+                getattr(user_message, "message", ""),
+                session_id=getattr(user_message, "session_id", session_id),
+            )
         text, _skills = await self.assemble_turn(user_message, session_id=session_id)
         return text
 
@@ -42,29 +47,9 @@ class ContextAssembler:
         promise that the turn will obey that skill's policy, and only the
         assembler knows which skill it actually chose.
         """
-        parts: list[str] = []
-
-        # Bootstrap budgets are enforced here (bootstrap_user/bootstrap_memory
-        # apply `user_profile_budget_tokens` / `bootstrap_budget_tokens`). The
-        # budgets were configured but never applied: MEMORY.md entered the
-        # prompt unbounded, so the one file that grows forever had no ceiling.
-        instructions = self.runtime.files.read(self.runtime.files.instructions)
-        if instructions:
-            parts.append(f"## Operating contract\n{instructions}")
-
-        profile = self.runtime.files.bootstrap_user()
-        if profile.strip():
-            parts.append(f"## Owner profile\n{profile}")
-
-        curated = self.runtime.files.bootstrap_memory()
-        if curated.strip():
-            parts.append(f"## Long-term memory (curated)\n{curated}")
-
-        skill_block, active = await self._skills_block(user_message)
-        if skill_block:
-            parts.append(skill_block)
-
-        prefix = "\n\n".join(parts)
+        result = await self.assemble_result(user_message, session_id=session_id)
+        prefix = result.render()
+        active = list(result.skills)
         # Record which prompt policy built this turn, plus a fingerprint of the
         # prefix it actually produced. Without both, "quality changed" cannot be
         # attributed to a prompt edit rather than a model or a corpus change —
@@ -73,6 +58,41 @@ class ContextAssembler:
         # where someone edited a prompt and forgot to bump it.
         turnlog.note_prompt(hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:12])
         return prefix, active
+
+    async def assemble_result(self, user_message: str, *, session_id: str):
+        """The same prefix as `assemble_turn`, as blocks."""
+        from iris_ai.sdk.types import ContextBlock, ContextResult
+
+        blocks: list[ContextBlock] = []
+        instructions = self.runtime.files.read(self.runtime.files.instructions)
+        if instructions:
+            blocks.append(
+                ContextBlock(
+                    title="Operating contract",
+                    text=instructions,
+                    source="AGENTS.md",
+                    kind="contract",
+                    priority=0,
+                )
+            )
+        profile = self.runtime.files.bootstrap_user()
+        if profile.strip():
+            blocks.append(ContextBlock(title="Owner profile", text=profile, source="USER.md", kind="profile", priority=10))
+        curated = self.runtime.files.bootstrap_memory()
+        if curated.strip():
+            blocks.append(
+                ContextBlock(
+                    title="Long-term memory (curated)",
+                    text=curated,
+                    source="MEMORY.md",
+                    kind="memory",
+                    priority=20,
+                )
+            )
+        skill_text, active = await self._skills_block(user_message)
+        if skill_text:
+            blocks.append(ContextBlock(title="Relevant skills", text=skill_text, kind="skills", priority=40))
+        return ContextResult(blocks=tuple(blocks), skills=tuple(active))
 
     async def _skills_block(self, user_message: str) -> tuple[str, list[str]]:
         """Name only the skills worth looking at — never the procedure itself.
@@ -108,4 +128,4 @@ class ContextAssembler:
         ]
         if not lines:
             return "", []
-        return "## Relevant skills\n" + "\n".join(lines), named
+        return "\n".join(lines), named

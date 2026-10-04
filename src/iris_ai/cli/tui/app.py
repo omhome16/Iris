@@ -376,10 +376,10 @@ class ChatApp(App):
                 self._set_status("reloaded")
             return
         if head == "/components":
-            from iris_ai.components import OPTIONS
+            from iris_ai.components import OPTIONS, list_options
 
-            for kind, choices in OPTIONS.items():
-                await self._write(note_line(f"{kind}: {', '.join(choices)}"))
+            for kind in OPTIONS:
+                await self._write(note_line(f"{kind}: {', '.join(list_options(kind))}"))
             return
         if head == "/team":
             if not rest.strip():
@@ -449,8 +449,13 @@ class ChatApp(App):
                 )
             )
             return
-        if head == "/trace":
-            await self._write(note_line(str(self._root() / "config" / "traces.jsonl")))
+        if head in {"/trace", "/explain"}:
+            from iris_ai.explain import explain_latest
+
+            path = self._root() / "config" / "traces.jsonl"
+            text = explain_latest(path, session=self.session, include_path=head == "/trace")
+            for line in text.splitlines():
+                await self._write(note_line(line or " "))
             return
         hits = matching(head)
         if hits:

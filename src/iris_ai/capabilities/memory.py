@@ -30,6 +30,10 @@ REQUIRED: tuple[str, ...] = (
     "delete_file_chunks",
     "replace_file_chunks",
     "forget_entry",
+    # Dreaming dedupes with nearest. Rot reports and forget-confirm list chunks.
+    # A backend that omits either crashes those paths.
+    "nearest",
+    "list_chunks",
 )
 
 
@@ -63,6 +67,10 @@ class MemoryBackend(Protocol):
 
     async def forget_entry(self, path: str, chunk_index: int) -> None: ...
 
+    async def nearest(self, text: str, *, top_k: int = 3) -> list: ...
+
+    async def list_chunks(self) -> list: ...
+
 
 #: The memory registry. `pgvector` (durable, multi-process) and `sqlite` (the
 #: zero-service default) are core, as is the `null` degraded stand-in.
@@ -87,6 +95,15 @@ def _build_sqlite(**kw: Any) -> SqliteIndex:
 
 
 MEMORY_BACKENDS.register("sqlite", _build_sqlite, source="core")
+
+
+def _build_evidence(**kw: Any) -> object:
+    from iris_ai.catalog.memory.evidence import EvidenceMemory
+
+    return EvidenceMemory(path=settings.sqlite_path, llm=kw.get("llm"), reranker=kw.get("reranker"))
+
+
+MEMORY_BACKENDS.register("evidence-memory", _build_evidence, source="core")
 MEMORY_BACKENDS.register(
     "null",
     lambda **kw: NullIndex(**kw),

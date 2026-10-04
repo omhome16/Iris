@@ -1,0 +1,19 @@
+{
+  "metrics": ["conflict_recall", "false_supersede", "silent_overwrite"],
+  "baseline": {"component": "default", "silent_overwrite": 1.0},
+  "split": {"search": ["rust"], "heldout": ["editor"]},
+  "cases": [
+    {
+      "id": "rust",
+      "input": "I have moved to Rust for AI work.",
+      "curated": "- [6] I prefer Python for AI work.",
+      "expect": {"conflict": true}
+    },
+    {
+      "id": "editor",
+      "input": "I have moved to Helix for editing.",
+      "curated": "- [5] I prefer Vim for editing.",
+      "expect": {"conflict": true}
+    }
+  ]
+}

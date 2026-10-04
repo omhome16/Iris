@@ -20,19 +20,27 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from iris_ai.sdk.context import ComponentContext
+
 log = logging.getLogger("iris.plug")
 
-KINDS = (
+# Folder components a person or Iris can write. engine joins with the engine
+# seam; channel joins with the channel runner. Everything else is an entry point.
+FOLDER_KINDS = (
     "context",
     "memory",
     "persona",
     "capture",
     "consolidator",
+)
+
+KINDS = (
+    *FOLDER_KINDS,
     "channel",
     "tools",
     "guard",
@@ -42,31 +50,27 @@ KINDS = (
     "secret_store",
 )
 
+_ENTRY_POINT_HINTS = {
+    "channel": "Register a factory under the entry point group iris_ai.channels, then set [channels] enabled.",
+    "tools": "Register an object with .name and .tools(runtime) under iris_ai.tools.",
+    "hook": "Register a callable attach(bus) under iris_ai.hooks.",
+    "guard": "Register a callable attach(bus) under iris_ai.hooks. A guard subscribes to pre_tool.",
+    "model": "Register a factory returning a ModelBackend under iris_ai.models. Select it with MODEL_BACKEND.",
+    "judge": "Register a factory returning a Judge under iris_ai.judges. Select it with JUDGE_BACKEND.",
+    "secret_store": "Register a backend under iris_ai.secret_stores. Select it with SECRET_STORE.",
+}
+
+
+def entry_point_hint(kind: str) -> str:
+    """What to do instead of scaffolding a folder nothing loads."""
+    detail = _ENTRY_POINT_HINTS.get(kind, "This kind is not a folder next to config/.")
+    return (
+        f"{kind} is not a folder component. {detail} "
+        "See DOCS.md section 10.2. "
+        "Folder components are context, memory, persona, capture, and consolidator."
+    )
+
 _FAIL_LIMIT = 3
-
-
-@dataclass
-class ComponentContext:
-    """The narrow API a component is allowed to use.
-
-    `runtime` is available for built-ins that predate this context. New
-    components should use `llm`, `memory`, `files`, `log` and `options`.
-    """
-
-    runtime: Any
-    options: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def llm(self) -> Any:
-        return getattr(self.runtime, "llm", None)
-
-    @property
-    def memory(self) -> Any:
-        return getattr(self.runtime, "index", None)
-
-    @property
-    def files(self) -> Any:
-        return getattr(self.runtime, "files", None)
 
 
 @dataclass(frozen=True)
@@ -182,22 +186,52 @@ def load_class(folder: Path) -> type:
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     try:
-        return getattr(module, attr)
+        component = getattr(module, attr)
     except AttributeError as exc:
         raise ImportError(f"{path} has no attribute {attr}") from exc
+    component.api_version = str(meta.get("api_version") or "")
+    component.component_name = str(meta.get("name") or folder.name)
+    component.component_kind = str(meta.get("kind") or folder.parent.name)
+    component.permissions = tuple(meta.get("permissions") or ())
+    return component
+
+
+def _v1_context(cls: type, runtime: Any, options: dict | None) -> ComponentContext:
+    """Capabilities named in the manifest. The runtime itself is not one of them."""
+    from iris_ai.sdk.context import MemoryAccess, ModelAccess, StateDir, WorkspaceAccess
+
+    granted = set(getattr(cls, "permissions", ()) or ())
+    root = getattr(getattr(runtime, "files", None), "root", None)
+    kind = getattr(cls, "component_kind", "")
+    name = getattr(cls, "component_name", "")
+    return ComponentContext(
+        api_version="iris/v1",
+        kind=kind,
+        name=name,
+        options=options or {},
+        llm=ModelAccess(getattr(runtime, "llm", None)) if "llm" in granted else None,
+        memory=MemoryAccess(getattr(runtime, "index", None), getattr(runtime, "files", None))
+        if "memory.read" in granted
+        else None,
+        files=WorkspaceAccess(root) if "files.read" in granted and root is not None else None,
+        state=StateDir(Path(root) / "state" / kind / name) if "state" in granted and root is not None else None,
+    )
 
 
 def construct(cls: type, runtime: Any, options: dict | None = None) -> Any:
-    """Build a component. Classes that ask for `ctx` get a ComponentContext."""
+    """Build a component. Classes that ask for `ctx` get a v1 ComponentContext.
+
+    A class whose first parameter is the runtime is a kernel built-in. It
+    receives that object. The v0 `ComponentContext(runtime)` adapter is gone.
+    """
     import inspect
 
-    ctx = ComponentContext(runtime, options or {})
     try:
         params = list(inspect.signature(cls).parameters)
     except (TypeError, ValueError):
         params = []
     if params and params[0] in {"ctx", "context"}:
-        return cls(ctx, **(options or {}))
+        return cls(_v1_context(cls, runtime, options), **(options or {}))
     try:
         return cls(runtime)
     except TypeError:
@@ -279,6 +313,11 @@ def _kernel_isolation(folder, roots):
     # Landlock, the hook plus an import ban is all that remains.
     label = "audit"
     try:
+        # CDLL(None) is how Linux reaches libc. On Windows it raises before the
+        # landlock check, and the child then dies without a JSON result, so the
+        # check looks like a failure instead of isolation=audit.
+        if not sys.platform.startswith("linux"):
+            raise OSError("landlock is linux-only")
         import ctypes
         from ctypes import Structure, c_int, c_uint64, c_void_p
         libc = ctypes.CDLL(None, use_errno=True)
@@ -456,6 +495,11 @@ if test.is_file():
         print(json.dumps({"ok": False, "detail": message}))
         raise SystemExit(0)
     detail = f"{detail}; test_component.py passed"
+world = os.environ.get("IRIS_SIMULATE_WORLD", "")
+if world:
+    marker = Path(world) / "marker.txt"
+    seen = marker.read_text(encoding="utf-8").strip()
+    detail = f"{detail}; world={seen}"
 print(json.dumps({"ok": True, "detail": detail}))
 """
 
@@ -561,22 +605,118 @@ def check_in_sandbox(folder: Path) -> tuple[bool, str]:
     return bool(payload.get("ok")), str(payload.get("detail") or "check failed")
 
 
+def simulate_staged(folder: Path, world: Path, *, live: bool = False) -> tuple[bool, str]:
+    """Score a staged folder in the check jail. The fixture world stays outside it.
+
+    `--live` is refused. The component digest is compared before and after so a
+    simulation cannot rewrite the files it is judging.
+    """
+    from iris_ai.eval.score import refuse_live
+
+    refuse_live(live, approved=False)
+    folder = Path(folder).resolve()
+    world = Path(world).resolve()
+    if world == folder or folder in world.parents or world in folder.parents:
+        raise ValueError("fixture world must sit outside the component folder")
+    if not (world / "marker.txt").is_file():
+        raise ValueError("fixture world has no marker.txt")
+    before = component_digest(folder)
+    env = _check_env(folder)
+    env["IRIS_SIMULATE_WORLD"] = str(world)
+    launcher = _sandbox_launcher()
+    if launcher:
+        env["IRIS_CHECK_NETNS"] = "1"
+    roots = _interpreter_read_roots()
+    roots.append(str(world))
+    try:
+        proc = subprocess.run(
+            [*launcher, sys.executable, "-c", _CHECK_CHILD, str(folder), json.dumps(roots)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=env,
+            cwd=str(world),
+        )
+    except subprocess.TimeoutExpired:
+        return False, "simulation timed out"
+    after = component_digest(folder)
+    if before != after:
+        return False, "component digest changed during simulation"
+    line = ""
+    for candidate in reversed(proc.stdout.splitlines()):
+        if candidate.strip().startswith("{"):
+            line = candidate.strip()
+            break
+    if not line:
+        detail = (proc.stderr or proc.stdout or "simulation failed").strip()
+        return False, detail[:300]
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return False, line[:300]
+    return bool(payload.get("ok")), str(payload.get("detail") or "simulation failed")
+
+
+def _probe_v1(kind: str, cls: type) -> str:
+    """Empty when the sample call returns the v1 type. Otherwise the reason."""
+    import asyncio
+
+    from iris_ai.sdk.types import (
+        CaptureRequest,
+        ConsolidationPlan,
+        ConsolidationRequest,
+        ContextRequest,
+        ContextResult,
+        MemoryCandidate,
+    )
+
+    try:
+        component = construct(cls, None)
+        if kind == "context":
+            result = asyncio.run(component.assemble(ContextRequest(message="hi", session_id="probe")))
+            if not isinstance(result, ContextResult):
+                return "assemble() must return ContextResult"
+        elif kind == "capture":
+            result = asyncio.run(
+                component.extract(CaptureRequest(user_message="hi", reply="ok", session_id="probe"))
+            )
+            if not isinstance(result, list) or any(not isinstance(item, MemoryCandidate) for item in result):
+                return "extract() must return a list of MemoryCandidate"
+        elif kind == "consolidator":
+            result = asyncio.run(component.propose(ConsolidationRequest()))
+            if not isinstance(result, ConsolidationPlan):
+                return "propose() must return ConsolidationPlan"
+        elif kind == "persona":
+            rendered = component.text()
+            if not isinstance(rendered, str):
+                return "persona text() must return str"
+    except Exception as exc:  # noqa: BLE001 - the probe reports the contract error
+        return f"{kind} probe failed: {type(exc).__name__}: {exc}"
+    return ""
+
+
 def check_folder(folder: Path) -> tuple[bool, str]:
     """Import the component and confirm it has the method its kind requires."""
     meta = _read_toml(folder / "component.toml")
     kind = str(meta.get("kind") or folder.parent.name)
+    v1 = str(meta.get("api_version") or "") == "iris/v1"
     required = {
-        "context": "assemble_turn",
+        "context": "assemble" if v1 else "assemble_turn",
         "memory": "search",
         "persona": "text",
-        "capture": "maybe_capture",
-        "consolidator": "sleep",
+        "capture": "extract" if v1 else "maybe_capture",
+        "consolidator": "propose" if v1 else "sleep",
         "channel": "send_message",
     }.get(kind)
     try:
         cls = load_class(folder)
     except Exception as exc:  # noqa: BLE001 - the check reports the import error
         return False, f"import failed: {type(exc).__name__}: {exc}"
+    if v1:
+        probed = _probe_v1(kind, cls)
+        if probed:
+            return False, probed
     if kind == "persona":
         # `iris doctor` calls `text()` with no arguments. The check has to do
         # the same, or a persona whose signature is `text(self, original)`
@@ -595,20 +735,32 @@ def check_folder(folder: Path) -> tuple[bool, str]:
 
 def scaffold(kind: str, name: str, *, root: Path | None = None) -> Path:
     """Write a working local component. Returns the folder."""
-    if kind not in KINDS:
-        raise ValueError(f"unknown kind {kind!r}")
+    if kind not in FOLDER_KINDS:
+        raise ValueError(entry_point_hint(kind))
     folder = components_root(root) / kind / name
     folder.mkdir(parents=True, exist_ok=True)
     class_name = "".join(part.capitalize() for part in name.replace("-", "_").split("_")) or "Component"
     method = {
-        "context": "async def assemble_turn(self, user_message, *, session_id):\n        return user_message, []\n",
+        "context": "async def assemble(self, request):\n        from iris_ai.sdk.types import ContextResult\n        return ContextResult()\n",
         "persona": "def text(self) -> str:\n        return 'A custom persona.'\n",
-        "capture": "async def maybe_capture(self, *, user_message, reply, known_context):\n        return ''\n",
-        "consolidator": "async def sleep(self):\n        return None\n",
-        "memory": "async def connect(self):\n        return None\n\n    async def close(self):\n        return None\n\n    async def search(self, query, **kwargs):\n        return []\n",
+        "capture": "async def extract(self, request):\n        return []\n",
+        "consolidator": "async def propose(self, request):\n        from iris_ai.sdk.types import ConsolidationPlan\n        return ConsolidationPlan()\n",
+        "memory": (
+            "async def connect(self):\n        return None\n\n"
+            "    async def close(self):\n        return None\n\n"
+            "    async def search(self, query, **kwargs):\n        return []\n\n"
+            "    async def escalate(self, query, **kwargs):\n        return []\n\n"
+            "    async def stats(self):\n        return {}\n\n"
+            "    async def upsert_chunks(self, records):\n        return None\n\n"
+            "    async def delete_file_chunks(self, path):\n        return None\n\n"
+            "    async def replace_file_chunks(self, path, records):\n        return None\n\n"
+            "    async def forget_entry(self, path, chunk_index):\n        return None\n\n"
+            "    async def nearest(self, text, *, top_k=3):\n        return []\n\n"
+            "    async def list_chunks(self):\n        return []\n"
+        ),
     }.get(kind, "def ready(self) -> bool:\n        return True\n")
     (folder / "component.toml").write_text(
-        f'kind = "{kind}"\nname = "{name}"\nentry = "component:{class_name}"\n'
+        f'kind = "{kind}"\nname = "{name}"\napi_version = "iris/v1"\nentry = "component:{class_name}"\n'
         f'description = "Local {kind} component."\n',
         encoding="utf-8",
     )
@@ -705,8 +857,14 @@ class Guarded:
     def __getattr__(self, item: str) -> Any:
         return getattr(self._inner, item)
 
+    async def assemble(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._call("assemble", *args, **kwargs)
+
     async def assemble_turn(self, *args: Any, **kwargs: Any) -> Any:
         return await self._call("assemble_turn", *args, **kwargs)
+
+    async def extract(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._call("extract", *args, **kwargs)
 
     async def maybe_capture(self, *args: Any, **kwargs: Any) -> Any:
         return await self._call("maybe_capture", *args, **kwargs)

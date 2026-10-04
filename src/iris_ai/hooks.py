@@ -93,6 +93,34 @@ class HookBus:
                 results.append(out)
         return results
 
+    async def emit_policy(self, event: str, **payload: Any) -> list[Any]:
+        """Run policy hooks. A handler that raises refuses the call.
+
+        Observer events stay on `emit`, which logs and skips. Policy can only
+        tighten, so a broken policy hook must not let the tool run.
+        """
+        from iris_ai.guards import Verdict
+
+        results: list[Any] = []
+        for _, _, name, handler in self._hooks.get(event, []):
+            try:
+                out = handler(**payload)
+                if inspect.isawaitable(out):
+                    out = await out
+            except Exception as exc:  # noqa: BLE001 - fail closed, do not propagate
+                log.warning("policy hook %s/%s failed closed: %s", event, name, exc)
+                results.append(
+                    Verdict(
+                        allowed=False,
+                        guard=f"hook:{name}",
+                        reason=f"policy hook {name} failed: {exc}",
+                    )
+                )
+                continue
+            if out is not None:
+                results.append(out)
+        return results
+
 
 def discover_hooks(bus: HookBus) -> list[str]:
     """Attach installed hook plugins to a bus; returns the names that attached.

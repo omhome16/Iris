@@ -1,8 +1,9 @@
 # Components
 
-Every swappable part of Iris is a component: context, memory, persona, capture,
-consolidator, channel, tools, guard, hook, model, judge, or secret store. One
-line in `config/harness.toml` selects it:
+Folder components are context, memory, persona, capture, and consolidator. One
+line in `config/harness.toml` selects one. Channels, tools, hooks, models,
+judges, and secret stores are entry-point plugins (DOCS.md section 10.2), not
+folders. `terminal` and `http` are faces: `iris serve`.
 
 ```toml
 [components]
@@ -17,9 +18,11 @@ and `iris doctor` names the fix.
 
 1. **Built in.** Shipped with Iris. `iris components eject context recall-first`
    copies one into a folder you can edit.
-2. **Installed.** A package that advertises the `iris_ai.components` entry
-   point, for example `context.graph-rag = "pkg.mod:GraphRag"`.
-3. **Local.** A folder next to `config/`:
+2. **An entry point** in the group `iris_ai.components`, named like
+   `context.graph-rag` = `pkg.mod:Class`. This package does not publish one yet.
+   A class path `pkg.module:Class` also works.
+3. **Local.** A folder next to `config/`, for context, memory, persona,
+   capture, or consolidator:
 
 ```text
 components/context/graph-rag/

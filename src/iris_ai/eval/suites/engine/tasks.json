@@ -1,0 +1,10 @@
+{
+  "metrics": ["success", "tool_calls"],
+  "baseline": {"component": "react", "success": 1.0},
+  "live_only": false,
+  "split": {"search": ["lookup"], "heldout": ["finish"]},
+  "cases": [
+    {"id": "lookup", "input": "Find the note.", "expect": {"success": true}},
+    {"id": "finish", "input": "Stop when you know.", "expect": {"success": true}}
+  ]
+}

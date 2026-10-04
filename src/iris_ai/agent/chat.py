@@ -12,6 +12,7 @@ never stored in the message history — so history stays cache-friendly.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -24,7 +25,7 @@ from iris_ai import background, turnlog
 from iris_ai.agent.compaction import compact_turn, messages_tokens, trim_messages
 from iris_ai.agent.context import ContextAssembler
 from iris_ai.agent.runtime import Runtime
-from iris_ai.agent.tools import dispatch, tool_schemas, tool_surface
+from iris_ai.agent.tools import dispatch, tool_schemas
 from iris_ai.approval import ApprovalGate, ApprovalPolicy, ReplayGuard
 from iris_ai.config import settings
 from iris_ai.guards import GuardChain, Verdict
@@ -37,7 +38,6 @@ from iris_ai.kernel.pause import GraphInterrupt, get_stream_writer
 from iris_ai.memory.capture import condense, judge_capture, note_line, worth_capturing
 from iris_ai.memory.chunking import estimate_tokens
 from iris_ai.onboarding import OnboardingWizard
-from iris_ai.prompt import render_system
 from iris_ai.text import text_of
 
 log = logging.getLogger("iris.graph")
@@ -213,6 +213,80 @@ def _emit_tool_end(name: str, content: str, started: float) -> None:
     )
 
 
+async def _context_from(assembler: object, message: str, state: dict) -> tuple[str, tuple[str, ...]]:
+    """v1 `assemble`. A component that only has `assemble_turn` is not called."""
+    inner = getattr(assembler, "_inner", assembler)
+    if hasattr(inner, "assemble"):
+        from iris_ai.sdk.types import ContextRequest
+
+        result = await assembler.assemble(
+            ContextRequest(
+                message=message,
+                session_id=str(state.get("session_id") or ""),
+                origin=str(state.get("origin") or "owner"),
+            )
+        )
+        if hasattr(result, "render"):
+            return result.render(), tuple(getattr(result, "skills", ()))
+    return "", ()
+
+
+def _engine_failed(graph: ChatGraph, exc: BaseException) -> dict:
+    """Count an engine failure. Three of them put the turn back on react."""
+    fails = int(getattr(graph.runtime, "engine_fails", 0)) + 1
+    graph.runtime.engine_fails = fails
+    if fails >= 3:
+        graph.runtime.engine_name = "react"
+        graph.engine_name = "react"
+        turnlog.record("engine", event="rolled back to react", error=type(exc).__name__)
+        return {"engine_event": "rolled back to react"}
+    turnlog.record("engine", event=f"engine failure {fails}", error=type(exc).__name__)
+    return {"engine_event": f"engine failure {fails}"}
+
+
+def _trace_pipelines(runtime: object, judgment: dict | None) -> dict:
+    """Selected stages, replaced by the stages the turn actually ran."""
+    from iris_ai.pipeline import record_stage
+
+    shown: dict[str, list] = {}
+    selected = getattr(runtime, "pipelines", None) or {}
+    if isinstance(selected, dict):
+        for kind in ("context", "capture", "persona", "consolidator"):
+            stages: list[dict] = []
+            for name in selected.get(kind) or []:
+                record_stage(stages, kind, str(name))
+            if stages:
+                shown[kind] = stages
+    events = judgment.get("events") if isinstance(judgment, dict) else None
+    for event in events or []:
+        if not isinstance(event, dict) or event.get("kind") != "pipeline":
+            continue
+        kind = str(event.get("pipeline") or "")
+        stages = [stage for stage in (event.get("stages") or []) if isinstance(stage, dict) and stage.get("name")]
+        if kind and stages:
+            shown[kind] = stages
+    return shown
+
+
+def _turn_cost() -> tuple[str, int, float]:
+    """Model, tokens, and estimated USD for the turn in flight."""
+    from iris_ai import turnlog
+    from iris_ai.ledger import estimate_cost
+
+    log = turnlog.current()
+    if log is None:
+        return settings.strong_model or settings.cheap_model or "", 0, 0.0
+    prompt = sum(int(bucket.get("prompt_tokens", 0)) for bucket in log.usage.values())
+    completion = log.completion_tokens()
+    model = ""
+    for names in log.models.values():
+        if names:
+            model = names[-1]
+    if not model:
+        model = settings.strong_model or settings.cheap_model or ""
+    return model, log.total_tokens(), round(estimate_cost(model, prompt, completion), 6)
+
+
 def _tool_failed(out: str) -> bool:
     """Did a tool report failure? Tools return `{"ok": false, ...}` rather than
     raising, so the circuit breaker reads the payload, not an exception."""
@@ -322,51 +396,63 @@ class ChatGraph:
 
     async def _assemble(self, state: IrisState) -> dict:
         user_msg = text_of(state["messages"][-1].content)
-        skills: tuple[str, ...] = ()
+        names = list(getattr(self.runtime, "pipelines", {}).get("context") or [])
         with turnlog.stage("assemble"):
-            ctx, named = await self.assembler.assemble_turn(user_msg, session_id=state["session_id"])
-            skills = tuple(named)
+            if len(names) > 1 or any(name in {"budget", "redact"} for name in names):
+                from iris_ai.pipeline import fold_context
+
+                ctx, skills = await fold_context(self.runtime, names, user_msg, state)
+            else:
+                ctx, skills = await _context_from(self.assembler, user_msg, state)
+        # Every context component is fingerprinted here, including ones that
+        # do not call the default assembler.
+        turnlog.note_prompt(hashlib.sha256(ctx.encode("utf-8")).hexdigest()[:12])
         return {"memory_context": ctx, "active_skills": skills}
 
     async def _agent(self, state: IrisState) -> dict:
-        system = (
-            render_system(
-                self.runtime.files.root,
-                today=self.runtime.files.today().isoformat(),
-                timezone=settings.iris_timezone,
-                persona=getattr(self.runtime, "persona_choice", "") or "",
-            )
-            + f"\n\nContext:\n{state['memory_context']}"
-        )
-        if state.get("tool_failures"):
-            system += (
-                "\n\nTool results from this turn failed: "
-                f"{state['tool_failures']}. Do not tell the owner those actions succeeded. "
-                "Say what failed and what you can do instead."
-            )
-        if state.get("conversation_summary"):
-            system += f"\n\n## Summary of earlier conversation\n{state['conversation_summary']}"
-        origin = state.get("origin") or "owner"
-        loaded = state.get("loaded_tools") or ()
-        # The catalog of what is *not* on the surface this call. Appended to the
-        # system message rather than declared in PERSONA because it depends on
-        # the session (a non-owner turn offers fewer tools) and on the boot (a
-        # connected channel promotes its own), and it is one line per namespace
-        # instead of one schema per tool — which is the whole point of deferral.
-        catalog = tool_surface(self.runtime, origin, state.get("active_skills") or (), loaded)[1]
-        if catalog:
-            system += f"\n\n{catalog}"
-        messages = [{"role": "system", "content": system}, *_to_llm_messages(state["messages"])]
-        if state.get("stream"):
+        from iris_ai.kernel.services import ModelService, PromptService, ToolSurface
+
+        self.engine_name = getattr(self.runtime, "engine_name", None) or "react"
+        self.engine_path = [*getattr(self, "engine_path", []), "agent"]
+        if self.engine_name == "plan-execute" and state.get("engine_phase") == "verify":
+            from iris_ai.engines.plan_execute import EngineEvent
+
+            self.engine_path.append("verify")
+            event = EngineEvent("plan-execute", "verify").render()
+            turnlog.record("engine", event=event)
+            return {"engine_phase": "done", "engine_event": event}
+        messages = PromptService(self.runtime).messages(state, _to_llm_messages(state["messages"]))
+        schemas = ToolSurface(self.runtime).schemas(state)
+        planned: dict = {}
+        if self.engine_name == "plan-execute" and not state.get("engine_planned"):
+            try:
+                plan_text, _calls = await ModelService(self.runtime.llm).complete(
+                    messages, tools=None, tier="cheap", visible=False
+                )
+            except Exception as exc:  # noqa: BLE001 - an engine failure must not take the turn down
+                planned = _engine_failed(self, exc)
+                if getattr(self.runtime, "engine_name", "react") == "react":
+                    self.engine_name = "react"
+            else:
+                self.engine_path.append("plan")
+                planned = {
+                    "engine_planned": True,
+                    "engine_phase": "act",
+                    "engine": {"steps": plan_text[:500]},
+                    "engine_event": "plan-execute: plan",
+                }
+                turnlog.record("engine", event="plan-execute: plan")
+        if state.get("stream") and self.engine_name != "plan-execute":
             return await self._agent_streamed(
-                messages, origin, state.get("active_skills") or (), loaded
+                messages,
+                state.get("origin") or "owner",
+                state.get("active_skills") or (),
+                state.get("loaded_tools") or (),
             )
         try:
             with turnlog.stage("agent"):
-                text, calls, _thinking = await self.runtime.llm.complete_with_tools(
-                    messages,
-                    tool_schemas(self.runtime, origin, state.get("active_skills") or (), loaded),
-                    max_attempts=2,
+                text, calls = await ModelService(self.runtime.llm).complete(
+                    messages, tools=schemas, visible=True
                 )
         except Exception as exc:  # noqa: BLE001 - a provider outage must not 500 the turn
             log.warning("agent LLM call failed: %s", exc)
@@ -376,14 +462,19 @@ class ChatGraph:
                 "type": "ai",
                 "content": text or "",
                 "tool_calls": [
-                    {"id": f"call_{uuid.uuid4().hex}", "name": c["name"], "args": c["args"], "type": "tool_call"}
-                    for i, c in enumerate(calls)
+                    {"id": c["id"], "name": c["name"], "args": c["args"], "type": "tool_call"}
+                    for c in calls
                 ],
             }
-            return {"messages": [ai]}
+            return {"messages": [ai], **planned, **({"engine_phase": "act"} if self.engine_name == "plan-execute" else {})}
         if not (text or "").strip():
             text = EMPTY_REPLY
-        return {"messages": [{"type": "ai", "content": text}]}
+        done = {"messages": [{"type": "ai", "content": text}], **planned}
+        if self.engine_name == "plan-execute":
+            self.engine_path.append("verify")
+            done["engine_phase"] = "done"
+            done["engine_event"] = "plan-execute: verify"
+        return done
 
     async def _agent_streamed(
         self,
@@ -490,7 +581,9 @@ class ChatGraph:
                 # The built-in guard chain is its first subscriber (budget →
                 # circuit → spiral/dedup; see iris/guards.py), and a plugin hook
                 # can observe or refuse through the same ordered bus.
-                verdicts = await self.hooks.emit("pre_tool", tool=tc["name"], args=tc["args"])
+                # Policy fails closed: a raising pre_tool hook is a refusal.
+                # Observer events stay on emit, which logs and continues.
+                verdicts = await self.hooks.emit_policy("pre_tool", tool=tc["name"], args=tc["args"])
                 refusal = next((v for v in verdicts if getattr(v, "refused", False)), None)
                 if refusal is not None:
                     out = json.dumps(
@@ -675,12 +768,44 @@ class ChatGraph:
         agent provenance, and must still clear the Light-phase promotion gate
         in dreaming before they can reach MEMORY.md.
         """
+        # Gates run before any capture component. A custom policy used to skip
+        # the owner check, the kill switch, and the daily cap, so an untrusted
+        # turn could write into the owner's memory.
+        if state.get("origin", "owner") != "owner" or not settings.capture_enabled:
+            turnlog.record("capture", captured=False, reason="not an owner turn")
+            return {}
+        user_msg, ai_msg = _turn_texts(state["messages"])
+        try:
+            day = self.runtime.files.today()
+            if self.runtime.files.read_daily(day).count("(note)") >= settings.capture_max_per_day:
+                log.info("capture skipped: daily note already at the %d-capture cap", settings.capture_max_per_day)
+                turnlog.record("capture", captured=False, reason=f"daily cap {settings.capture_max_per_day} reached")
+                return {}
+        except Exception as exc:  # noqa: BLE001 - the cap must not take down the turn
+            log.warning("capture cap check skipped: %s", exc)
+            day = None
         custom = getattr(self.runtime, "capture_policy", None)
         if custom is not None:
-            user_msg, ai_msg = _turn_texts(state["messages"])
-            note = await custom.maybe_capture(
-                user_message=user_msg, reply=ai_msg, known_context=state.get("memory_context", "")
-            )
+            note = ""
+            names = list(getattr(self.runtime, "pipelines", {}).get("capture") or [])
+            if hasattr(custom, "extract"):
+                from iris_ai.pipeline import redact_candidates
+                from iris_ai.sdk.types import CaptureRequest
+
+                request = CaptureRequest(
+                    user_message=user_msg,
+                    reply=ai_msg,
+                    session_id=str(state.get("session_id") or ""),
+                    context=str(state.get("memory_context") or ""),
+                )
+                candidates = list(await custom.extract(request) or [])
+                if "redact" in names:
+                    candidates = redact_candidates(candidates)
+                if candidates:
+                    note = str(getattr(candidates[0], "content", "") or "")
+            else:
+                turnlog.record("capture", captured=False, reason="v0 maybe_capture was removed in 0.6")
+                return {}
             if not note:
                 return {}
             line = str(note).strip()
@@ -689,27 +814,21 @@ class ChatGraph:
             if "(note)" not in line:
                 line = f"{line} (note)"
             try:
-                day = self.runtime.files.today()
+                if day is None:
+                    day = self.runtime.files.today()
                 self.runtime.files.append_daily(line, day=day, stamp=False)
                 await self.runtime.reindexer.index_daily_note(f"memory/{day.isoformat()}.md")
             except Exception as exc:  # noqa: BLE001 - capture must never fail a turn
                 log.warning("custom capture was not saved: %s", exc)
             return {"last_capture": note}
-        if state.get("origin", "owner") != "owner" or not settings.capture_enabled:
-            turnlog.record("capture", captured=False, reason="not an owner turn")
-            return {}
-        user_msg, ai_msg = _turn_texts(state["messages"])
         if not worth_capturing(user_msg, ai_msg):
             # The prefilter is the reason trivial turns cost nothing; saying so
             # keeps "capture ran and declined" from looking like "capture broke".
             turnlog.record("capture", captured=False, reason="prefilter declined")
             return {}
         try:
-            day = self.runtime.files.today()
-            if self.runtime.files.read_daily(day).count("(note)") >= settings.capture_max_per_day:
-                log.info("capture skipped: daily note already at the %d-capture cap", settings.capture_max_per_day)
-                turnlog.record("capture", captured=False, reason=f"daily cap {settings.capture_max_per_day} reached")
-                return {}
+            if day is None:
+                day = self.runtime.files.today()
             with turnlog.stage("capture"):
                 result = await judge_capture(
                     self.runtime.llm,
@@ -751,6 +870,8 @@ class ChatGraph:
         return "compact" if self._needs_compaction(state) else "agent"
 
     def _after_tools(self, state: IrisState) -> Literal["compact", "agent"]:
+        if getattr(self, "engine_name", "react") == "plan-execute" and state.get("engine_phase") == "act":
+            state["engine_phase"] = "verify"
         return "compact" if self._needs_compaction(state) else "agent"
 
     async def _compact(self, state: IrisState) -> dict:
@@ -793,18 +914,34 @@ class ChatGraph:
         pending: dict | None = None,
         capture: str = "",
         judgment: dict | None = None,
+        context: str = "",
     ) -> None:
         if self.runtime.traces is None:
             return
+        from iris_ai.toolpolicy import resolve as resolve_tool_policy
+
         tools = []
         for m in messages:
             for tc in getattr(m, "tool_calls", None) or []:
+                name = tc["name"]
+                try:
+                    decision = resolve_tool_policy(name)
+                    policy_class = decision.cls.value
+                    policy = decision.policy.value
+                except Exception:  # noqa: BLE001 - a trace must not fail the turn
+                    policy_class = ""
+                    policy = ""
                 tools.append(
                     {
-                        "name": tc["name"],
+                        "name": name,
                         "args": json.dumps(tc.get("args", {}), ensure_ascii=False)[:200],
+                        "policy_class": policy_class,
+                        "decision": policy,
                     }
                 )
+        model, tokens, cost = _turn_cost()
+        harness = dict(getattr(self.runtime, "harness_identity", None) or {})
+        pipelines = _trace_pipelines(self.runtime, judgment)
         replies = [text_of(m.content) for m in messages if getattr(m, "type", "") == "ai" and not getattr(m, "tool_calls", None)]
         self.runtime.traces.record(
             {
@@ -814,6 +951,14 @@ class ChatGraph:
                 "reply": (replies[-1] if replies else "")[:500],
                 "tools": tools,
                 "latency_ms": int((time.monotonic() - started) * 1000),
+                "model": model,
+                "tokens": tokens,
+                "cost_usd": cost,
+                "context_chars": len(context),
+                "harness": harness,
+                "pipelines": pipelines,
+                "engine": getattr(self, "engine_name", "react"),
+                "nodes": list(getattr(self, "engine_path", []) or []),
                 "pending": pending,
                 # What this turn taught her, surfaced in the trace so the
                 # write path is observable rather than something you take on
@@ -962,7 +1107,13 @@ class ChatGraph:
                 payload = result["__interrupt__"][0].value
                 self._pending[session_id] = payload
                 self._trace_turn(
-                    session_id, message, started, result["messages"], pending=payload, judgment=judgment
+                    session_id,
+                    message,
+                    started,
+                    result["messages"],
+                    pending=payload,
+                    judgment=judgment,
+                    context=result.get("memory_context", ""),
                 )
                 raise ApprovalRequired(payload)
             self._trace_turn(
@@ -972,6 +1123,7 @@ class ChatGraph:
                 result["messages"],
                 capture=result.get("last_capture", ""),
                 judgment=judgment,
+                context=result.get("memory_context", ""),
             )
             return result["messages"][-1].content
 
@@ -1029,11 +1181,16 @@ class ChatGraph:
                 payload = result["__interrupt__"][0].value
                 self._trace_turn(
                     session_id, f"<resume: {decision}>", started, result["messages"],
-                    pending=payload, judgment=judgment,
+                    pending=payload, judgment=judgment, context=result.get("memory_context", ""),
                 )
                 raise ApprovalRequired(payload)
             self._trace_turn(
-                session_id, f"<resume: {decision}>", started, result["messages"], judgment=judgment
+                session_id,
+                f"<resume: {decision}>",
+                started,
+                result["messages"],
+                judgment=judgment,
+                context=result.get("memory_context", ""),
             )
             return result["messages"][-1].content
 
@@ -1089,6 +1246,7 @@ class ChatGraph:
                     self._trace_turn(
                         session_id, message, started, snapshot.values.get("messages", []),
                         pending=pending, judgment=judgment,
+                        context=snapshot.values.get("memory_context", ""),
                     )
                     body = pending if isinstance(pending, dict) else {"summary": str(pending)}
                     yield Approval(payload=body)
@@ -1101,6 +1259,7 @@ class ChatGraph:
                         messages,
                         capture=(snapshot.values.get("last_capture", "") if snapshot else ""),
                         judgment=judgment,
+                        context=(snapshot.values.get("memory_context", "") if snapshot else ""),
                     )
             except GraphRecursionError:
                 log.warning("streamed turn exceeded recursion limit %s; returning best-so-far", settings.graph_recursion_limit)

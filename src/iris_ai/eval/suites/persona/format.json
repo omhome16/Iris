@@ -1,0 +1,10 @@
+{
+  "metrics": ["format_compliance"],
+  "baseline": {"component": "default", "format_compliance": 0.0},
+  "live_only": true,
+  "split": {"search": ["verdict"], "heldout": ["severity"]},
+  "cases": [
+    {"id": "verdict", "input": "Review this diff.", "expect": {"must_contain": "Verdict:"}},
+    {"id": "severity", "input": "Review this diff.", "expect": {"must_contain": "severity"}}
+  ]
+}

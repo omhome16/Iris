@@ -369,6 +369,11 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "component_check",
         "component_activate",
         "component_rollback",
+        "component_simulate",
+        "memory_resolve_conflict",
+        "evolve_list",
+        "evolve_read",
+        "evolve_grep",
     }
     for s in schemas:
         assert s["function"]["parameters"]["type"] == "object"

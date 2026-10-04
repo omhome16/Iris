@@ -14,6 +14,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from iris_ai import turnlog
@@ -731,6 +732,47 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         )
     )
 
+    async def memory_resolve_conflict(conflict_id: str, choice: str) -> str:
+        """Apply an owner decision to a flagged conflict. The kernel writes."""
+        from iris_ai.memory.conflicts import resolve_conflict
+
+        if choice not in {"keep", "replace", "both"}:
+            return _err("choice must be keep, replace, or both")
+        shown = {
+            "conflict_id": conflict_id,
+            "choice": choice,
+            "changes": f"resolve conflict {conflict_id} as {choice}",
+            **approval_payload(
+                "memory_resolve_conflict",
+                {"conflict_id": conflict_id, "choice": choice},
+            ),
+        }
+        decision = _honour_approval(shown)
+        if decision != "approved":
+            return _err(decision)
+        try:
+            row = resolve_conflict(runtime.files.root, conflict_id, choice)
+        except KeyError as exc:
+            return _err(str(exc))
+        return _ok(status=row.get("status"), choice=choice)
+
+    tools.append(
+        Tool(
+            "memory_resolve_conflict",
+            "Resolve one flagged memory conflict. choice is keep, replace, or both. "
+            "Owner only, and the write waits for approval.",
+            {
+                "type": "object",
+                "properties": {
+                    "conflict_id": {"type": "string"},
+                    "choice": {"type": "string"},
+                },
+                "required": ["conflict_id", "choice"],
+            },
+            memory_resolve_conflict,
+        )
+    )
+
     async def skill_write(name: str, description: str, procedure: str, triggers: list[str] | None = None) -> str:
         if len(procedure) > 4000:
             return _err("procedure too long (max 4000 chars)")
@@ -1245,6 +1287,7 @@ def build_tools(runtime: Runtime) -> list[Tool]:
     )
 
     tools.extend(component_tools(runtime))
+    tools.extend(evolve_tools(runtime))
     return tools
 
 
@@ -1352,6 +1395,26 @@ def component_tools(runtime: Runtime) -> list[Tool]:
             return _err(decision)
         return _ok(detail=rollback(kind))
 
+    async def component_simulate(kind: str, name: str) -> str:
+        from iris_ai.eval.score import compare_suite, list_suites, refuse_live
+
+        try:
+            refuse_live(False, approved=True)
+        except PermissionError as exc:
+            return _err(str(exc))
+        paths = list_suites(kind)
+        if not paths:
+            return _err(f"no suites for {kind}")
+        lines = []
+        for path in paths:
+            row = compare_suite(path, name, against="default", split="search")
+            low, high = row["ci"]
+            lines.append(
+                f"{row['suite']} {row['metric']} {row['baseline']:.2f} -> {row['candidate']:.2f} "
+                f"CI [{low:+.2f}, {high:+.2f}] {row['verdict']}"
+            )
+        return _ok(comparison="\n".join(lines))
+
     del runtime  # tools jail writes to components/.staging, not the sandbox
     return [
         Tool(
@@ -1369,8 +1432,8 @@ def component_tools(runtime: Runtime) -> list[Tool]:
             "        self.ctx = ctx\\n"
             "    def text(self) -> str:\\n"
             "        return 'Answer in haiku.'\\n"
-            "context defines async assemble_turn; capture defines async maybe_capture; "
-            "consolidator defines async sleep. "
+            "context defines async assemble; capture defines async extract; "
+            "consolidator defines async propose. "
             "Nothing outside that folder can be written. "
             "Agent and untrusted turns cannot call this tool.",
             {
@@ -1421,6 +1484,91 @@ def component_tools(runtime: Runtime) -> list[Tool]:
                 "required": ["kind"],
             },
             component_rollback,
+        ),
+        Tool(
+            "component_simulate",
+            "Score a component against the default on the search split. "
+            "Offline. Prints a paired comparison and a confidence interval. "
+            "Owner only. Does not activate anything.",
+            {
+                "type": "object",
+                "properties": {"kind": {"type": "string"}, "name": {"type": "string"}},
+                "required": ["kind", "name"],
+            },
+            component_simulate,
+        ),
+    ]
+
+
+def evolve_tools(runtime: Runtime) -> list[Tool]:
+    """Read-only access to one evolve archive. No activation."""
+
+    def root() -> Path:
+        return Path(runtime.files.root) / "evolve"
+
+    async def evolve_list() -> str:
+        folder = root()
+        if not folder.is_dir():
+            return _ok(runs=[])
+        names = sorted(path.name for path in folder.iterdir() if path.is_dir())
+        return _ok(runs=names)
+
+    async def evolve_read(run: str, filename: str = "frontier.json") -> str:
+        folder = (root() / run).resolve()
+        if not folder.is_relative_to(root().resolve()):
+            return _err("path escapes the evolve archive")
+        target = (folder / filename).resolve()
+        if not target.is_relative_to(folder):
+            return _err("path escapes the run")
+        if not target.is_file():
+            return _err(f"no file {filename}")
+        return _ok(text=target.read_text(encoding="utf-8")[:8000])
+
+    async def evolve_grep(run: str, needle: str) -> str:
+        folder = (root() / run).resolve()
+        if not folder.is_dir() or not folder.is_relative_to(root().resolve()):
+            return _err("no such run")
+        hits = []
+        for path in folder.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            if needle in text:
+                hits.append(str(path.relative_to(folder)))
+        return _ok(files=hits[:40])
+
+    return [
+        Tool(
+            "evolve_list",
+            "List evolve runs under workspace/evolve. Read only.",
+            {"type": "object", "properties": {}},
+            evolve_list,
+        ),
+        Tool(
+            "evolve_read",
+            "Read one file from an evolve run. Read only. Cannot activate a candidate.",
+            {
+                "type": "object",
+                "properties": {
+                    "run": {"type": "string"},
+                    "filename": {"type": "string"},
+                },
+                "required": ["run"],
+            },
+            evolve_read,
+        ),
+        Tool(
+            "evolve_grep",
+            "Find a string in one evolve run. Read only.",
+            {
+                "type": "object",
+                "properties": {"run": {"type": "string"}, "needle": {"type": "string"}},
+                "required": ["run", "needle"],
+            },
+            evolve_grep,
         ),
     ]
 
@@ -1517,6 +1665,11 @@ TOOL_NAMES: frozenset[str] = frozenset(
         "component_check",
         "component_activate",
         "component_rollback",
+        "component_simulate",
+        "memory_resolve_conflict",
+        "evolve_list",
+        "evolve_read",
+        "evolve_grep",
     }
 )
 
@@ -1534,6 +1687,11 @@ NON_OWNER_BLOCKED = {
     # the owner, so it cannot reach them at all.
     "component_write",
     "component_check",
+    "component_simulate",
+    "memory_resolve_conflict",
+    "evolve_list",
+    "evolve_read",
+    "evolve_grep",
 }
 
 

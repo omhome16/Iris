@@ -1,0 +1,6 @@
+kind = "persona"
+name = "strict-reviewer"
+entry = "component:Component"
+api_version = "iris/v1"
+description = "Verdict, numbered findings, no praise."
+requires = ["iris>=0.5,<1.0"]

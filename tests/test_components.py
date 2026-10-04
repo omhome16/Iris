@@ -42,7 +42,7 @@ def test_a_dotted_path_is_constructed_with_the_runtime():
 def test_scaffold_writes_a_context_file(tmp_path: Path):
     path = write_component("context", tmp_path / "context" / "component.py")
     assert path.is_file()
-    assert "assemble_turn" in path.read_text(encoding="utf-8")
+    assert "async def assemble" in path.read_text(encoding="utf-8")
     with pytest.raises(FileExistsError):
         write_component("context", path)
 

@@ -229,7 +229,7 @@ def _mcp_rows(specs: list, *, live: bool) -> list[dict]:
         return rows
 
 
-def run(action: str = "channels", *, live: bool = False) -> int:
+def run(action: str = "channels", target: str = "", *, live: bool = False) -> int:
     """Entry point from the typer command. Returns the process exit code."""
     out = console()
     try:
@@ -242,6 +242,20 @@ def run(action: str = "channels", *, live: bool = False) -> int:
                 return _hooks()
             case "mcp":
                 return _mcp(live=live)
+            case "add":
+                from pathlib import Path
+
+                from iris_ai.config import settings
+                from iris_ai.plugins_interop import install_plugin
+
+                if not target:
+                    out.print("usage: iris plugins add <directory>")
+                    return 2
+                info = install_plugin(Path(target), Path(settings.workspace_dir))
+                out.print(
+                    f"plugin {info['name']}  skills={len(info['copied_skills'])}  mcp={len(info['mcp'])}"
+                )
+                return 0
             case _:
                 out.print(
                     f"[iris.fail]unknown action {action!r}[/iris.fail] — use channels, tools, hooks or mcp"

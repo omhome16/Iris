@@ -38,6 +38,9 @@ def dead_postgres(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """
     monkeypatch.setattr(settings, "postgres_dsn", DEAD_DSN)
     monkeypatch.setattr(settings, "memory_backend", "pgvector")
+    # A developer's config/harness.toml is applied at boot and would replace
+    # the backend this fixture just pinned.
+    monkeypatch.setattr(settings, "harness_config", str(tmp_path / "harness.toml"))
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     monkeypatch.setattr(settings, "sandbox_dir", str(tmp_path / "sandbox"))
     monkeypatch.setattr(settings, "sqlite_path", str(tmp_path / "config" / "memory.db"))
@@ -133,6 +136,7 @@ def no_services(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """A fresh clone's world: no Postgres, no keys, default backends."""
     monkeypatch.setattr(settings, "postgres_dsn", DEAD_DSN)
     monkeypatch.setattr(settings, "memory_backend", "sqlite")
+    monkeypatch.setattr(settings, "harness_config", str(tmp_path / "harness.toml"))
     monkeypatch.setattr(settings, "workspace_dir", str(tmp_path))
     monkeypatch.setattr(settings, "sandbox_dir", str(tmp_path / "sandbox"))
     monkeypatch.setattr(settings, "sqlite_path", str(tmp_path / "config" / "memory.db"))

@@ -1,0 +1,7 @@
+kind = "consolidator"
+name = "conflict-resolver"
+entry = "component:Component"
+api_version = "iris/v1"
+permissions = ["memory.read"]
+description = "A contradicting addition becomes a conflict, not a second live fact."
+requires = ["iris>=0.5,<1.0"]

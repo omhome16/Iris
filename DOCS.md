@@ -553,7 +553,9 @@ These are asserted by tests. Relaxing one is a design conversation, not a test f
 5. **Loading a deferred tool can only add.** It never widens permission and never
    disturbs the visible head, so the provider's cached prefix survives.
 6. **A guard can only refuse.** It cannot re-enable what another guard closed, and
-   refusals happen pre-dispatch.
+   refusals happen pre-dispatch. A `pre_tool` policy hook that raises is a refusal
+   (`guard=hook:<name>`). Observer hooks still fail open: a broken one is logged
+   and skipped.
 7. **Approval is bound to the action it showed** — the digest is of the *effective*
    arguments after edits; one `tool_call_id` grants once per thread; a
    side-effecting envelope with no digest fails closed.
@@ -568,6 +570,31 @@ These are asserted by tests. Relaxing one is a design conversation, not a test f
     not a missing glyph.
 12. **Every setting is documented** in `.env.example`, and every key there names a
     real setting.
+13. **Engines decide; the kernel acts.** Tool calls run in the kernel's tools node.
+14. **Policy only tightens, and it fails closed.** A guard or policy hook that
+    raises refuses the call.
+15. **A v1 component receives capabilities, never the runtime.**
+16. **A local or installed component loads only at the digest the owner approved.**
+    `iris components lock check` exits 1 when the folder and the pin disagree.
+17. **Components propose memory changes and the kernel writes them.** A flagged
+    conflict is not applied until the owner resolves it (`iris memory conflicts`
+    or `/conflicts`).
+18. **Every engine runs inside the turn's budgets.** The recursion cap, the token
+    and cost ceilings, and the kill switch still apply.
+19. **Every trace names the harness that produced it:** the engine, each selected
+    component, and the model.
+
+The same model with a different harness is a measurement, not a slogan.
+`uv run iris eval <kind> --component <name>` prints the paired difference and
+its confidence interval. On the shipped suites the catalog components beat the
+default: `temporal-rag` takes `stale_as_current` from 1.00 to 0.00,
+`evidence-memory` takes `stale_at_5` from 1.00 to 0.00, `decision-only` takes
+capture F1 from 0.25 to 1.00, `conflict-resolver` takes `silent_overwrite` from
+1.00 to 0.00, and `strict-reviewer` takes format compliance from 0.00 to 1.00.
+Each of those intervals excludes zero. `iris components simulate <kind> <name>`
+prints the same comparison. `iris evolve` writes `workspace/evolve/<run>/` and
+does not activate a candidate. On Windows and macOS it refuses unless
+`--allow-audit-isolation` is set.
 
 ### 6.5 Where state lives
 
@@ -1131,7 +1158,7 @@ integration is configuration, never a core edit.
 | Capability | Protocol | Required surface |
 |---|---|---|
 | models | `iris_ai.capabilities.models.ModelBackend` | `complete`, `complete_with_tools`, `stream_complete_with_tools`, `embed`, `embed_one` |
-| memory | `iris_ai.capabilities.memory.MemoryBackend` | `connect`, `close`, `search`, `escalate`, `stats`, `upsert_chunks`, `delete_file_chunks`, `replace_file_chunks`, `forget_entry` |
+| memory | `iris_ai.capabilities.memory.MemoryBackend` | `connect`, `close`, `search`, `escalate`, `stats`, `upsert_chunks`, `delete_file_chunks`, `replace_file_chunks`, `forget_entry`, `nearest`, `list_chunks` |
 | judges | `iris_ai.capabilities.judges.Judge` | `enabled`, `unavailable_reason`, `ask`, `status`, `close` |
 | tools | `iris_ai.toolregistry.ToolProvider` | `.name`, `.tools(runtime)` |
 | channels | `iris_ai.channels.base.Channel` | `.name`, `.connected`, `connect`, `close`, `send_message`, `send_photo`, `get_chat_history` |
@@ -1165,8 +1192,10 @@ These hold in `registry.py` and the boot path, so a plugin cannot opt out:
 - **Discovery is cheap.** Registering an entry point does not call it, so a
   disabled channel is never imported, let alone constructed.
 - **A broken plugin is skipped, not fatal.** A provider that raises while being
-  built is logged; a hook that raises while attaching is logged and skipped; a hook
-  that raises while *running* is logged and skipped too. None of them costs a reply.
+  built is logged; a hook that raises while attaching is logged and skipped; an
+  observer hook that raises while *running* is logged and skipped. A `pre_tool`
+  policy hook that raises refuses the call instead. None of them costs a reply
+  except the refusal, which is the point.
 - **Plugin tools are additive.** They are not validated against the core's closed
   set of tool names — that set exists so a *skill manifest* cannot name a tool that
   does not exist — but they are logged when added, so "a core tool nobody declared"

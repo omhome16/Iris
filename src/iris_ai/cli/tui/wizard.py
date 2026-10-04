@@ -133,8 +133,10 @@ class WizardApp(App):
             return
         if self.answers["new_kind"] and self.answers["new_name"]:
             from iris_ai.cli.scaffold import write_new
+            from iris_ai.plug import FOLDER_KINDS
 
-            write_new(self.answers["new_kind"], self.answers["new_name"], Path("examples"))
+            if self.answers["new_kind"] in {*FOLDER_KINDS, "role"}:
+                write_new(self.answers["new_kind"], self.answers["new_name"], Path("examples"))
             self.answers["new_kind"] = ""
             self.answers["new_name"] = ""
         if self.step < len(STEPS) - 1:

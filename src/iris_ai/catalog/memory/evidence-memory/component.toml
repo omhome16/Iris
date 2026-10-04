@@ -1,0 +1,6 @@
+kind = "memory"
+name = "evidence-memory"
+entry = "component:Component"
+api_version = "iris/v1"
+description = "Current facts rank above superseded ones."
+requires = ["iris>=0.5,<1.0"]

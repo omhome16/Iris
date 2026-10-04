@@ -10,6 +10,73 @@ research notes) has since been consolidated into a single [`DOCS.md`](DOCS.md), 
 the link targets below were repointed rather than left broken. Backticked paths in
 older prose are historical records of where things lived at the time.
 
+## 0.6.0 — distribution
+
+A component installs from a directory with `iris components add <path> --yes`,
+which prints the file count, the line count, the digest, and the fact that it
+runs in-process with Iris's permissions, then pins it. `iris components lock
+--update` re-pins after review. `lock check` still exits 1 on drift. A manifest
+`requires` that this version does not satisfy refuses to load.
+
+`iris plugins add <dir>` validates `plugin.json`, copies `skills/*/SKILL.md`,
+and maps `mcp.json` into `.mcp.json` with trust `review`, expanding only
+`PLUGIN_ROOT` and `PLUGIN_DATA`.
+
+`iris evolve <kind> --suite S` writes `workspace/evolve/<run>/` with the
+candidate source, the search scores, and `frontier.json`. Held-out scores are
+written after the loop. Nothing is activated. Where isolation is audit-only
+(Windows, macOS) the command refuses unless `--allow-audit-isolation` is set.
+
+v0 component methods were removed in this release. `ComponentContext(runtime)` raises. A component implements `assemble`, `extract`, or `propose`. The kernel's own `assemble_turn` remains the built-in prefix implementation.
+
+Staged `iris components simulate --staged` runs in the component jail. The fixture world is a directory outside the component folder, added to the child's read-only roots, and the digest is unchanged afterwards. `--live` is refused.
+
+A context, capture, persona, or consolidator value may be a comma-separated pipeline. The turn folds those stages, trims when `budget` is named, and drops a capture `redact` would change. A stage that fails three times is skipped.
+
+`plan-execute` plans with an invisible cheap call, then acts. After tools, the turn verifies and records `plan-execute: verify`. Three engine failures set the engine back to `react`. `iris eval engine --live` runs both engines on stub tools and prints success, tool calls, tokens, and latency. `iris trace` and `/explain` name the context, capture, persona, and consolidator stages. `iris components export <kind> <name> --as-plugin DIR` writes an Agent Plugin.
+
+## 0.5.0 — the canonical five
+
+Five catalog components, each with a README, a `component.toml`, and a suite
+where the default loses. `uv run iris eval` prints the paired interval:
+
+- `temporal-rag`: `stale_as_current` 1.00 to 0.00 (`uv run iris eval context --component temporal-rag`)
+- `evidence-memory`: `stale_at_5` 1.00 to 0.00 (`uv run iris eval memory --component evidence-memory`)
+- `decision-only`: capture F1 0.25 to 1.00 (`uv run iris eval capture --component decision-only`)
+- `conflict-resolver`: `silent_overwrite` 1.00 to 0.00 (`uv run iris eval consolidator --component conflict-resolver`)
+- `strict-reviewer`: format compliance 0.00 to 1.00 (`uv run iris eval persona --component strict-reviewer`)
+
+`iris memory conflicts` and `/conflicts` list what the owner has not resolved.
+`memory_resolve_conflict` waits for approval, then edits `MEMORY.md`.
+`examples/iris-discord` maps DMs and mentions onto the channel runner. The
+runner dedupes across a restart, rate-limits, throttles edits, and refuses a
+non-owner approval.
+
+## 0.4.0 — iris/v1
+
+The kernel stays fixed. Components are typed, digest-pinned, and measurable.
+`uv run iris eval context` scores the shipped stale-fact suite: the default
+context reports `stale_as_current=1.00`, and `temporal-rag` reports `0.00`,
+with `evidence_recall=1.00` for both. v0 components still load, with one
+deprecation warning, until a later release removes the adapters.
+
+## Unreleased — contracts v1
+
+- Component authors import frozen types from `iris_ai.sdk`: `ContextResult`, `MemoryItem`, `MemoryCandidate`, `ConsolidationPlan`, and the requests that carry them. `ContextResult.render()` is the same prefix the default assembler already produced.
+- A v1 component is constructed with capabilities (`llm`, `memory`, `files`, `state`, `clock`) and no runtime. A v0 component still receives `ctx.runtime`, once, with a deprecation warning.
+- `config/components.lock` version 2 records the digest the owner approved. A folder whose bytes changed does not load. An unpinned local name is pinned on first use. `iris components inspect <kind> <name>` shows that picture. The resolver tries a built-in name, then a local folder, then an `iris_ai.components` entry point, then a dotted path.
+- Personas are constructed once per process and wrapped so a raising `text()` falls back instead of taking down the turn.
+- `iris_ai.testing` adds `fake_context`, `sample_request`, `HashEmbedder`, and `memory_conformance`.
+
+## Unreleased — the truth pass
+
+- Folder components are context, memory, persona, capture, and consolidator. `iris new` for a channel, tool, hook, model, judge, or secret store prints the entry-point recipe instead of writing a folder nothing loads. `iris components list` shows registered transports for `channel` (`telegram`); `terminal` and `http` stay faces under `iris serve`.
+- A custom capture component now runs after the owner check, `capture_enabled`, and the daily note cap. An untrusted turn writes nothing.
+- `MemoryBackend` requires `nearest` and `list_chunks`, which dreaming, rot reports, and forget-confirm already call. Reindex keeps the `[N]` importance on capture and dream lines.
+- A `pre_tool` policy hook that raises refuses the tool (`guard=hook:<name>`). Observer hooks still fail open.
+- `/explain` and `iris trace` show the model, the attached components, context size, each tool's policy class and decision, tokens, and estimated cost. `/trace` in chat is the same text plus the trace path.
+- The component check still reports `isolation=landlock...` only where the kernel applied Landlock. On other platforms the child skips the libc call and reports `isolation=audit`, and the test asserts that. A Windows path inside a staged check is written with `repr`, so `\U` in `\Users` is not a broken unicode escape. The `.env` mode `0600` assertion is POSIX-only, because Windows does not store those bits.
+
 ## Unreleased — plug-and-play, safe self-extension, accurate memory
 
 - A component check on Linux now uses Landlock, a seccomp filter that rejects `execve` and new sockets, and a network namespace when `unshare` can create one. Staged code cannot run a command through `ctypes`, cannot `utime` or write outside its folder, and cannot resolve DNS. Imports of `ctypes` and `cffi` are refused. The check detail says `isolation=landlock+seccomp` when that jail is active, and `isolation=audit` when the kernel cannot apply it — that mode is not a kernel jail. A refined fact (the same project or city, with less detail) no longer supersedes the more specific line; a different city or project still does. `forget` and `remember` report the write as successful when the later reindex hits a provider error, and retry the index separately. An ellipsis-only reply is not saved to the daily note. `iris init` fails the model check when the reply is empty. The approval question for `forget` includes the line that will be retired. A fired scheduled job is logged and its reply is kept on the job and in the daily note. `iris doctor` probes `POSTGRES_DSN` when `MEMORY_BACKEND` is `pgvector`. `iris serve telegram` exits non-zero when `TELEGRAM_BOT_TOKEN` is unset. Semantic memory with no embedding key stays on keyword recall and says so once, instead of retrying Ollama. `uvicorn --host 0.0.0.0` without a token prints one line and exits.

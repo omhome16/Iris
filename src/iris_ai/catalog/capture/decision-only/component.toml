@@ -1,0 +1,6 @@
+kind = "capture"
+name = "decision-only"
+entry = "component:Component"
+api_version = "iris/v1"
+description = "Store decisions. Drop questions and hypotheticals."
+requires = ["iris>=0.5,<1.0"]

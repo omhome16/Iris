@@ -121,6 +121,7 @@ TOOL_DECLARATIONS: dict[str, Declaration] = {
     "note": Declaration(ToolClass.MEMORY_WRITE),
     "inspect_mind": Declaration(ToolClass.READ),
     "forget": Declaration(ToolClass.MEMORY_WRITE),
+    "memory_resolve_conflict": Declaration(ToolClass.CONTROL, "extended"),
     "file_create": Declaration(ToolClass.FILESYSTEM),
     "file_write": Declaration(ToolClass.FILESYSTEM),
     "file_read": Declaration(ToolClass.READ),
@@ -143,7 +144,11 @@ TOOL_DECLARATIONS: dict[str, Declaration] = {
     "component_write": Declaration(ToolClass.FILESYSTEM, "extended"),
     "component_check": Declaration(ToolClass.READ, "extended"),
     "component_activate": Declaration(ToolClass.CONTROL, "extended"),
-    "component_rollback": Declaration(ToolClass.CONTROL, "extended"),
+        "component_rollback": Declaration(ToolClass.CONTROL, "extended"),
+        "component_simulate": Declaration(ToolClass.READ, "extended"),
+        "evolve_list": Declaration(ToolClass.READ, "extended"),
+        "evolve_read": Declaration(ToolClass.READ, "extended"),
+        "evolve_grep": Declaration(ToolClass.READ, "extended"),
 }
 
 
@@ -241,6 +246,7 @@ NAMESPACES: dict[str, tuple[str, ...]] = {
         "note",
         "inspect_mind",
         "forget",
+        "memory_resolve_conflict",
     ),
     "files": ("file_create", "file_write", "file_read", "file_list"),
     "web": ("web_search", "ingest_url"),
@@ -256,13 +262,15 @@ NAMESPACES: dict[str, tuple[str, ...]] = {
         "component_check",
         "component_activate",
         "component_rollback",
+        "component_simulate",
     ),
+    "evolve": ("evolve_list", "evolve_read", "evolve_grep"),
 }
 
 # What each group is *for*, in one line. Written for the model, not for the
 # table: it is what turns a list of names into "I could do that".
 NAMESPACE_PURPOSE: dict[str, str] = {
-    "memory": "search, inspect, deliberately record and forget long-term memory",
+    "memory": "search, inspect, and record long-term memory",
     "files": "read and write files inside the sandbox",
     "web": "search the web and ingest a page",
     "skills": "apply a stored procedure, run its script, write or revise one",
@@ -273,6 +281,7 @@ NAMESPACE_PURPOSE: dict[str, str] = {
     "history": "read the raw record of past conversations",
     "tools": "load the schema of a tool that is over this turn's surface budget",
     "components": "stage, check, activate or roll back a plug-in component",
+    "evolve": "read an evolve run. Activation is a separate approval.",
 }
 
 # The tool the catalog tells the model to reach for. Named here so the prompt and

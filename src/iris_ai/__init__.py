@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os as _os
 
-__version__ = "0.3.0"
+__version__ = "0.6.0"
 
 #: The process environment as it was *before* Iris imported anything.
 #:

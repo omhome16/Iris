@@ -10,6 +10,7 @@ the thing being asserted rather than an environment assumption.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import stat
 from pathlib import Path
@@ -102,7 +103,8 @@ def test_init_creates_the_sample_config_and_proves_the_setup(checkout: Path):
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 0
     assert (checkout / ".env").is_file()
-    assert stat.S_IMODE((checkout / ".env").stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE((checkout / ".env").stat().st_mode) == 0o600
     assert (checkout / "config" / "harness.toml").is_file()
 
     out = flat(result.stdout)

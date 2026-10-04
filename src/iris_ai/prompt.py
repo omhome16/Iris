@@ -70,6 +70,11 @@ def persona_text(root: Path, choice: str = "") -> str:
     default) reads `PERSONA.md`.
     """
     picked = (choice or _persona_choice(root)).strip() or "file"
+    if "," in picked:
+        from iris_ai.pipeline import parse_names
+
+        parts = [persona_text(root, name) for name in parse_names(picked)]
+        return "\n\n".join(f"## Persona\n{part}" for part in parts if part)
     if picked == "blank":
         return ""
     custom = _custom_persona(picked)
@@ -85,20 +90,50 @@ def persona_text(root: Path, choice: str = "") -> str:
     return ""
 
 
+_PERSONA_CACHE: dict[str, object] = {}
+
+
+def clear_persona_cache() -> None:
+    """Drop constructed personas. `Harness.reload` calls this."""
+    _PERSONA_CACHE.clear()
+
+
+class _EmptyPersona:
+    def text(self) -> str:
+        return ""
+
+
 def _custom_persona(picked: str) -> str:
-    """A local folder or `pkg:Class` persona. Empty when this name is not one."""
+    """A local folder or `pkg:Class` persona. Built once per process, then guarded."""
+    if picked == "strict-reviewer":
+        from iris_ai.catalog.persona.strict_reviewer import StrictReviewer
+        from iris_ai.plug import Guarded
+
+        component = StrictReviewer()
+        guarded = Guarded(component, _EmptyPersona(), kind="persona", name=picked)
+        _PERSONA_CACHE[picked] = guarded
+        return str(guarded.text())
     if picked in {"file", "blank", *_PRESETS}:
         return ""
+    cached = _PERSONA_CACHE.get(picked)
+    if cached is not None:
+        return str(cached.text())  # type: ignore[attr-defined]
     try:
-        from iris_ai.plug import construct, load_class, local_folder
+        from iris_ai.plug import Guarded, construct, load_class, local_folder
 
         folder = local_folder("persona", picked)
+        component = None
         if folder is not None:
-            return str(construct(load_class(folder), None).text())
-        if ":" in picked:
+            component = construct(load_class(folder), None)
+        elif ":" in picked:
             from iris_ai.components import load_symbol
 
-            return str(construct(load_symbol(picked), None).text())
+            component = construct(load_symbol(picked), None)
+        if component is None:
+            return ""
+        guarded = Guarded(component, _EmptyPersona(), kind="persona", name=picked)
+        _PERSONA_CACHE[picked] = guarded
+        return str(guarded.text())
     except Exception as exc:  # noqa: BLE001 - a bad persona falls through to PERSONA.md
         log.error(
             "persona %s failed to load (%s: %s). Using PERSONA.md. "

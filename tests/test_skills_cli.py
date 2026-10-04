@@ -144,9 +144,12 @@ def test_the_command_registry_grew_by_exactly_one():
         "costs",
         "cron",
         "doctor",
+        "eval",
+        "evolve",
         "guards",
         "init",
         "mcp",
+        "memory",
         "migrate",
         "models",
         "new",
@@ -156,6 +159,7 @@ def test_the_command_registry_grew_by_exactly_one():
         "serve",
         "skills",
         "tools",
+        "trace",
         "version",
     }
 

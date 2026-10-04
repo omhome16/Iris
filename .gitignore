@@ -44,6 +44,10 @@ workspace/skills/
 # ingested URLs (imports/*.md) are UNTRUSTED web content and still the owner's
 # reading history — same rule as skills: never publishable by accident.
 workspace/imports/
+
+# Eval and evolve archives are run output.
+workspace/eval/
+workspace/evolve/
 *.sqlite3
 *.log
 
