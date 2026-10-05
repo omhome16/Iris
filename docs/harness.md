@@ -27,7 +27,8 @@ prompt is only the harness contract.
 
 ```toml
 [components]
-context = "default"          # default | recall-first | minimal | pkg.module:Class
+engine = "react"             # react | plan-execute | pkg.module:Class
+context = "default"          # default | recall-first | minimal | temporal-rag
 persona = "file"             # blank | file | assistant | coder | researcher | tutor
 capture = "default"          # or off, or pkg.module:Class
 consolidator = "dreaming"    # or off, or pkg.module:Class
@@ -39,32 +40,45 @@ budget_usd = 0
 ```
 
 `iris components` lists the options. `iris components use <kind> <option>`
-switches one. `iris new context|memory|persona|role|channel <name>` writes a
-skeleton and points the manifest at it. Every picker also has a Create new entry.
+switches one. A slot also takes a `pkg.module:Class`, and context, capture,
+persona, and consolidator accept a comma-separated pipeline. `iris new
+context|memory|persona|role|channel <name>` writes a skeleton and points the
+manifest at it. Every picker also has a Create new entry.
 
-A class is constructed with the runtime.
+The component ABI is `iris/v1`. A class is constructed as `Class(ctx, **options)`,
+where `ctx` is `iris_ai.sdk.ComponentContext`: the capabilities named in
+`permissions`, plus the clock. It does not carry the runtime.
 
-- **Context** implements `assemble_turn(user_message, *, session_id) -> (text, skill_names)`.
+- **Context** implements `async def assemble(request) -> ContextResult`.
   `default` reads `MEMORY.md` and `USER.md` and does not search the index.
   `recall-first` searches memory every turn and puts the hits in front.
-  `minimal` loads no memory.
+  `minimal` loads no memory. `temporal-rag` prefers the current fact over a
+  superseded one.
+- **Engine** is the loop around the model: `react` (default) or `plan-execute`.
+  Both sit inside the same budgets.
 - **Memory** is `memory_backend`: `sqlite` (default), `markdown` (files only, no
-  index), or `pgvector`.
-- **Persona** is a `PersonaSource`. Presets live in `src/iris_ai/templates/personas/`.
+  index), or `pgvector`. A backend implements `search`, plus `nearest` and
+  `list_chunks`.
+- **Persona** implements `text() -> str`. Presets live in `src/iris_ai/templates/personas/`.
   `file` reads `workspace/PERSONA.md`. `blank` adds nothing.
 - **Roles** are `[roles.<name>]` with `prompt`, `tools`, `model_tier`, and
   `max_steps`. Researcher and critic are the defaults. The model fans out with
   the `run_parallel` tool. In chat, `/team <question>` asks every role and
   `/parallel role: task | role: task` asks the ones you name.
-- **Capture** implements `maybe_capture(...)`.
-- **Consolidator** implements `sleep()`.
+- **Capture** implements `async def extract(request) -> list[MemoryCandidate]`.
+- **Consolidator** implements `async def propose(request) -> ConsolidationPlan`.
 
-Scaffold one:
+Scaffold one, then check it before you select it:
 
 ```bash
-uv run iris new component context
-uv run iris new component memory
+uv run iris new context graph-rag
+uv run iris components check context graph-rag
+uv run iris components use context graph-rag
 ```
+
+The scaffold writes `api_version = "iris/v1"` in `component.toml`; that line is
+what makes the checker require the v1 methods. In chat, `/reload` applies a
+selection without restarting.
 
 Examples you can copy: `examples/custom_context` and `examples/custom_memory`.
 
