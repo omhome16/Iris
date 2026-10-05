@@ -29,7 +29,6 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date
 from enum import StrEnum
 from pathlib import Path
 
@@ -57,6 +56,12 @@ class CounterKind(StrEnum):
 
 def _empty_counters() -> dict[str, int]:
     return {kind.value: 0 for kind in CounterKind}
+
+
+def _harness_day() -> str:
+    from iris_ai.timeutil import today
+
+    return today().isoformat()
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,14 +106,14 @@ class Budget:
 
     def __post_init__(self) -> None:
         if not self.today:
-            self.today = date.today().isoformat()
+            self.today = _harness_day()
         self._load()
 
     # ── day scope ──────────────────────────────────────────────────────
 
     def roll_day(self, today: str | None = None) -> bool:
         """Reset if the date changed. Returns True when a roll happened."""
-        current = today or date.today().isoformat()
+        current = today or _harness_day()
         if current == self.today:
             return False
         self.today = current

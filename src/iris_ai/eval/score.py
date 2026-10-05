@@ -62,10 +62,74 @@ def mean(rows: list[dict], metric: str) -> float:
     return sum(float(row.get(metric) or 0) for row in rows) / len(rows)
 
 
+def _local_context_blocks(name: str, case: dict) -> list[dict] | None:
+    """Run a folder component against the case corpus. None when it is not local.
+
+    The suite used to score by component name, so an agent-written context
+    received the baseline layout. A local folder is executed instead.
+    """
+    from iris_ai.plug import load_class, local_folder
+    from iris_ai.sdk.context import ComponentContext, MemoryAccess
+    from iris_ai.sdk.types import ContextRequest
+
+    folder = local_folder("context", name)
+    if folder is None:
+        return None
+
+    class _Hit:
+        def __init__(self, row: dict) -> None:
+            self.content = str(row.get("content") or "")
+            self.path = str(row.get("path") or "")
+            self.chunk_index = 0
+
+    class _Index:
+        def __init__(self, corpus: list) -> None:
+            self._corpus = list(corpus)
+
+        async def search(self, query: str, *, top_k: int = 5) -> list:
+            del query
+            return [_Hit(row) for row in self._corpus[:top_k]]
+
+    ctx = ComponentContext(
+        api_version="iris/v1",
+        kind="context",
+        name=name,
+        memory=MemoryAccess(_Index(case.get("corpus") or []), None),
+    )
+    component = load_class(folder)(ctx)
+    result = _drive_eval(component.assemble(ContextRequest(message=str(case.get("input") or ""), session_id="eval")))
+    blocks = []
+    for block in getattr(result, "blocks", ()) or ():
+        blocks.append(
+            {
+                "title": str(getattr(block, "title", "") or ""),
+                "kind": str(getattr(block, "kind", "") or "memory"),
+                "text": str(getattr(block, "text", "") or ""),
+            }
+        )
+    return blocks
+
+
+def _drive_eval(coro):
+    """Run eval I/O. A tool call may already be inside the turn's event loop."""
+    import asyncio
+    import concurrent.futures
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def render_blocks(component: str, case: dict) -> list[dict]:
-    """How a named context component lays out one case. Built-ins included."""
+    """How a context component lays out one case. Local folders are executed."""
     from iris_ai.catalog.context.temporal_rag import layout
 
+    local = _local_context_blocks(component, case)
+    if local is not None:
+        return local
     corpus = case.get("corpus") or []
     if component in {"temporal-rag", "temporal_rag"}:
         return layout(corpus)
@@ -106,11 +170,28 @@ def score_memory(component: str, case: dict) -> dict[str, float]:
     }
 
 
+def _local_capture_stores(name: str, case: dict) -> bool | None:
+    """Run a local capture folder. None when there is no folder or no method to call."""
+    from iris_ai.plug import load_class, local_folder
+
+    folder = local_folder("capture", name)
+    if folder is None:
+        return None
+    component = load_class(folder)()
+    text = str(case.get("input") or "")
+    if hasattr(component, "maybe_capture"):
+        return bool(_drive_eval(component.maybe_capture(user_message=text, reply="")))
+    return None
+
+
 def score_capture(component: str, case: dict) -> dict[str, float]:
     from iris_ai.catalog.capture.decision_only import keep
 
     expect_store = bool((case.get("expect") or {}).get("store"))
-    if component in {"decision-only", "decision_only"}:
+    local = _local_capture_stores(component, case)
+    if local is not None:
+        stored = local
+    elif component in {"decision-only", "decision_only"}:
         stored = keep(str(case.get("input") or ""))
     else:
         stored = True
@@ -130,11 +211,28 @@ def score_capture(component: str, case: dict) -> dict[str, float]:
     }
 
 
+def _local_consolidator_flags(name: str, case: dict) -> bool | None:
+    """Run a local consolidator that exposes `conflicts(curated, incoming)`."""
+    from iris_ai.plug import load_class, local_folder
+
+    folder = local_folder("consolidator", name)
+    if folder is None:
+        return None
+    component = load_class(folder)()
+    conflicts = getattr(component, "conflicts", None)
+    if conflicts is None:
+        return None
+    return bool(conflicts(str(case.get("curated") or ""), str(case.get("input") or "")))
+
+
 def score_consolidator(component: str, case: dict) -> dict[str, float]:
     from iris_ai.catalog.consolidator.conflict_resolver import contradicts
 
     expect = bool((case.get("expect") or {}).get("conflict"))
-    if component in {"conflict-resolver", "conflict_resolver"}:
+    local = _local_consolidator_flags(component, case)
+    if local is not None:
+        flagged = local
+    elif component in {"conflict-resolver", "conflict_resolver"}:
         flagged = contradicts(str(case.get("curated") or ""), str(case.get("input") or ""))
     else:
         flagged = False
@@ -148,14 +246,23 @@ def score_consolidator(component: str, case: dict) -> dict[str, float]:
     }
 
 
-def score_persona(component: str, case: dict) -> dict[str, float]:
-    from iris_ai.catalog.persona.strict_reviewer import StrictReviewer
+def persona_text(component: str) -> str:
+    """The persona instructions under evaluation. A local folder wins over the name."""
+    from iris_ai.plug import construct, load_class, local_folder
 
-    needle = str((case.get("expect") or {}).get("must_contain") or "")
+    folder = local_folder("persona", component)
+    if folder is not None:
+        return str(construct(load_class(folder), None).text())
     if component in {"strict-reviewer", "strict_reviewer"}:
-        text = StrictReviewer().text()
-    else:
-        text = "Be helpful."
+        from iris_ai.catalog.persona.strict_reviewer import StrictReviewer
+
+        return StrictReviewer().text()
+    return "Be helpful."
+
+
+def score_persona(component: str, case: dict) -> dict[str, float]:
+    needle = str((case.get("expect") or {}).get("must_contain") or "")
+    text = persona_text(component)
     return {"format_compliance": 1.0 if needle and needle in text else 0.0}
 
 

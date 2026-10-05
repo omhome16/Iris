@@ -277,10 +277,31 @@ def _component_checks(root: Path) -> list[Check]:
             continue
         try:
             if folder is not None:
-                ok, detail = check_folder(folder)
+                from iris_ai.artifacts.store import executable_folder, verify
+                from iris_ai.components.lock import read_lock
+                from iris_ai.plug import component_digest
+
+                running = executable_folder(kind, name, root=components_dir) or folder
+                row = (read_lock().get("kinds") or {}).get(kind) or {}
+                pinned = str(row.get("digest") or "")
+                if (
+                    row.get("active") == name
+                    and pinned
+                    and verify(pinned, root=components_dir)
+                    and component_digest(folder) != pinned
+                ):
+                    checks.append(
+                        Check(
+                            f"component {kind}",
+                            "warn",
+                            f"{name} on disk differs from the approved copy. The approved copy still runs until you re-pin.",
+                            fix=cli_cmd("components", "use", kind, name),
+                        )
+                    )
+                ok, detail = check_folder(running)
                 if not ok:
                     raise RuntimeError(detail)
-                component = construct(load_class(folder), None)
+                component = construct(load_class(running), None)
             else:
                 component = construct(load_symbol(name), None)
                 detail = name

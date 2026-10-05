@@ -87,6 +87,7 @@ class CostLedger:
     ) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            known = model in PRICE_PER_1M
             line = {
                 "ts": datetime.now(UTC).isoformat(timespec="seconds"),
                 "model": model,
@@ -95,7 +96,10 @@ class CostLedger:
                 "completion_tokens": int(completion_tokens),
                 "cached_tokens": int(cached_tokens),
                 "cost": round(estimate_cost(model, prompt_tokens, completion_tokens), 6),
+                "unpriced": not known,
             }
+            if not known:
+                log.warning("no price for model %s; this call is recorded as unpriced, not free", model)
             with self.path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(line) + "\n")
         except Exception as exc:  # noqa: BLE001 - accounting must never break a call

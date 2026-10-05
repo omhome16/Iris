@@ -132,4 +132,6 @@ class Runtime:
     # What was attached for this process: kind -> {name, source, digest}.
     # /explain and the turn trace read it. Empty until `components.attach`.
     harness_identity: dict = field(default_factory=dict)
+    # Identity of the component set last swapped in. A turn pins this at start.
+    generation_id: str = ""
     on_onboarded: Callable[[], None] | None = field(default=None, init=False)

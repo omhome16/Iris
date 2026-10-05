@@ -294,7 +294,11 @@ def _tool_failed(out: str) -> bool:
         payload = json.loads(out)
     except (TypeError, ValueError):
         return False
-    return isinstance(payload, dict) and payload.get("ok") is False
+    if not isinstance(payload, dict) or payload.get("ok") is not False:
+        return False
+    # An owner denial or a policy refusal is not a broken tool. Counting it
+    # opens the circuit breaker after two honest "no"s.
+    return not payload.get("refused")
 
 
 class ChatGraph:
@@ -333,6 +337,8 @@ class ChatGraph:
         self._pending: dict[str, dict] = {}
         self.threads = checkpointer
         self.graph = NativeGraph(self, checkpointer)
+        self._turn_assembler: object | None = None
+        self._turn_generation = ""
 
     def _install_hooks(self) -> None:
         """Register Iris's built-in lifecycle hooks on the bus.
@@ -394,37 +400,54 @@ class ChatGraph:
         """Unconfigured workspaces are sent to `iris init`, not questioned in chat."""
         return {"messages": [{"type": "ai", "content": SETUP_REPLY}]}
 
+    def bind_turn(self) -> None:
+        """Pin the component objects this turn started with. Reload updates the next turn."""
+        if self._turn_assembler is None:
+            self._turn_assembler = self.assembler
+            self._turn_generation = str(getattr(self.runtime, "generation_id", "") or "")
+
+    def release_turn(self) -> None:
+        pinned = self._turn_assembler
+        self._turn_assembler = None
+        self._turn_generation = ""
+        if pinned is not None and pinned is not self.assembler:
+            close = getattr(pinned, "close", None)
+            if close is not None:
+                close()
+
     async def _assemble(self, state: IrisState) -> dict:
         user_msg = text_of(state["messages"][-1].content)
         names = list(getattr(self.runtime, "pipelines", {}).get("context") or [])
+        assembler = self._turn_assembler or self.assembler
         with turnlog.stage("assemble"):
             if len(names) > 1 or any(name in {"budget", "redact"} for name in names):
                 from iris_ai.pipeline import fold_context
 
                 ctx, skills = await fold_context(self.runtime, names, user_msg, state)
             else:
-                ctx, skills = await _context_from(self.assembler, user_msg, state)
+                ctx, skills = await _context_from(assembler, user_msg, state)
         # Every context component is fingerprinted here, including ones that
         # do not call the default assembler.
         turnlog.note_prompt(hashlib.sha256(ctx.encode("utf-8")).hexdigest()[:12])
         return {"memory_context": ctx, "active_skills": skills}
 
     async def _agent(self, state: IrisState) -> dict:
+        from iris_ai.engines.dispatch import resolve
+        from iris_ai.engines.plan_execute import EngineEvent
         from iris_ai.kernel.services import ModelService, PromptService, ToolSurface
 
-        self.engine_name = getattr(self.runtime, "engine_name", None) or "react"
+        engine = resolve(getattr(self.runtime, "engine_name", None) or "react")
+        self.engine_name = engine.name
         self.engine_path = [*getattr(self, "engine_path", []), "agent"]
-        if self.engine_name == "plan-execute" and state.get("engine_phase") == "verify":
-            from iris_ai.engines.plan_execute import EngineEvent
-
+        if engine.short_circuit(state) == "verify":
             self.engine_path.append("verify")
-            event = EngineEvent("plan-execute", "verify").render()
+            event = EngineEvent(engine.name, "verify").render()
             turnlog.record("engine", event=event)
             return {"engine_phase": "done", "engine_event": event}
         messages = PromptService(self.runtime).messages(state, _to_llm_messages(state["messages"]))
         schemas = ToolSurface(self.runtime).schemas(state)
         planned: dict = {}
-        if self.engine_name == "plan-execute" and not state.get("engine_planned"):
+        if engine.wants_plan(state):
             try:
                 plan_text, _calls = await ModelService(self.runtime.llm).complete(
                     messages, tools=None, tier="cheap", visible=False
@@ -442,7 +465,8 @@ class ChatGraph:
                     "engine_event": "plan-execute: plan",
                 }
                 turnlog.record("engine", event="plan-execute: plan")
-        if state.get("stream") and self.engine_name != "plan-execute":
+        engine = resolve(self.engine_name)
+        if state.get("stream") and engine.streams():
             return await self._agent_streamed(
                 messages,
                 state.get("origin") or "owner",
@@ -466,14 +490,11 @@ class ChatGraph:
                     for c in calls
                 ],
             }
-            return {"messages": [ai], **planned, **({"engine_phase": "act"} if self.engine_name == "plan-execute" else {})}
+            return {"messages": [ai], **planned, **engine.tool_phase()}
         if not (text or "").strip():
             text = EMPTY_REPLY
         done = {"messages": [{"type": "ai", "content": text}], **planned}
-        if self.engine_name == "plan-execute":
-            self.engine_path.append("verify")
-            done["engine_phase"] = "done"
-            done["engine_event"] = "plan-execute: verify"
+        engine.finish(self, done)
         return done
 
     async def _agent_streamed(
@@ -870,8 +891,9 @@ class ChatGraph:
         return "compact" if self._needs_compaction(state) else "agent"
 
     def _after_tools(self, state: IrisState) -> Literal["compact", "agent"]:
-        if getattr(self, "engine_name", "react") == "plan-execute" and state.get("engine_phase") == "act":
-            state["engine_phase"] = "verify"
+        from iris_ai.engines.dispatch import resolve
+
+        resolve(getattr(self, "engine_name", "react")).after_tools(state)
         return "compact" if self._needs_compaction(state) else "agent"
 
     async def _compact(self, state: IrisState) -> dict:
@@ -1151,7 +1173,12 @@ class ChatGraph:
                 turnlog.record("approval", event="resume_refused", reason="terminal")
                 return "There's no approval waiting on this conversation — that turn already finished."
             if pending is not None:
-                verdict = self.approvals.verify(pending=pending, decision=decision, thread=session_id)
+                verdict = self.approvals.verify(
+                    pending=pending,
+                    decision=decision,
+                    thread=session_id,
+                    current_generation=str(getattr(self.runtime, "generation_id", "") or ""),
+                )
                 turnlog.record(
                     "approval",
                     event="resume" if verdict.allowed else "resume_refused",

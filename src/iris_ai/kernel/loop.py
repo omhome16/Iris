@@ -112,24 +112,32 @@ class NativeGraph:
                 else:
                     state[key] = value
             node = await self.chat._route(state)
+        self.chat.bind_turn()
+        state["generation_id"] = getattr(self.chat, "_turn_generation", "")
 
         steps = 0
-        while node not in ("end", None):
-            steps += 1
-            if steps > limit:
-                await self.store.save(thread_id, state)
-                raise GraphRecursionError(f"turn exceeded {limit} steps")
-            try:
-                _update, node = await self._run_node(state, node)
-            except GraphInterrupt as paused:
-                state["__interrupt__"] = [Interrupt(paused.value)]
-                await self.store.save(thread_id, state)
-                set_resume_decision(None)
-                return state
-        state.pop("__interrupt__", None)
-        await self.store.save(thread_id, state)
-        set_resume_decision(None)
-        return state
+        paused = False
+        try:
+            while node not in ("end", None):
+                steps += 1
+                if steps > limit:
+                    await self.store.save(thread_id, state)
+                    raise GraphRecursionError(f"turn exceeded {limit} steps")
+                try:
+                    _update, node = await self._run_node(state, node)
+                except GraphInterrupt as paused_turn:
+                    paused = True
+                    state["__interrupt__"] = [Interrupt(paused_turn.value)]
+                    await self.store.save(thread_id, state)
+                    set_resume_decision(None)
+                    return state
+            state.pop("__interrupt__", None)
+            await self.store.save(thread_id, state)
+            set_resume_decision(None)
+            return state
+        finally:
+            if not paused:
+                self.chat.release_turn()
 
     async def astream(self, incoming: dict, config: dict, stream_mode: list[str] | None = None):
         """Yield legacy `(mode, payload)` pairs, each also a typed event."""
@@ -141,6 +149,7 @@ class NativeGraph:
         token = set_stream_writer(writer)
         thread_id = config["configurable"]["thread_id"]
         limit = int(config.get("recursion_limit") or 40)
+        paused = False
         try:
             state = await self.store.load(thread_id) or _blank(thread_id)
             state["session_id"] = thread_id
@@ -159,7 +168,10 @@ class NativeGraph:
                     else:
                         state[key] = value
                 node = await self.chat._route(state)
+            self.chat.bind_turn()
+            state["generation_id"] = getattr(self.chat, "_turn_generation", "")
             steps = 0
+            paused = False
             while node not in ("end", None):
                 steps += 1
                 if steps > limit:
@@ -171,8 +183,9 @@ class NativeGraph:
                 before = len(collected)
                 try:
                     update, nxt = await self._run_node(state, node)
-                except GraphInterrupt as paused:
-                    state["__interrupt__"] = [Interrupt(paused.value)]
+                except GraphInterrupt as paused_turn:
+                    paused = True
+                    state["__interrupt__"] = [Interrupt(paused_turn.value)]
                     await self.store.save(thread_id, state)
                     for event in collected[before:]:
                         yield event
@@ -188,6 +201,8 @@ class NativeGraph:
             if usage is not None:
                 yield usage
         finally:
+            if not paused:
+                self.chat.release_turn()
             reset_stream_writer(token)
 
     async def _run_node(self, state: dict, node: str) -> tuple[dict, str]:

@@ -2,33 +2,11 @@
 
 from __future__ import annotations
 
-COMMANDS: tuple[tuple[str, str], ...] = (
-    ("/help", "list these commands"),
-    ("/new", "start a fresh session"),
-    ("/sessions", "list saved sessions"),
-    ("/threads", "list saved sessions and how to switch"),
-    ("/switch", "continue another session: /switch <name>"),
-    ("/model", "show or set the model: /model <id>"),
-    ("/provider", "show or set the provider: /provider <name>"),
-    ("/mcp", "list MCP presets and declared servers"),
-    ("/team", "ask every role and merge the answers"),
-    ("/parallel", "fan out: /parallel role: task | role: task"),
-    ("/roles", "list agent roles"),
-    ("/components", "list plug-and-play options"),
-    ("/reload", "re-read config and components"),
-    ("/persona", "show the persona file"),
-    ("/config", "open setup again"),
-    ("/memory", "where memory lives"),
-    ("/search", "search memory: /search <query>"),
-    ("/dream", "run consolidation now"),
-    ("/forget", "how to forget a memory"),
-    ("/tools", "list the tools the assistant can call"),
-    ("/skills", "list installed skills"),
-    ("/costs", "what this process has spent"),
-    ("/explain", "why the last turn looked like that"),
-    ("/trace", "the same explanation, plus the trace file"),
-    ("/clear", "clear the transcript on screen"),
-    ("/exit", "leave the chat"),
+from iris_ai.commands import COMMANDS as _ALL
+
+# The full-screen list is every command except ones only the plain REPL handles.
+COMMANDS: tuple[tuple[str, str], ...] = tuple(
+    (name, blurb) for name, blurb in _ALL if name not in {"/conflicts", "/quit"}
 )
 
 

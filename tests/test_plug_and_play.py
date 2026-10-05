@@ -798,7 +798,7 @@ async def test_model_check_rejects_an_empty_reply():
             return "  "
 
     check = await _model_check(LLM())
-    assert check.level == "fail"
+    assert check.level == "warn"
     assert "empty reply" in check.detail
 
 

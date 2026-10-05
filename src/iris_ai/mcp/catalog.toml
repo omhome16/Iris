@@ -9,8 +9,8 @@ env = []
 
 [fetch]
 transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-fetch"]
+command = "uvx"
+args = ["mcp-server-fetch"]
 trust = "untrusted"
 env = []
 

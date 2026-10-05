@@ -178,13 +178,25 @@ def load_class(folder: Path) -> type:
     _module, _, attr = entry.partition(":")
     attr = attr or "Component"
     path = folder / "component.py"
-    module_name = f"iris_component_{folder.parent.name}_{folder.name}".replace("-", "_")
+    module_name = f"iris_component_{folder.parent.name}_{folder.name}".replace("-", "_").replace(".", "_")
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot import {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    # Bytecode must not land inside the component folder. The digest is the
+    # artifact identity, and a cache file would change it after the first import.
+    import tempfile
+
+    previous_prefix = sys.pycache_prefix
+    previous_bytecode = sys.dont_write_bytecode
+    sys.pycache_prefix = str(Path(tempfile.gettempdir()) / "iris-pyc")
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.pycache_prefix = previous_prefix
+        sys.dont_write_bytecode = previous_bytecode
     try:
         component = getattr(module, attr)
     except AttributeError as exc:
@@ -218,45 +230,129 @@ def _v1_context(cls: type, runtime: Any, options: dict | None) -> ComponentConte
     )
 
 
-def construct(cls: type, runtime: Any, options: dict | None = None) -> Any:
+def construct(
+    cls: type,
+    runtime: Any,
+    options: dict | None = None,
+    *,
+    trust: str = "untrusted",
+) -> Any:
     """Build a component. Classes that ask for `ctx` get a v1 ComponentContext.
 
-    A class whose first parameter is the runtime is a kernel built-in. It
-    receives that object. The v0 `ComponentContext(runtime)` adapter is gone.
+    Only `trust="builtin"` may receive the runtime object. A local, installed,
+    or dotted component must take `ctx`, or take no required arguments. Passing
+    the runtime and retrying on TypeError used to hide a real constructor error
+    and hand the kernel to any class that asked for it.
     """
     import inspect
 
     try:
-        params = list(inspect.signature(cls).parameters)
+        params = list(inspect.signature(cls).parameters.values())
     except (TypeError, ValueError):
         params = []
-    if params and params[0] in {"ctx", "context"}:
+    names = [param.name for param in params]
+    if names and names[0] in {"ctx", "context"}:
         return cls(_v1_context(cls, runtime, options), **(options or {}))
-    try:
-        return cls(runtime)
-    except TypeError:
+    if trust != "builtin":
+        required = [
+            param
+            for param in params
+            if param.default is inspect.Parameter.empty
+            and param.kind in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD)
+        ]
+        if required:
+            raise TypeError(
+                f"{getattr(cls, '__name__', cls)} must take ctx as its first parameter. "
+                "Local components do not receive the runtime."
+            )
         return cls()
+    if names:
+        return cls(runtime)
+    return cls()
+
+
+_DIGEST_SKIP_DIRS = {"__pycache__", ".git", ".mypy_cache", ".ruff_cache", ".pytest_cache"}
+_DIGEST_SKIP_SUFFIXES = {".pyc", ".pyo"}
+_DIGEST_TEXT_SUFFIXES = {".py", ".toml", ".md", ".txt", ".json", ".yaml", ".yml"}
+
+
+def activation_report(folder: Path) -> dict[str, Any]:
+    """What the approval card shows. Generated from the staged bytes, not the model."""
+    meta = _read_toml(folder / "component.toml")
+    source = folder / "component.py"
+    preview = ""
+    if source.is_file():
+        preview = "\n".join(source.read_text(encoding="utf-8").splitlines()[:40])
+    from iris_ai.config import settings
+
+    kind = str(meta.get("kind") or "")
+    if settings.component_host == "subprocess" and kind in {"context", "capture", "consolidator"}:
+        execution = (
+            "subprocess with a scrubbed environment and no Iris kernel on its path. "
+            "This is an audit boundary, not a kernel jail."
+        )
+    else:
+        execution = "in-process with your privileges until an isolated host is enabled"
+    return {
+        "permissions": [str(item) for item in (meta.get("permissions") or [])],
+        "api_version": str(meta.get("api_version") or ""),
+        "preview": preview,
+        "execution": execution,
+    }
+
+
+def canonical_files(folder: Path) -> list[tuple[str, bytes]]:
+    """The files that make up a component's identity, in digest order.
+
+    Paths are posix, text is LF, and runtime artifacts are left out. The store
+    writes these bytes so a stored copy hashes the same as the folder it came from.
+    """
+    if not folder.is_dir():
+        return []
+    found: list[Path] = []
+    for path in folder.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(folder)
+        if any(part in _DIGEST_SKIP_DIRS for part in relative.parts):
+            continue
+        if path.suffix in _DIGEST_SKIP_SUFFIXES or path.name.startswith("."):
+            continue
+        found.append(path)
+    rows: list[tuple[str, bytes]] = []
+    for path in sorted(found, key=lambda item: item.relative_to(folder).as_posix()):
+        payload = path.read_bytes()
+        if path.suffix in _DIGEST_TEXT_SUFFIXES:
+            payload = payload.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        rows.append((path.relative_to(folder).as_posix(), payload))
+    return rows
 
 
 def component_digest(folder: Path) -> str:
-    """Stable sha256 of every file in a component folder."""
+    """Stable sha256 of the component source.
+
+    Runtime artifacts (`__pycache__`, bytecode) are not part of the identity.
+    Text files are hashed with LF endings so the digest does not depend on the
+    editor that wrote them.
+    """
     digest = hashlib.sha256()
-    if not folder.is_dir():
-        return digest.hexdigest()
-    files = sorted(path for path in folder.rglob("*") if path.is_file())
-    for path in files:
-        digest.update(path.relative_to(folder).as_posix().encode())
+    for relative, payload in canonical_files(folder):
+        digest.update(relative.encode())
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(payload)
         digest.update(b"\0")
     return digest.hexdigest()
 
 
 def rollback_target(kind: str) -> tuple[str, str]:
     """`(active, previous)` for a kind. Previous falls back to the built-in."""
-    entry = _read_lock().get(kind) or {}
+    from iris_ai.components.lock import read_lock
+
+    entry = (read_lock().get("kinds") or {}).get(kind) or {}
     active = str(entry.get("active") or "")
     previous = str(entry.get("previous") or "") or _builtin_default(kind)
+    if previous == active:
+        previous = _builtin_default(kind)
     return active, previous
 
 
@@ -296,8 +392,13 @@ def _interpreter_read_roots() -> list[str]:
 
 
 _CHECK_CHILD = r"""
-import json, os, runpy, sys
+import asyncio, json, os, runpy, sys
 from pathlib import Path
+
+# The selector loop opens a self-pipe. Create it before Landlock and seccomp,
+# or the contract probe dies with EPERM on socketpair (context, capture,
+# consolidator). Persona probes are synchronous and never hit this.
+asyncio.set_event_loop(asyncio.new_event_loop())
 
 sandbox = Path(sys.argv[1]).resolve()
 read_roots = [sandbox]
@@ -305,127 +406,7 @@ for item in json.loads(sys.argv[2]):
     read_roots.append(Path(item).resolve())
 os.chdir(sandbox)
 
-def _kernel_isolation(folder, roots):
-    # Landlock denies exec, outside writes (including utime), and TCP.
-    # Seccomp denies execve and any new socket, which is what stops
-    # ctypes.CDLL(None).system and DNS. The audit hook below still raises
-    # PermissionError for the Python-level calls. Where the kernel refuses
-    # Landlock, the hook plus an import ban is all that remains.
-    label = "audit"
-    try:
-        # CDLL(None) is how Linux reaches libc. On Windows it raises before the
-        # landlock check, and the child then dies without a JSON result, so the
-        # check looks like a failure instead of isolation=audit.
-        if not sys.platform.startswith("linux"):
-            raise OSError("landlock is linux-only")
-        import ctypes
-        from ctypes import Structure, c_int, c_uint64, c_void_p
-        libc = ctypes.CDLL(None, use_errno=True)
-
-        def _ok(ret, what):
-            if ret < 0:
-                err = ctypes.get_errno()
-                raise OSError(err, f"{what}: {os.strerror(err)}")
-            return ret
-
-        if not sys.platform.startswith("linux"):
-            raise OSError("landlock is linux-only")
-        fs_read = (1 << 2) | (1 << 3)
-        fs_write = (
-            (1 << 1) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
-            | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 13) | (1 << 14)
-        )
-        fs_handled = fs_read | fs_write | (1 << 0)
-
-        class RulesetAttr(Structure):
-            _fields_ = [("handled_access_fs", c_uint64), ("handled_access_net", c_uint64)]
-
-        class PathBeneath(Structure):
-            _fields_ = [("allowed_access", c_uint64), ("parent_fd", c_int)]
-
-        attr = RulesetAttr(fs_handled, 3)
-        rules = _ok(libc.syscall(444, ctypes.byref(attr), ctypes.sizeof(attr), 0), "landlock")
-        seen = set()
-        # /usr and the loader dirs are how Python imports. /etc is not in this
-        # list: a native open() would bypass the audit hook, and Landlock would
-        # otherwise allow reading it. /proc and /dev stay readable so the
-        # interpreter can start; they are not writable.
-        for item in [*roots, "/usr", "/lib", "/lib64", "/proc", "/dev", str(folder)]:
-            path = Path(item)
-            if not path.exists():
-                continue
-            resolved = path.resolve()
-            key = str(resolved)
-            if key in seen:
-                continue
-            seen.add(key)
-            access = fs_read | fs_write if resolved == folder else fs_read
-            handle = os.open(key, os.O_PATH | getattr(os, "O_CLOEXEC", 0))
-            rule = PathBeneath(access, handle)
-            try:
-                _ok(libc.syscall(445, rules, 1, ctypes.byref(rule), 0), key)
-            except OSError:
-                continue
-            finally:
-                os.close(handle)
-        _ok(libc.prctl(38, 1, 0, 0, 0), "no_new_privs")
-        _ok(libc.syscall(446, rules, 0), "landlock restrict")
-        os.close(rules)
-        label = "landlock"
-        try:
-            import struct
-            blocked = {
-                0xC000003E: (59, 322, 41, 42, 43, 44, 45, 46, 47, 49, 50, 53, 288, 299, 307, 101, 310, 311),
-                0xC00000B7: (221, 281, 198, 203, 202, 206, 207, 211, 212, 200, 201, 199, 242, 243, 269, 117, 270, 271),
-            }
-            machine = struct.calcsize("P")
-            arch = 0xC000003E if machine == 8 and sys.byteorder == "little" else 0
-            # aarch64 is also 64-bit little-endian; platform tells them apart.
-            import platform
-            if platform.machine() in {"aarch64", "arm64"}:
-                arch = 0xC00000B7
-            elif platform.machine() in {"x86_64", "amd64"}:
-                arch = 0xC000003E
-            numbers = blocked.get(arch)
-            if numbers:
-                def stmt(code, k):
-                    return struct.pack("HBBI", code, 0, 0, k & 0xFFFFFFFF)
-                def jump(code, k, jt, jf):
-                    return struct.pack("HBBI", code, jt, jf, k & 0xFFFFFFFF)
-                allow, errno_ret = 0x7FFF0000, 0x00050000 | 1
-                kill = 0x80000000
-                instr = [
-                    stmt(0x20, 4),
-                    jump(0x15, arch, 1, 0),
-                    stmt(0x06, kill),
-                    stmt(0x20, 0),
-                ]
-                for number in numbers:
-                    instr.append(jump(0x15, number, 0, 1))
-                    instr.append(stmt(0x06, errno_ret))
-                instr.append(stmt(0x06, allow))
-                blob = b"".join(instr)
-                buf = ctypes.create_string_buffer(blob)
-
-                class Prog(Structure):
-                    _fields_ = [("len", ctypes.c_ushort), ("filt", c_void_p)]
-
-                prog = Prog(len(blob) // 8, ctypes.cast(buf, c_void_p))
-                _ok(libc.prctl(22, 2, ctypes.byref(prog)), "seccomp")
-                label = "landlock+seccomp"
-        except (OSError, struct.error):
-            pass
-    except (OSError, AttributeError):
-        label = "audit"
-    finally:
-        sys.modules.pop("ctypes", None)
-        sys.modules.pop("_ctypes", None)
-    if os.environ.get("IRIS_CHECK_NETNS") == "1" and label != "audit":
-        label += "+netns"
-    elif os.environ.get("IRIS_CHECK_NETNS") == "1":
-        label = "audit+netns"
-    return label
-
+from iris_ai.isolation.linux_jail import apply as _kernel_isolation
 isolation = _kernel_isolation(sandbox, read_roots)
 
 def _inside(path, roots) -> bool:
@@ -658,10 +639,27 @@ def simulate_staged(folder: Path, world: Path, *, live: bool = False) -> tuple[b
     return bool(payload.get("ok")), str(payload.get("detail") or "simulation failed")
 
 
-def _probe_v1(kind: str, cls: type) -> str:
-    """Empty when the sample call returns the v1 type. Otherwise the reason."""
+def _drive(coro: Any) -> Any:
+    """Run a probe coroutine on the loop that already exists.
+
+    `asyncio.run` builds a new loop, and on Linux that opens a socketpair.
+    The component check applies a seccomp filter that rejects new sockets, so
+    the probe has to reuse a loop created before the jail.
+    """
     import asyncio
 
+    try:
+        current = asyncio.get_event_loop()
+    except RuntimeError:
+        current = None
+    if current is None or current.is_closed():
+        current = asyncio.new_event_loop()
+        asyncio.set_event_loop(current)
+    return current.run_until_complete(coro)
+
+
+def _probe_v1(kind: str, cls: type) -> str:
+    """Empty when the sample call returns the v1 type. Otherwise the reason."""
     from iris_ai.sdk.types import (
         CaptureRequest,
         ConsolidationPlan,
@@ -674,17 +672,17 @@ def _probe_v1(kind: str, cls: type) -> str:
     try:
         component = construct(cls, None)
         if kind == "context":
-            result = asyncio.run(component.assemble(ContextRequest(message="hi", session_id="probe")))
+            result = _drive(component.assemble(ContextRequest(message="hi", session_id="probe")))
             if not isinstance(result, ContextResult):
                 return "assemble() must return ContextResult"
         elif kind == "capture":
-            result = asyncio.run(
+            result = _drive(
                 component.extract(CaptureRequest(user_message="hi", reply="ok", session_id="probe"))
             )
             if not isinstance(result, list) or any(not isinstance(item, MemoryCandidate) for item in result):
                 return "extract() must return a list of MemoryCandidate"
         elif kind == "consolidator":
-            result = asyncio.run(component.propose(ConsolidationRequest()))
+            result = _drive(component.propose(ConsolidationRequest()))
             if not isinstance(result, ConsolidationPlan):
                 return "propose() must return ConsolidationPlan"
         elif kind == "persona":
@@ -796,13 +794,23 @@ def eject(kind: str, name: str, *, dest_name: str = "") -> Path:
 
 
 def activate(kind: str, name: str) -> str:
-    """Move a staged component into place and select it."""
+    """Move a staged component into place, select it, and pin its digest.
+
+    The check runs in the jailed child. Importing the staged code in this
+    process would execute it with the owner's privileges and could write
+    bytecode into the folder before the digest is recorded.
+    """
+    from iris_ai.components.lock import pin
+
     staged = staging_dir(kind, name)
     if not (staged / "component.py").is_file():
         raise FileNotFoundError(f"nothing staged at {staged}")
-    ok, detail = check_folder(staged)
+    digest = component_digest(staged)
+    ok, detail = check_in_sandbox(staged)
     if not ok:
         raise RuntimeError(detail)
+    if component_digest(staged) != digest:
+        raise RuntimeError("component digest changed during the check; activation refused")
     dest = components_root() / kind / name
     if dest.exists():
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -812,37 +820,50 @@ def activate(kind: str, name: str) -> str:
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(staged), str(dest))
+    from iris_ai.artifacts.store import ingest
+    from iris_ai.lifecycle.journal import record
+
+    stored = ingest(dest)
     _select(kind, name)
-    _remember(kind, name)
+    meta = _read_toml(dest / "component.toml")
+    pin(
+        kind,
+        name,
+        source="local",
+        digest=component_digest(dest),
+        api_version=str(meta.get("api_version") or ""),
+        permissions=list(meta.get("permissions") or []),
+        approved_by="owner",
+    )
+    record("activate", kind=kind, name=name, digest=stored)
     return f"activated {kind}/{name}"
 
 
 def rollback(kind: str) -> str:
     """Select the previous component for this kind."""
-    data = _read_lock()
-    entry = data.get(kind) or {}
-    active = str(entry.get("active") or "")
-    previous = str(entry.get("previous") or "")
-    if not previous or previous == active:
-        previous = _builtin_default(kind)
+    from iris_ai.components.lock import set_selection
+
+    _active, previous = rollback_target(kind)
     _select(kind, previous)
-    entry["active"] = previous
-    entry["fails"] = 0
-    data[kind] = entry
-    _write_lock(data)
+    set_selection(kind, previous)
+    from iris_ai.lifecycle.journal import record
+
+    record("rollback", kind=kind, name=previous)
     return f"{kind} rolled back to {previous}"
 
 
 def note_failure(kind: str, name: str) -> str | None:
-    """Count a runtime failure. Roll back after the limit. Returns a message."""
-    data = _read_lock()
-    entry = data.get(kind) or {"active": name, "previous": _builtin_default(kind), "fails": 0}
-    entry["fails"] = int(entry.get("fails") or 0) + 1
-    data[kind] = entry
-    _write_lock(data)
-    if entry["fails"] < _FAIL_LIMIT:
-        return None
-    return rollback(kind)
+    """Count a runtime failure. Returns the rollback message, or None.
+
+    A freshly pinned component is on probation: one failure while that window
+    is open rolls the kind back. After the window, three failures do.
+    """
+    from iris_ai.components.lock import bump_fails, probation_left
+
+    fails = bump_fails(kind, name)
+    if probation_left(kind) > 0 or fails >= _FAIL_LIMIT:
+        return rollback(kind)
+    return None
 
 
 class Guarded:
@@ -872,6 +893,12 @@ class Guarded:
     async def sleep(self, *args: Any, **kwargs: Any) -> Any:
         return await self._call("sleep", *args, **kwargs)
 
+    def close(self) -> None:
+        inner = self._inner
+        close = getattr(inner, "close", None)
+        if close is not None:
+            close()
+
     def text(self) -> str:
         try:
             return str(self._inner.text())
@@ -883,9 +910,11 @@ class Guarded:
             return ""
 
     async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        from iris_ai.components.lock import tick_probation
+
         target = self._inner
         try:
-            return await getattr(target, method)(*args, **kwargs)
+            result = await getattr(target, method)(*args, **kwargs)
         except Exception as exc:
             log.warning("%s %s failed: %s", self.kind, self.name, exc)
             switched = note_failure(self.kind, self.name)
@@ -894,6 +923,9 @@ class Guarded:
             if self._fallback is not None and hasattr(self._fallback, method):
                 return await getattr(self._fallback, method)(*args, **kwargs)
             raise
+        else:
+            tick_probation(self.kind)
+            return result
 
 
 def _builtin_default(kind: str) -> str:
@@ -921,35 +953,40 @@ def _select(kind: str, name: str) -> None:
 
 
 def _remember(kind: str, name: str) -> None:
-    data = _read_lock()
-    entry = data.get(kind) or {}
-    current = str(entry.get("active") or _builtin_default(kind))
-    if current == name:
-        # Re-activating the component that is already selected must not point
-        # `previous` at itself, or rollback reports success and changes nothing.
-        previous = str(entry.get("previous") or "")
-        if not previous or previous == name:
-            previous = _builtin_default(kind)
-    else:
-        previous = current
-    data[kind] = {"active": name, "previous": previous, "fails": 0}
-    _write_lock(data)
+    """Record a selection. Re-activating the current name must not point previous at itself."""
+    from iris_ai.components.lock import kind_row, transaction
+
+    with transaction() as data:
+        row = kind_row(data, kind)
+        current = str(row.get("active") or _builtin_default(kind))
+        if current == name:
+            previous = str(row.get("previous") or "")
+            if not previous or previous == name:
+                previous = _builtin_default(kind)
+            row["previous"] = previous
+        else:
+            row["previous"] = current
+            row["digest"] = ""
+        row["active"] = name
+        row["fails"] = 0
 
 
 def _read_lock() -> dict:
-    path = lock_path()
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    """Compatibility reader. Prefer `iris_ai.components.lock.read_lock`."""
+    from iris_ai.components.lock import read_lock
+
+    data = read_lock()
+    flat = dict(data.get("kinds") or {})
+    flat["version"] = data.get("version", 3)
+    flat["kinds"] = data.get("kinds") or {}
+    return flat
 
 
 def _write_lock(data: dict) -> None:
-    path = lock_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    """Compatibility writer. A v1-shaped dict is stored as version 3."""
+    from iris_ai.components.lock import normalize, write_lock
+
+    write_lock(normalize(data))
 
 
 def _read_toml(path: Path) -> dict:

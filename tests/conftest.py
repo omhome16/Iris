@@ -22,3 +22,6 @@ from iris_ai.config import settings
 def isolate_mcp_config(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """No declared servers unless a test declares some."""
     monkeypatch.setattr(settings, "mcp_servers_file", str(tmp_path / "no-servers.json"))
+    # The product default refuses executable components on Windows and macOS.
+    # The suite loads them on purpose. A test that wants the refusal sets this false.
+    monkeypatch.setattr(settings, "allow_audit_isolation", True)

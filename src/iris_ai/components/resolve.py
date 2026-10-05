@@ -13,8 +13,9 @@ def resolve(kind: str, name: str) -> tuple[Any, str] | None:
     """
     import importlib.metadata as metadata
 
+    from iris_ai.artifacts.store import executable_folder
     from iris_ai.components import _builtin, load_symbol
-    from iris_ai.plug import load_class, local_folder
+    from iris_ai.plug import load_class
 
     builtin = _builtin(kind, name)
     if name in _reserved(kind):
@@ -23,7 +24,7 @@ def resolve(kind: str, name: str) -> tuple[Any, str] | None:
         if builtin is not None:
             return builtin, "builtin"
         return None
-    folder = local_folder(kind, name)
+    folder = executable_folder(kind, name)
     if folder is not None:
         return load_class(folder), "local"
     try:

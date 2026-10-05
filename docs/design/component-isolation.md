@@ -1,39 +1,24 @@
 # Component isolation
 
-This is a design. It is not built. Components run in-process. The capability
-context narrows the API a well-behaved component uses. It does not stop a
-component from importing the runtime.
+Two boundaries exist. They are not the same thing.
 
-Build the boundary below when Iris starts installing components the owner did
-not write and did not read.
+The check (`check_in_sandbox`) runs before approval. On Linux it can apply
+Landlock, seccomp, and a network namespace. Where that kernel support is
+missing, the check is an audit hook and the detail says `isolation=audit`.
+Approving a component does not keep that jail.
 
-## Shape
+`COMPONENT_HOST=subprocess` runs context, capture, and consolidator in a
+child process after approval. The child starts with a scrubbed environment,
+the Iris kernel is taken off `sys.path`, and an audit hook refuses reads
+outside the interpreter, the component, and its state directory. Model,
+memory, and file calls are requests back to the parent, and the parent
+answers only the grants in `component.toml`. The default is `in-process`.
+Persona and memory backends stay in-process either way.
 
-One long-lived child process per untrusted component. The host speaks JSON-RPC
-over stdio. The child receives the Phase 1 types, which are already frozen and
-JSON-serializable, and returns the same types. `llm`, `memory`, `files`, and
-`state` are host-side proxies: the child asks, the host checks the grant, the
-host performs the call.
+That child is not a kernel jail. A bug in the audit hook, or a platform
+that does not enforce it, is not Landlock. Do not describe it as one.
+`net.request` is not a grant. Windows and macOS do not grow a kernel jail
+by turning the host on.
 
-The child is the jailed check process, kept alive. On Linux that is Landlock,
-a seccomp filter, and a network namespace. On Windows the equivalent is a
-restricted token and a job object, or a WASM runtime if the component can be
-compiled to it. macOS stays audit-only until it has a comparable jail, and
-`iris evolve` already refuses there unless `--allow-audit-isolation` is set.
-
-## Cost
-
-Every model call and every memory search pays a serialization round trip.
-A context stage that searches once per turn can afford it. A memory backend
-that embeds every chunk at index time cannot, unless the embedder stays in
-the child and only the vectors cross back.
-
-## What would make this worth building
-
-- `iris components add` accepts a git URL the owner has not read line by line.
-- A published catalog exists that is not this repository.
-- The capability context has been bypassed, in a test, by a component that
-  imported `iris_ai.agent.runtime` directly.
-
-Until then the protection is the staging folder, the jailed check, the digest
-pin, and the owner's approval.
+Build the Linux host on top of the existing check jail when a component the
+owner did not read must be contained by the kernel, not only by the audit hook.

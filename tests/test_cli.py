@@ -31,9 +31,11 @@ def test_help_lists_only_real_commands():
     names = {(cmd.name or cmd.callback.__name__) for cmd in app.registered_commands}
     assert names == {
         "agents",
+        "bench",
         "chat",
         "components",
         "config",
+        "core",
         "costs",
         "cron",
         "doctor",

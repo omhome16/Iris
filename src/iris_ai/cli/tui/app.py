@@ -368,7 +368,9 @@ class ChatApp(App):
             if self._brain is None:
                 await self._write(note_line("still starting"))
                 return
-            message = await self._brain.reload()
+            from iris_ai.lifecycle.control import reload as control_reload
+
+            message = await control_reload(self._brain)
             await self._write(note_line(message))
             if "built-in persona" in message:
                 self._set_status("persona fell back to the built-in")
@@ -460,6 +462,13 @@ class ChatApp(App):
         hits = matching(head)
         if hits:
             await self._write(note_line("  ".join(name for name, _ in hits)))
+            return
+        from iris_ai.commands.kinds import expand
+
+        expanded = expand(text)
+        if expanded is not None:
+            await self._write(user_line(text))
+            await self._turn(expanded)
             return
         await self._write(note_line(f"unknown command {head}; /help lists them"))
 

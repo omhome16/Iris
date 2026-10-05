@@ -193,7 +193,14 @@ async def _model_check(llm) -> Check:
     elapsed = time.monotonic() - started
     said = (reply or "").strip().replace("\n", " ")[:40]
     if not said:
-        return Check("model check", "fail", f"cheap tier answered in {elapsed:.1f}s with an empty reply")
+        # Reasoning models often spend a tiny cap on hidden tokens and return
+        # no visible text. The call itself succeeded.
+        return Check(
+            "model check",
+            "warn",
+            f"cheap tier answered in {elapsed:.1f}s with an empty reply "
+            "(the call succeeded; reasoning models do this under a small token cap)",
+        )
     return Check("model check", "ok", f"cheap tier answered in {elapsed:.1f}s ({said!r})")
 
 

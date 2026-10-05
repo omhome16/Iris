@@ -115,7 +115,17 @@ def _channel_result(raw: str, **extra: Any) -> str:
     return _ok(detail=text, **extra)
 
 
-def approval_payload(action: str, args: dict, *, side_effecting: bool = True) -> dict:
+def approval_payload(
+    action: str,
+    args: dict,
+    *,
+    side_effecting: bool = True,
+    generation: str = "",
+    artifact: str = "",
+    policy: str = "",
+    nonce: str = "",
+    expires: str = "",
+) -> dict:
     """The binding half of an approval interrupt (P8, audit G4).
 
     Carries the `call_id` of the tool call being approved and a digest of the
@@ -128,6 +138,11 @@ def approval_payload(action: str, args: dict, *, side_effecting: bool = True) ->
         call_id=current_tool_call.get(),
         args=args,
         side_effecting=side_effecting,
+        generation=generation,
+        artifact=artifact,
+        policy=policy,
+        nonce=nonce,
+        expires=expires,
     ).payload()
 
 
@@ -705,11 +720,13 @@ def build_tools(runtime: Runtime) -> list[Tool]:
             }
         )
         if decision != "approved":
-            return _err("forget cancelled")
+            return _err_detail("forget cancelled", refused="owner_denied")
         current = runtime.files.read(runtime.files.memory)
         marker = f"(superseded {datetime.now().isoformat()[:10]})"
         if line not in current:
             return _err("could not locate the memory text in MEMORY.md; leaving intact")
+        if "(superseded" in line:
+            return _ok(superseded=hit.content[:120], already=True)
         new = current.replace(line, f"{line} {marker}", 1)
         if new == current:
             return _err("could not locate the memory text in MEMORY.md; leaving intact")
@@ -829,15 +846,21 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         if skill is None:
             return _err(f"no skill named {name!r}")
         score = skill.success_score
-        if outcome == "failed":
-            revised = runtime.skills.revise(name)
-            if revised is not None:
-                score = revised.success_score
-        elif outcome == "success":
-            reinforced = runtime.skills.reinforce(name)
-            if reinforced is not None:
-                score = reinforced.success_score
-        return _ok(name=name, procedure=skill.procedure, success=round(score, 2))
+        note = ""
+        try:
+            if outcome == "failed":
+                revised = runtime.skills.revise(name)
+                if revised is not None:
+                    score = revised.success_score
+            elif outcome == "success":
+                reinforced = runtime.skills.reinforce(name)
+                if reinforced is not None:
+                    score = reinforced.success_score
+        except PermissionError as exc:
+            # A shipped skill has no success score. Applying it is still success:
+            # the procedure is what the caller asked for.
+            note = str(exc)
+        return _ok(name=name, procedure=skill.procedure, success=round(score, 2), note=note)
 
     tools.append(
         Tool(
@@ -1352,7 +1375,7 @@ def component_tools(runtime: Runtime) -> list[Tool]:
         return _ok(detail=detail)
 
     async def component_activate(kind: str, name: str) -> str:
-        from iris_ai.plug import activate, component_digest, staging_dir
+        from iris_ai.plug import staging_dir
 
         try:
             folder = staging_dir(kind, name)
@@ -1360,26 +1383,35 @@ def component_tools(runtime: Runtime) -> list[Tool]:
             return _err(str(exc))
         if not (folder / "component.py").is_file():
             return _err(f"nothing staged at {kind}/{name}")
-        digest = component_digest(folder)
+        from iris_ai.artifacts.store import ingest
+        from iris_ai.plug import activation_report
+
+        digest = ingest(folder)
         files = sorted(path.name for path in folder.iterdir() if path.is_file())
+        report = activation_report(folder)
         args = {"kind": kind, "name": name, "digest": digest}
         shown = {
             "component": f"{kind}/{name}",
             "files": files,
             "component_digest": digest,
             "changes": f"move staged {kind}/{name} into components/ and select it",
-            **approval_payload("component_activate", args),
+            "permissions": report["permissions"],
+            "preview": report["preview"],
+            "execution": report["execution"],
+            **approval_payload("component_activate", args, artifact=digest),
         }
         decision = _honour_approval(shown)
         if decision != "approved":
-            return _err(decision)
+            return _err_detail(decision, refused="owner_denied")
         try:
-            return _ok(detail=activate(kind, name))
+            from iris_ai.lifecycle.control import activate as control_activate
+
+            return _ok(detail=control_activate(kind, name))
         except Exception as exc:  # noqa: BLE001 - the tool reports why activation stopped
             return _err(f"{type(exc).__name__}: {exc}")
 
     async def component_rollback(kind: str) -> str:
-        from iris_ai.plug import rollback, rollback_target
+        from iris_ai.plug import rollback_target
 
         active, previous = rollback_target(kind)
         args = {"kind": kind, "active": active, "previous": previous}
@@ -1392,8 +1424,10 @@ def component_tools(runtime: Runtime) -> list[Tool]:
         }
         decision = _honour_approval(shown)
         if decision != "approved":
-            return _err(decision)
-        return _ok(detail=rollback(kind))
+            return _err_detail(decision, refused="owner_denied")
+        from iris_ai.lifecycle.control import rollback as control_rollback
+
+        return _ok(detail=control_rollback(kind))
 
     async def component_simulate(kind: str, name: str) -> str:
         from iris_ai.eval.score import compare_suite, list_suites, refuse_live
@@ -1414,6 +1448,21 @@ def component_tools(runtime: Runtime) -> list[Tool]:
                 f"CI [{low:+.2f}, {high:+.2f}] {row['verdict']}"
             )
         return _ok(comparison="\n".join(lines))
+
+    async def component_plan(kind: str, name: str) -> str:
+        from iris_ai.planning.catalog import plan
+        from iris_ai.plug import local_folder, staging_dir
+
+        try:
+            folder = staging_dir(kind, name)
+        except ValueError as exc:
+            return _err(str(exc))
+        if not (folder / "component.toml").is_file():
+            found = local_folder(kind, name)
+            if found is None:
+                return _err(f"no staged or local component {kind}/{name}")
+            folder = found
+        return _ok(**plan(folder))
 
     del runtime  # tools jail writes to components/.staging, not the sandbox
     return [
@@ -1496,6 +1545,17 @@ def component_tools(runtime: Runtime) -> list[Tool]:
                 "required": ["kind", "name"],
             },
             component_simulate,
+        ),
+        Tool(
+            "component_plan",
+            "Report the grants, refused permissions, and wheel-lock status for a "
+            "staged or local component. Does not activate it and does not download anything.",
+            {
+                "type": "object",
+                "properties": {"kind": {"type": "string"}, "name": {"type": "string"}},
+                "required": ["kind", "name"],
+            },
+            component_plan,
         ),
     ]
 
@@ -1624,6 +1684,9 @@ def get_tools(runtime: Runtime) -> list[Tool]:
         if external:
             log.debug("mcp pool contributed: %s", [t.name for t in external])
             tools.extend(external)
+    from iris_ai.kinds.tools import load_kind_tools
+
+    tools.extend(load_kind_tools())
     return tools
 
 
@@ -1666,6 +1729,7 @@ TOOL_NAMES: frozenset[str] = frozenset(
         "component_activate",
         "component_rollback",
         "component_simulate",
+        "component_plan",
         "memory_resolve_conflict",
         "evolve_list",
         "evolve_read",

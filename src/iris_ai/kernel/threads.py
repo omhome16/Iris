@@ -62,6 +62,17 @@ def _describe_approval(value: dict) -> str:
         lines.append(str(hit))
     elif value.get("query"):
         lines.append(f"query: {value['query']}")
+    permissions = value.get("permissions")
+    if isinstance(permissions, list) and permissions:
+        lines.append("permissions: " + ", ".join(str(item) for item in permissions))
+    elif isinstance(permissions, list):
+        lines.append("permissions: (none declared)")
+    if value.get("execution"):
+        lines.append(str(value["execution"]))
+    preview = value.get("preview")
+    if isinstance(preview, str) and preview.strip():
+        lines.append("source:")
+        lines.append(preview.strip())
     change = value.get("changes")
     if change:
         lines.append(str(change))

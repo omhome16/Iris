@@ -163,8 +163,14 @@ def _resolve_class(kind: str, name: str) -> Any:
 
 def _install(runtime: Any, kind: str, name: str, *, fallback: Any = None) -> Any:
     """Build one component. A failure logs one line and returns the fallback."""
+    from iris_ai.config import settings
     from iris_ai.plug import Guarded, construct
 
+    if settings.component_host == "subprocess" and kind in {"context", "capture", "consolidator"}:
+        from iris_ai.artifacts.store import executable_folder
+
+        if executable_folder(kind, name) is not None:
+            return _install_hosted(kind, name, fallback=fallback)
     resolved = None
     try:
         resolved = _resolve_class(kind, name)
@@ -175,6 +181,12 @@ def _install(runtime: Any, kind: str, name: str, *, fallback: Any = None) -> Any
         return fallback
     cls, source = resolved
     if source == "local":
+        from iris_ai.isolation.policy import execution_refusal
+
+        refused = execution_refusal(kind)
+        if refused:
+            log.warning("%s", refused)
+            return fallback
         blocked = _refuse_drift(kind, name)
         if blocked:
             log.warning("%s", blocked)
@@ -184,13 +196,46 @@ def _install(runtime: Any, kind: str, name: str, *, fallback: Any = None) -> Any
             log.warning("%s", requires)
             return fallback
     try:
-        inner = construct(cls, runtime)
+        inner = construct(cls, runtime, trust="builtin" if source == "builtin" else "local")
     except Exception as exc:  # noqa: BLE001 - construction errors are reported, not fatal
         log.warning("%s %s failed to start (%s). Using the built-in.", kind, name, exc)
         return fallback
     # Local components are the ones Iris or the owner just added. Watch those.
     # A dotted path stays the class the caller constructed.
     if source == "local" and fallback is not None and kind != "persona":
+        return Guarded(inner, fallback, kind=kind, name=name)
+    return inner
+
+
+def _install_hosted(kind: str, name: str, *, fallback: Any) -> Any:
+    """Run a local folder in the subprocess host. None means there is no folder."""
+    from iris_ai.artifacts.store import executable_folder
+    from iris_ai.isolation.host import open_component
+    from iris_ai.plug import Guarded
+
+    folder = executable_folder(kind, name)
+    if folder is None:
+        return None
+    from iris_ai.isolation.policy import execution_refusal
+
+    refused = execution_refusal(kind)
+    if refused:
+        log.warning("%s", refused)
+        return fallback
+    blocked = _refuse_drift(kind, name)
+    if blocked:
+        log.warning("%s", blocked)
+        return fallback
+    requires = _refuse_requires(kind, name)
+    if requires:
+        log.warning("%s", requires)
+        return fallback
+    try:
+        inner = open_component(folder, kind=kind, name=name)
+    except Exception as exc:  # noqa: BLE001 - a bad component must not stop boot
+        log.warning("%s %s failed to start (%s). Using the built-in.", kind, name, exc)
+        return fallback
+    if fallback is not None and kind != "persona":
         return Guarded(inner, fallback, kind=kind, name=name)
     return inner
 
@@ -224,25 +269,36 @@ def _refuse_requires(kind: str, name: str) -> str:
 
 
 def _refuse_drift(kind: str, name: str) -> str:
-    """A changed folder does not load. An unpinned name is trusted once and pinned."""
-    from iris_ai.components.lock import drifted, kind_row, pin, read_lock
+    """A changed folder does not load. An unpinned folder loads with a warning.
+
+    Trust-on-first-use used to pin whatever bytes happened to be on disk the
+    first time Iris imported them. Activation and `components use` pin instead.
+    """
+    from iris_ai.components.lock import drifted, read_lock
     from iris_ai.plug import component_digest, local_folder
 
     folder = local_folder(kind, name)
     if folder is None:
         return ""
+    row = (read_lock().get("kinds") or {}).get(kind) or {}
+    if row.get("active") != name:
+        return ""
+    pinned = str(row.get("digest") or "")
+    if not pinned:
+        log.warning("%s %s is selected but not pinned. Run `iris components use` to pin it.", kind, name)
+        return ""
+    # The store is the approved copy. An edit to the working folder does not
+    # change what runs, and it is not a reason to drop back to the built-in.
+    from iris_ai.artifacts.store import verify
+
+    if verify(pinned):
+        return ""
     digest = component_digest(folder)
-    data = read_lock()
-    row = data["kinds"].get(kind) or {}
-    if row.get("active") == name and drifted(kind, digest=digest):
+    if drifted(kind, digest=digest):
         return (
-            f"{kind} {name} changed since it was approved ({row.get('digest', '')[:12]}). "
+            f"{kind} {name} changed since it was approved ({pinned[:12]}). "
             f"Using the built-in. Review it, then `iris components use {kind} {name}` to re-pin."
         )
-    if not row.get("digest"):
-        pin(kind, name, source="local", digest=digest, approved_by="first-use")
-        kind_row(read_lock(), kind)
-        log.info("pinned %s %s on first use (%s)", kind, name, digest[:12])
     return ""
 
 
@@ -338,9 +394,10 @@ def attach(runtime: Any, manifest: dict) -> str:
 
 def _piece(kind: str, name: str) -> dict[str, str]:
     """Name, source, and digest for one selected component."""
-    from iris_ai.plug import component_digest, local_folder
+    from iris_ai.artifacts.store import executable_folder
+    from iris_ai.plug import component_digest
 
-    folder = local_folder(kind, name)
+    folder = executable_folder(kind, name)
     if folder is not None:
         return {"name": name, "source": "local", "digest": component_digest(folder)}
     if ":" in name:
@@ -392,9 +449,10 @@ def _is_custom_persona(persona: str) -> bool:
 
 def _probe_persona(persona: str) -> str:
     """Import, construct, and call `text()`. Raises when the component cannot load."""
-    from iris_ai.plug import construct, load_class, local_folder
+    from iris_ai.artifacts.store import executable_folder
+    from iris_ai.plug import construct, load_class
 
-    folder = local_folder("persona", persona)
+    folder = executable_folder("persona", persona)
     if folder is not None:
         component = construct(load_class(folder), None)
     elif ":" in persona:

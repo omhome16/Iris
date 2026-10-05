@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     ollama_cheap_model: str = "ollama/qwen2.5-coder:3b"
     ollama_embedding_model: str = "ollama/nomic-embed-text"
     ollama_embedding_dim: int = 768
+    # "same-provider" keeps a failed call on the provider the owner configured.
+    # "any" is the old chain across every usable provider.
+    llm_failover: str = "same-provider"
 
     # ── Further providers (names and failover live in iris_ai.providers) ──
     # Each block is a key plus a strong and a cheap model id. An empty model id
@@ -326,7 +329,12 @@ class Settings(BaseSettings):
         """
         models = self._models_strong if tier == "strong" else self._models_cheap
         lead = getattr(self, "_resolved_provider", None) or self._autodetect_provider()
-        ordered = [lead, *[name for name in PROVIDERS if name != lead]]
+        mode = str(getattr(self, "llm_failover", "same-provider") or "same-provider").strip().lower()
+        if mode == "any":
+            ordered = [lead, *[name for name in PROVIDERS if name != lead]]
+        else:
+            # same-provider: a failed local call must not send the prompt to a cloud key.
+            ordered = [lead]
         out: list[tuple[str, str, dict]] = []
         for name in ordered:
             if not self._provider_usable(name):
@@ -374,6 +382,15 @@ class Settings(BaseSettings):
     # Optional declarative manifest (TOML). Precedence: defaults < this file <
     # environment. Secrets stay in .env; the manifest is committable.
     harness_config: str = "config/harness.toml"
+    # in-process: approved folder components run in this process.
+    # subprocess: context, capture, and consolidator run in a scrubbed child
+    # that cannot import the kernel. That child is an audit boundary, not a
+    # kernel jail. Persona and memory stay in-process.
+    component_host: str = "in-process"
+    # Windows and macOS have no kernel jail. Executable components stay unloaded
+    # unless the owner sets this. It does not create a jail; it records that
+    # they accept the audit boundary. Linux ignores it because Landlock can run.
+    allow_audit_isolation: bool = False
     # Declared MCP servers, in the ecosystem's `{"mcpServers": {...}}` shape.
     # A missing file means "no servers" (`iris_ai.mcp`); a malformed one raises,
     # because a server the owner believes is connected but is not is worse than

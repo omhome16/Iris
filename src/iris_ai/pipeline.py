@@ -132,7 +132,7 @@ async def fold_context(runtime: Any, names: list[str], message: str, state: dict
                 result = await ContextAssembler(runtime).assemble(request)
             else:
                 cls = _builtin("context", name)
-                component = construct(cls, runtime) if cls is not None else None
+                component = construct(cls, runtime, trust="builtin") if cls is not None else None
                 if component is None or not hasattr(component, "assemble"):
                     continue
                 result = await component.assemble(request)

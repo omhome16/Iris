@@ -242,15 +242,21 @@ class Harness:
         Threads stay in the checkpointer. A component that fails to load is
         left on the previous one; `attach` reports that instead of crashing.
         """
-        from iris_ai.components import attach
         from iris_ai.config import reload as reload_settings
         from iris_ai.manifest import load_manifest
 
         reload_settings()
+        from iris_ai.generation import swap_components
+        from iris_ai.lifecycle.journal import record
         from iris_ai.prompt import clear_persona_cache
 
         clear_persona_cache()
-        notice = attach(self.runtime, load_manifest(Path(settings.harness_config)))
+        manifest = load_manifest(Path(settings.harness_config))
+        notice = swap_components(self.runtime, manifest)
+        record("reload", generation=getattr(self.runtime, "generation_id", ""), notice=notice)
+        from iris_ai.agent.context import ContextAssembler
+
+        self.graph.assembler = getattr(self.runtime, "context_builder", None) or ContextAssembler(self.runtime)
         if notice:
             return f"reloaded config and components. {notice}"
         return "reloaded config and components"
@@ -294,7 +300,20 @@ def _memory_index(llm: LLMClient, _jev: JevClient, reranker: JevReranker):
     name = settings.memory_backend
     folder = local_folder("memory", name)
     if folder is not None:
-        return construct(load_class(folder), None)
+        from iris_ai.components import _refuse_drift
+        from iris_ai.isolation.policy import execution_refusal
+
+        refused = execution_refusal("memory")
+        if refused:
+            log.warning("%s", refused)
+            return MEMORY_BACKENDS.build("sqlite", dsn=settings.postgres_dsn, llm=llm, reranker=reranker)
+        blocked = _refuse_drift("memory", name)
+        if blocked:
+            log.warning("%s", blocked)
+            return MEMORY_BACKENDS.build("sqlite", dsn=settings.postgres_dsn, llm=llm, reranker=reranker)
+        from iris_ai.artifacts.store import executable_folder
+
+        return construct(load_class(executable_folder("memory", name) or folder), None)
     if ":" in name:
         from iris_ai.components import load_symbol
 

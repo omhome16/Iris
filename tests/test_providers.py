@@ -154,6 +154,7 @@ def test_the_configured_provider_leads_and_ollama_is_last():
         llm_provider="opencode",
         opencode_api_key="zen-key",
         groq_api_key="groq-key",
+        llm_failover="any",
     )
     names = [name for name, _model, _auth in settings.llm_candidates("strong")]
     assert names[0] == "opencode"

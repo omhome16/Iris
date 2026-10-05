@@ -33,7 +33,7 @@ def test_off_disables_capture_and_consolidation():
     assert isinstance(runtime.dreams, OffConsolidator)
 
 
-def test_a_dotted_path_is_constructed_with_the_runtime():
+def test_a_dotted_path_is_constructed_from_ctx():
     runtime = _Runtime()
     attach(runtime, {"components": {"context": "examples.custom_context.context:RagFirstContext"}})
     assert runtime.context_builder.__class__.__name__ == "RagFirstContext"

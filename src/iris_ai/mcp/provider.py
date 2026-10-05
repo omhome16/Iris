@@ -73,6 +73,14 @@ if TYPE_CHECKING:
 log = logging.getLogger("iris.mcp")
 
 
+def _schema_digest(name: str, schema: dict) -> str:
+    """Identity of a tool's argument schema. A change means the tool is not the one that was pinned."""
+    import hashlib
+
+    body = json.dumps({"name": name, "schema": schema}, sort_keys=True, default=str)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+
+
 def _parameters(schema: Any) -> dict:
     """A server's input schema, made safe to hand to a tool-calling provider.
 
@@ -130,6 +138,7 @@ class McpPool:
         self._retryable: dict[str, McpServerSpec] = {}
         self._retry_task: asyncio.Task | None = None
         self._closed = False
+        self._schema_pins: dict[str, str] = {}
 
     async def __aenter__(self) -> McpPool:
         await self.connect()
@@ -258,11 +267,19 @@ class McpPool:
         built: list[Tool] = []
         for server in self.servers.values():
             for tool in server.tools:
+                key = namespaced(server.name, tool.name)
+                schema = _parameters(tool.input_schema)
+                digest = _schema_digest(key, schema)
+                pinned = self._schema_pins.get(key)
+                if pinned and pinned != digest:
+                    log.warning("mcp tool %s schema changed (%s -> %s); leaving it unloaded", key, pinned, digest)
+                    continue
+                self._schema_pins.setdefault(key, digest)
                 built.append(
                     Tool(
-                        namespaced(server.name, tool.name),
+                        key,
                         self._describe(server, tool),
-                        _parameters(tool.input_schema),
+                        schema,
                         self._handler(server, tool),
                     )
                 )

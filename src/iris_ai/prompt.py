@@ -119,12 +119,24 @@ def _custom_persona(picked: str) -> str:
     if cached is not None:
         return str(cached.text())  # type: ignore[attr-defined]
     try:
+        from iris_ai.artifacts.store import executable_folder
         from iris_ai.plug import Guarded, construct, load_class, local_folder
 
         folder = local_folder("persona", picked)
         component = None
         if folder is not None:
-            component = construct(load_class(folder), None)
+            from iris_ai.components import _refuse_drift
+            from iris_ai.isolation.policy import execution_refusal
+
+            refused = execution_refusal("persona")
+            if refused:
+                log.error("%s", refused)
+                return ""
+            blocked = _refuse_drift("persona", picked)
+            if blocked:
+                log.error("%s", blocked)
+                return ""
+            component = construct(load_class(executable_folder("persona", picked) or folder), None)
         elif ":" in picked:
             from iris_ai.components import load_symbol
 
@@ -143,7 +155,6 @@ def _custom_persona(picked: str) -> str:
             exc,
         )
         return ""
-    return ""
 
 
 def _persona_choice(root: Path) -> str:

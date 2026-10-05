@@ -146,6 +146,7 @@ TOOL_DECLARATIONS: dict[str, Declaration] = {
     "component_activate": Declaration(ToolClass.CONTROL, "extended"),
         "component_rollback": Declaration(ToolClass.CONTROL, "extended"),
         "component_simulate": Declaration(ToolClass.READ, "extended"),
+        "component_plan": Declaration(ToolClass.READ, "extended"),
         "evolve_list": Declaration(ToolClass.READ, "extended"),
         "evolve_read": Declaration(ToolClass.READ, "extended"),
         "evolve_grep": Declaration(ToolClass.READ, "extended"),
@@ -263,6 +264,7 @@ NAMESPACES: dict[str, tuple[str, ...]] = {
         "component_activate",
         "component_rollback",
         "component_simulate",
+        "component_plan",
     ),
     "evolve": ("evolve_list", "evolve_read", "evolve_grep"),
 }

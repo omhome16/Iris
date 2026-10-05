@@ -132,9 +132,9 @@ def run(
             upsert(path, "enabled", [option], table="channels")
         else:
             upsert(path, kind, option, table="components")
-        from iris_ai.plug import _remember
+        from iris_ai.lifecycle.control import select
 
-        _remember(kind, option)
+        select(kind, option)
         out.print(f"[iris.ok]using[/iris.ok] {kind} = {option}")
         out.print("apply it with /reload in chat, or start iris again")
         return 0

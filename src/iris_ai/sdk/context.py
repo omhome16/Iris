@@ -14,10 +14,14 @@ from typing import Any
 
 class Clock:
     def now(self) -> datetime:
-        return datetime.now()
+        from iris_ai.timeutil import now
+
+        return now()
 
     def today(self) -> date:
-        return date.today()
+        from iris_ai.timeutil import today
+
+        return today()
 
 
 class FixedClock(Clock):

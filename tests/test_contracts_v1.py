@@ -114,7 +114,7 @@ def test_a_v1_lock_migrates_a_v1_file_and_refuses_drift(tmp_path: Path):
     path = tmp_path / "components.lock"
     path.write_text(json.dumps({"persona": {"active": "researcher", "previous": "file", "fails": 1}}), encoding="utf-8")
     data = read_lock(path)
-    assert data["version"] == 2
+    assert data["version"] == 3
     assert data["kinds"]["persona"]["active"] == "researcher"
     assert data["kinds"]["persona"]["digest"] == ""
     pin("context", "recall-first", source="builtin", digest="abc", path=path)

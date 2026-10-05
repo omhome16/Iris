@@ -7,6 +7,9 @@
 # tracked template.
 .mcp.json
 
+# propose-only worktrees from `iris core propose`
+.proposals/
+
 # python
 __pycache__/
 *.py[cod]

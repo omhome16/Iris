@@ -30,6 +30,11 @@ def zone(name: str | None) -> tzinfo:
     return try_zone(name) or UTC
 
 
+def today(name: str | None = None):
+    """The owner's local date. Day budgets and cron use this, not the server's date."""
+    return now(name).date()
+
+
 def now(name: str | None = None) -> datetime:
     """Aware 'now' in the owner's zone, or UTC when that zone is unknown."""
     from iris_ai.config import settings

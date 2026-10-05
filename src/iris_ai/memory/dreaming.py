@@ -416,7 +416,7 @@ async def _fold_consolidator(engine: DreamEngine, plan) -> None:
                 from iris_ai.plug import construct
 
                 cls = _builtin("consolidator", name)
-                stage = construct(cls, None) if cls is not None else None
+                stage = construct(cls, None, trust="builtin") if cls is not None else None
             if stage is None or not hasattr(stage, "propose"):
                 continue
             from iris_ai.sdk.types import ConsolidationRequest

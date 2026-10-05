@@ -217,6 +217,11 @@ async def _run_chat(*, session: str, once: str | None, debug: bool, no_banner: b
                 record = await dreams.sleep()
                 ui.note(out, getattr(record, "summary", None) or "consolidation finished")
                 continue
+            from iris_ai.commands.kinds import expand
+
+            expanded = expand(text)
+            if expanded is not None:
+                text = expanded
             try:
                 await _render_turn(brain, text, session)
             except Exception as exc:  # same contract as --once

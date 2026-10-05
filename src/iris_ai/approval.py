@@ -31,6 +31,26 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 
+def _expired(expires: str) -> str:
+    """A sentence when `expires` is in the past. Empty when there is no expiry."""
+    if not expires:
+        return ""
+    from datetime import datetime
+
+    from iris_ai.timeutil import now
+
+    try:
+        when = datetime.fromisoformat(expires)
+    except ValueError:
+        return "this approval's expiry is unreadable"
+    current = now()
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=current.tzinfo)
+    if current > when:
+        return "this approval has expired"
+    return ""
+
+
 def effective_digest(args: object) -> str:
     """A stable digest of the arguments as they will actually be executed.
 
@@ -52,20 +72,40 @@ class Envelope:
     call_id: str = ""
     args: object = None
     side_effecting: bool = True
+    generation: str = ""
+    artifact: str = ""
+    policy: str = ""
+    nonce: str = ""
+    expires: str = ""
 
     @property
     def digest(self) -> str:
         return effective_digest(self.args)
 
     def payload(self) -> dict:
-        """The interrupt payload. `digest` and `call_id` are what make it bindable."""
-        return {
+        """The interrupt payload. `digest` and `call_id` are what make it bindable.
+
+        Generation, artifact, policy, nonce, and expiry are included only when
+        the caller set them. An older payload without those fields still resumes.
+        """
+        body = {
             "type": "approval",
             "action": self.action,
             "call_id": self.call_id,
             "digest": self.digest,
             "side_effecting": self.side_effecting,
         }
+        if self.generation:
+            body["generation"] = self.generation
+        if self.artifact:
+            body["artifact"] = self.artifact
+        if self.policy:
+            body["policy"] = self.policy
+        if self.nonce:
+            body["nonce"] = self.nonce
+        if self.expires:
+            body["expires"] = self.expires
+        return body
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +188,7 @@ class ApprovalGate:
         pending: Mapping | None,
         decision: str,
         thread: str,
+        current_generation: str = "",
     ) -> ResumeVerdict:
         """Could this resume be honoured? `pending` is the waiting interrupt payload."""
         if not pending or pending.get("type") != "approval":
@@ -167,6 +208,19 @@ class ApprovalGate:
                 False,
                 "this approval carries no argument digest, so it cannot be bound to what was shown",
             )
+
+        expired = _expired(str(pending.get("expires") or ""))
+        if expired:
+            return ResumeVerdict(False, expired)
+        artifact = str(pending.get("artifact") or "")
+        if artifact:
+            from iris_ai.artifacts.store import verify as artifact_ok
+
+            if not artifact_ok(artifact):
+                return ResumeVerdict(False, "the approved artifact no longer matches its digest")
+        generation = str(pending.get("generation") or "")
+        if generation and current_generation and generation != current_generation:
+            return ResumeVerdict(False, "this approval was for a different component generation")
 
         if decision == "approved" and self.policy.guard_replay:
             self.replay.grant(thread, call_id)

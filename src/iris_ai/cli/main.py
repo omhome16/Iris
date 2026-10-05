@@ -55,8 +55,8 @@ app = typer.Typer(
 _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("start", ("init", "chat", "serve", "config", "doctor", "version")),
     ("configure", ("secrets", "mcp", "models", "components", "policy", "new")),
-    ("inspect", ("tools", "plugins", "guards", "costs", "agents", "skills", "cron", "trace", "eval", "evolve", "memory")),
-    ("maintain", ("migrate",)),
+    ("inspect", ("tools", "plugins", "guards", "costs", "agents", "skills", "cron", "trace", "eval", "evolve", "memory", "bench")),
+    ("maintain", ("migrate", "core")),
 )
 
 _TAGLINE = "memory · judgment · agents — one library, one kernel, four faces"
@@ -508,6 +508,25 @@ def new(
     folder = scaffold(kind, name, root=dest if str(dest) != "examples" else None)
     console().print(f"wrote {folder}")
     console().print(f"check it with `iris components check {kind} {name}`, then `iris components use {kind} {name}`")
+
+
+@app.command()
+def bench(
+    which: str = typer.Argument("harness", help="Which benchmark to run. Only harness exists."),
+) -> None:
+    """Run the scripted harness benchmark. No live model."""
+    bench_mod = _load("bench_cmd")
+    raise typer.Exit(code=bench_mod.run(which))
+
+
+@app.command()
+def core(
+    action: str = typer.Argument(..., help="propose"),
+    request: str = typer.Argument("", help="What the proposal should say."),
+) -> None:
+    """Propose a core change in a git worktree. Never applies it."""
+    core_mod = _load("core_cmd")
+    raise typer.Exit(code=core_mod.run(action, request))
 
 
 @app.command()
