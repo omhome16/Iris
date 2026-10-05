@@ -129,18 +129,19 @@ def test_validate_reports_a_name_conflict_as_a_warning_not_a_failure(workspace: 
 
 
 def test_the_command_registry_grew_by_exactly_one():
-    """Each phase added exactly one command: P4 `skills`, P5 `agents`, P6 `cron`,
-    P7 `tools`, P8 `guards`, the plug-and-play pass `plugins`, Phase 2's
-    onboarding pair `init` + `migrate`, Phase 4's safety pair `policy` +
-    `secrets`, and Phase 6's interoperability pair `mcp` + `costs`.
+    """The registry grew by named commands: `skills`, `agents`, `cron`, `tools`,
+    `guards`, `plugins`, `init`, `migrate`, `policy`, `secrets`, `mcp`, `costs`,
+    and now `bench` and `core`.
     (`tests/test_cli.py` owns the canonical exact-set assertion — this one exists
-    to make the *growth* visible in a diff.)"""
+    to make the growth visible in a diff.)"""
     commands = {c.name or c.callback.__name__ for c in app.registered_commands}
     assert commands == {
         "agents",
+        "bench",
         "chat",
         "components",
         "config",
+        "core",
         "costs",
         "cron",
         "doctor",

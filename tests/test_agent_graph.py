@@ -370,6 +370,7 @@ def test_tool_schemas_are_valid(tmp_path: Path):
         "component_activate",
         "component_rollback",
         "component_simulate",
+        "component_plan",
         "memory_resolve_conflict",
         "evolve_list",
         "evolve_read",

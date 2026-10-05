@@ -8,12 +8,12 @@ import json
 import subprocess
 from pathlib import Path
 
+from iris_ai.buildlock import inspect
 from iris_ai.components.lock import pin, probation_left, read_lock, tick_probation
 from iris_ai.config import settings
 from iris_ai.engines.dispatch import resolve
 from iris_ai.lifecycle.memory_swap import swap_plan
 from iris_ai.plug import note_failure
-from iris_ai.buildlock import inspect
 
 
 def _harness(tmp_path: Path, monkeypatch) -> Path:
