@@ -724,14 +724,94 @@ def _drive(coro: Any) -> Any:
     """
     import asyncio
 
+    current = None
     try:
-        current = asyncio.get_event_loop()
+        current = asyncio.get_running_loop()
     except RuntimeError:
-        current = None
+        # The check child sets a loop before Landlock and seccomp, then calls
+        # this while that loop is not running. A new loop would open a
+        # socketpair, which the filter rejects. `get_event_loop()` also raises
+        # once a previous loop was cleared, so read the loop the policy holds.
+        policy = asyncio.get_event_loop_policy()
+        current = getattr(getattr(policy, "_local", None), "_loop", None)
     if current is None or current.is_closed():
         current = asyncio.new_event_loop()
         asyncio.set_event_loop(current)
     return current.run_until_complete(coro)
+
+
+# The jailed check reads this tuple. It must not import
+# `iris_ai.capabilities.memory`: that module imports the vector index, which
+# imports numpy, and the jail's audit hook blocks ctypes.
+_MEMORY_REQUIRED = (
+    "connect",
+    "close",
+    "search",
+    "upsert_chunks",
+    "replace_file_chunks",
+    "delete_file_chunks",
+    "stats",
+)
+
+
+class _EmptyIndex:
+    """An in-memory store with no rows. Pure Python. Safe inside the check jail."""
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def search(self, query: str = "", **kwargs):
+        del query, kwargs
+        return []
+
+    async def list_chunks(self) -> list:
+        return []
+
+    async def nearest(self, text: str = "", **kwargs):
+        del text, kwargs
+        return []
+
+    async def upsert_chunks(self, records: list) -> None:
+        del records
+
+    async def delete_file_chunks(self, path: str) -> None:
+        del path
+
+    async def replace_file_chunks(self, path: str, records: list) -> None:
+        del path, records
+
+    async def forget_entry(self, path: str, chunk_index: int) -> None:
+        del path, chunk_index
+
+    async def stats(self) -> dict:
+        return {"total_chunks": 0, "backend": "empty"}
+
+
+class _EmptyModel:
+    """Answers the probe without a provider. No native code."""
+
+    async def complete(self, prompt: str = "", **kwargs) -> str:
+        del prompt, kwargs
+        return ""
+
+    async def embed(self, text):
+        if isinstance(text, (list, tuple)):
+            return [[0.0] for _ in text]
+        return [0.0]
+
+    async def embed_one(self, text: str = "") -> list[float]:
+        del text
+        return [0.0]
+
+
+def _probe_runtime():
+    """Capabilities for the jailed probe. No files root, so nothing is written."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(llm=_EmptyModel(), index=_EmptyIndex(), files=SimpleNamespace(root=None))
 
 
 def _probe_v1(kind: str, cls: type) -> str:
@@ -746,7 +826,7 @@ def _probe_v1(kind: str, cls: type) -> str:
     )
 
     try:
-        component = construct(cls, None)
+        component = construct(cls, _probe_runtime())
         if kind == "context":
             result = _drive(component.assemble(ContextRequest(message="hi", session_id="probe")))
             if not isinstance(result, ContextResult):
@@ -795,16 +875,14 @@ def check_folder(folder: Path) -> tuple[bool, str]:
         "after_tools",
     )
     if kind == "memory":
-        from iris_ai.capabilities.memory_api import REQUIRED
-
         try:
             cls = load_class(folder)
         except Exception as exc:  # noqa: BLE001 - the check reports the import error
             return False, f"import failed: {type(exc).__name__}: {exc}"
-        missing = [name for name in REQUIRED if not callable(getattr(cls, name, None))]
+        missing = [name for name in _MEMORY_REQUIRED if not callable(getattr(cls, name, None))]
         if missing:
             return False, f"memory component must define {', '.join(missing)}()"
-        return True, f"memory/{folder.name} matches the {', '.join(REQUIRED)} contract"
+        return True, f"memory/{folder.name} matches the {', '.join(_MEMORY_REQUIRED)} contract"
     try:
         cls = load_class(folder)
     except Exception as exc:  # noqa: BLE001 - the check reports the import error
@@ -818,7 +896,7 @@ def check_folder(folder: Path) -> tuple[bool, str]:
         # the same, or a persona whose signature is `text(self, original)`
         # passes here and then fails the next boot.
         try:
-            rendered = construct(cls, None).text()
+            rendered = construct(cls, _probe_runtime()).text()
         except Exception as exc:  # noqa: BLE001 - the check reports the contract error
             return False, f"persona text() failed: {type(exc).__name__}: {exc}"
         if not isinstance(rendered, str):
@@ -945,18 +1023,63 @@ def verification(folder: Path) -> tuple[str, str]:
         raise RuntimeError(detail)
     meta = _read_toml(folder / "component.toml")
     kind = str(meta.get("kind") or folder.parent.name)
-    root = Path(tempfile.mkdtemp(prefix="iris-verify-"))
-    carrier = SimpleNamespace(llm=HashEmbedder(), files=WorkspaceFiles(root), index=None)
+    with tempfile.TemporaryDirectory(prefix="iris-verify-") as raw:
+        root = Path(raw)
+        llm = HashEmbedder()
+        index = _verification_index(root, llm)
+        carrier = SimpleNamespace(llm=llm, files=WorkspaceFiles(root), index=index)
+        try:
+            try:
+                component = construct(load_class(folder), carrier, trust="local")
+            except Exception as exc:
+                raise RuntimeError(f"component failed to construct: {type(exc).__name__}: {exc}") from exc
+            problems = _drive(run_conformance(kind, component))
+            if problems:
+                raise RuntimeError("; ".join(problems))
+            if component_digest(folder) != before:
+                raise RuntimeError("component digest changed during verification")
+            return suite_name(kind), datetime.now(UTC).isoformat()
+        finally:
+            _close_capability(index)
+
+
+def _close_capability(index: object) -> None:
+    """Run close() on the throwaway store, including when close is a coroutine.
+
+    A coroutine object has a ``close`` method of its own. Calling that drops
+    the coroutine without shutting the connection.
+    """
+    import inspect
+
+    close = getattr(index, "close", None)
+    if not callable(close):
+        return
     try:
-        component = construct(load_class(folder), carrier, trust="local")
-    except Exception as exc:
-        raise RuntimeError(f"component failed to construct: {type(exc).__name__}: {exc}") from exc
-    problems = _drive(run_conformance(kind, component))
-    if problems:
-        raise RuntimeError("; ".join(problems))
-    if component_digest(folder) != before:
-        raise RuntimeError("component digest changed during verification")
-    return suite_name(kind), datetime.now(UTC).isoformat()
+        result = close()
+        if inspect.isawaitable(result):
+            _drive(result)
+    except Exception as exc:  # noqa: BLE001 - the suite result matters more than cleanup
+        log.warning("verification index close failed (%s)", exc)
+
+
+def _verification_index(root: Path, llm: object):
+    """A connected empty SQLite store. A no-op index if that store cannot open.
+
+    This runs in the parent, after the jailed check. The matrix builds the
+    same kind of index, so activation and the matrix see the same memory.
+    """
+    index = None
+    try:
+        from iris_ai.memory.sqlite_index import SqliteIndex
+
+        index = SqliteIndex(root / "verify.db", llm=llm)
+        _drive(index.connect())
+    except Exception as exc:  # noqa: BLE001 - the suite can still run against the no-op
+        log.warning("verification index fell back to empty (%s)", exc)
+        if index is not None:
+            _close_capability(index)
+        return _EmptyIndex()
+    return index
 
 
 def activate(kind: str, name: str) -> str:
