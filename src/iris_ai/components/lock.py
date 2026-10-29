@@ -42,6 +42,9 @@ def _blank_row(row: dict[str, Any] | None = None) -> dict[str, Any]:
         "permissions": list(row.get("permissions") or []),
         "approved_at": row.get("approved_at", ""),
         "approved_by": row.get("approved_by", ""),
+        "suite": row.get("suite", ""),
+        "verified_at": row.get("verified_at", ""),
+        "pins": dict(row.get("pins") or {}) if isinstance(row.get("pins"), dict) else {},
         "pipeline": list(row.get("pipeline") or []),
         "history": [item for item in history if isinstance(item, dict)],
         "probation_remaining": int(row.get("probation_remaining") or 0),
@@ -234,6 +237,8 @@ def pin(
     api_version: str = "",
     permissions: list[str] | None = None,
     approved_by: str = "owner",
+    suite: str = "",
+    verified_at: str = "",
     path: Path | None = None,
 ) -> dict[str, Any]:
     with transaction(path) as data:
@@ -249,6 +254,11 @@ def pin(
         row["permissions"] = list(permissions or [])
         row["approved_at"] = datetime.now(UTC).isoformat()
         row["approved_by"] = approved_by
+        row["suite"] = suite
+        row["verified_at"] = verified_at
+        pins = dict(row.get("pins") or {})
+        pins[name] = digest
+        row["pins"] = pins
         row["fails"] = 0
         # A new pin is on probation: one failure in the next few calls rolls it back.
         row["probation_remaining"] = 3

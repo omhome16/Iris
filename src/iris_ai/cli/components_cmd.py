@@ -17,15 +17,14 @@ def _lock(out, mode: str) -> int:
     from iris_ai.plug import component_digest, local_folder
 
     if mode in {"update", "--update"}:
-        from iris_ai.lifecycle.control import select
-
         changed = 0
         for kind_name, row in (read_lock().get("kinds") or {}).items():
             name = str(row.get("active") or "")
             folder = local_folder(kind_name, name) if name else None
             if folder is None:
                 continue
-            select(kind_name, name)
+            if not _guarded_select(out, kind_name, name):
+                return 1
             changed += 1
         out.print(f"re-pinned {changed}")
         return 0
@@ -73,6 +72,10 @@ def _inspect(out, kind: str, name: str) -> int:
     out.print(f"permissions {', '.join(meta.get('permissions') or row.get('permissions') or []) or '(none)'}")
     out.print(f"pinned {(row.get('digest') or '')[:12] or '(not pinned)'}")
     out.print(f"current {current[:12] or '(built-in)'}")
+    if row.get("suite"):
+        out.print(f"suite {row.get('suite')} at {row.get('verified_at') or '(unknown)'}")
+    else:
+        out.print("suite (not verified)")
     if row.get("active"):
         out.print(f"lock active={row.get('active')} previous={row.get('previous') or '(none)'} fails={row.get('fails', 0)}")
     return 0
@@ -138,6 +141,18 @@ def _verify(out, kind: str, name: str, suite: str = "") -> int:
     return 0
 
 
+def _guarded_select(out, kind: str, option: str) -> bool:
+    """Pin through the shared door. A failed folder is not selected."""
+    from iris_ai.lifecycle.control import select
+
+    try:
+        select(kind, option)
+    except RuntimeError as exc:
+        ui.failed(out, "verification failed", str(exc))
+        return False
+    return True
+
+
 def run(
     action: str = "list",
     kind: str = "",
@@ -180,9 +195,8 @@ def run(
             upsert(path, "enabled", [option], table="channels")
         else:
             upsert(path, kind, option, table="components")
-        from iris_ai.lifecycle.control import select
-
-        select(kind, option)
+        if not _guarded_select(out, kind, option):
+            return 1
         out.print(f"[iris.ok]using[/iris.ok] {kind} = {option}")
         out.print("apply it with /reload in chat, or start iris again")
         return 0
@@ -294,9 +308,8 @@ def run(
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
-        from iris_ai.lifecycle.control import select
-
-        select(meta_kind, meta_name)
+        if not _guarded_select(out, meta_kind, meta_name):
+            return 1
         out.print(f"installed {dest}")
         return 0
     if action == "export":

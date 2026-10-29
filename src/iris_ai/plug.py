@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -866,24 +866,51 @@ def eject(kind: str, name: str, *, dest_name: str = "") -> Path:
     return folder
 
 
+def verification(folder: Path) -> tuple[str, str]:
+    """Jailed contract check, then the behaviour suite.
+
+    Both `activate` and `select` call this before a pin. A failure raises
+    `RuntimeError` and nothing is pinned. Returns `(suite, verified_at)`.
+    """
+    import tempfile
+    from types import SimpleNamespace
+
+    from iris_ai.memory.files import WorkspaceFiles
+    from iris_ai.testing import HashEmbedder, run_conformance, suite_name
+
+    before = component_digest(folder)
+    ok, detail = check_in_sandbox(folder)
+    if not ok:
+        raise RuntimeError(detail)
+    meta = _read_toml(folder / "component.toml")
+    kind = str(meta.get("kind") or folder.parent.name)
+    root = Path(tempfile.mkdtemp(prefix="iris-verify-"))
+    carrier = SimpleNamespace(llm=HashEmbedder(), files=WorkspaceFiles(root), index=None)
+    try:
+        component = construct(load_class(folder), carrier, trust="local")
+    except Exception as exc:
+        raise RuntimeError(f"component failed to construct: {type(exc).__name__}: {exc}") from exc
+    problems = _drive(run_conformance(kind, component))
+    if problems:
+        raise RuntimeError("; ".join(problems))
+    if component_digest(folder) != before:
+        raise RuntimeError("component digest changed during verification")
+    return suite_name(kind), datetime.now(UTC).isoformat()
+
+
 def activate(kind: str, name: str) -> str:
     """Move a staged component into place, select it, and pin its digest.
 
-    The check runs in the jailed child. Importing the staged code in this
-    process would execute it with the owner's privileges and could write
-    bytecode into the folder before the digest is recorded.
+    The contract check runs in the jailed child. The behaviour suite then runs
+    against a throwaway workspace. The digest is compared before the pin, so a
+    suite cannot rewrite the component it is judging.
     """
     from iris_ai.components.lock import pin
 
     staged = staging_dir(kind, name)
     if not (staged / "component.py").is_file():
         raise FileNotFoundError(f"nothing staged at {staged}")
-    digest = component_digest(staged)
-    ok, detail = check_in_sandbox(staged)
-    if not ok:
-        raise RuntimeError(detail)
-    if component_digest(staged) != digest:
-        raise RuntimeError("component digest changed during the check; activation refused")
+    suite, verified_at = verification(staged)
     dest = components_root() / kind / name
     if dest.exists():
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -907,6 +934,8 @@ def activate(kind: str, name: str) -> str:
         api_version=str(meta.get("api_version") or ""),
         permissions=list(meta.get("permissions") or []),
         approved_by="owner",
+        suite=suite,
+        verified_at=verified_at,
     )
     record("activate", kind=kind, name=name, digest=stored)
     return f"activated {kind}/{name}"

@@ -8,6 +8,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from iris_ai.buildlock import inspect
 from iris_ai.components.lock import pin, probation_left, read_lock, tick_probation
 from iris_ai.config import settings
@@ -126,9 +128,17 @@ def test_select_pins_a_local_folder(tmp_path: Path, monkeypatch) -> None:
     _harness(tmp_path, monkeypatch)
     folder = tmp_path / "components" / "context" / "demo"
     folder.mkdir(parents=True)
-    (folder / "component.py").write_text("class Component:\n    pass\n", encoding="utf-8")
+    (folder / "component.py").write_text(
+        "class Component:\n"
+        "    def __init__(self, ctx, **options):\n"
+        "        self.ctx = ctx\n"
+        "    async def assemble(self, request):\n"
+        "        from iris_ai.sdk.types import ContextResult\n"
+        "        return ContextResult()\n",
+        encoding="utf-8",
+    )
     (folder / "component.toml").write_text(
-        'kind = "context"\nname = "demo"\napi_version = "iris/v1"\n',
+        'kind = "context"\nname = "demo"\napi_version = "iris/v1"\nentry = "component:Component"\n',
         encoding="utf-8",
     )
     from iris_ai.lifecycle.control import select
@@ -138,6 +148,24 @@ def test_select_pins_a_local_folder(tmp_path: Path, monkeypatch) -> None:
     assert row["active"] == "demo"
     assert row["digest"]
     assert row["probation_remaining"] == 3
+    assert row["suite"] == "context-behaviour"
+    assert row["verified_at"]
+
+
+def test_select_refuses_a_folder_that_fails_verification(tmp_path: Path, monkeypatch) -> None:
+    _harness(tmp_path, monkeypatch)
+    folder = tmp_path / "components" / "context" / "broken"
+    folder.mkdir(parents=True)
+    (folder / "component.py").write_text("class Component:\n    pass\n", encoding="utf-8")
+    (folder / "component.toml").write_text(
+        'kind = "context"\nname = "broken"\napi_version = "iris/v1"\nentry = "component:Component"\n',
+        encoding="utf-8",
+    )
+    from iris_ai.lifecycle.control import select
+
+    with pytest.raises(RuntimeError):
+        select("context", "broken")
+    assert "context" not in (read_lock().get("kinds") or {})
 
 
 def test_memory_swap_is_a_rebuild_plan(tmp_path: Path) -> None:
@@ -169,7 +197,12 @@ def test_a_tool_component_runs_in_the_host_after_approval(tmp_path: Path, monkey
         encoding="utf-8",
     )
     monkeypatch.setattr("iris_ai.agent.tools._honour_approval", lambda shown: "approved")
+    from iris_ai.artifacts.store import ingest
+    from iris_ai.components.lock import pin
     from iris_ai.kinds.tools import load_kind_tools
+
+    digest = ingest(folder)
+    pin("tool", "echo", source="local", digest=digest)
     from iris_ai.toolpolicy import EXTERNAL_TOOLS
 
     tools = load_kind_tools()
@@ -179,6 +212,23 @@ def test_a_tool_component_runs_in_the_host_after_approval(tmp_path: Path, monkey
         assert body["text"] == "hi"
     finally:
         EXTERNAL_TOOLS.pop("echo", None)
+
+
+def test_an_unpinned_tool_is_not_loaded(tmp_path: Path, monkeypatch) -> None:
+    _harness(tmp_path, monkeypatch)
+    folder = tmp_path / "components" / "tool" / "echo"
+    folder.mkdir(parents=True)
+    (folder / "component.toml").write_text(
+        'kind = "tool"\nname = "echo"\nentry = "component:Component"\ndescription = "echo"\n',
+        encoding="utf-8",
+    )
+    (folder / "component.py").write_text(
+        "class Component:\n    def __init__(self, ctx):\n        self.ctx = ctx\n    def run(self, request):\n        return 'no'\n",
+        encoding="utf-8",
+    )
+    from iris_ai.kinds.tools import load_kind_tools
+
+    assert load_kind_tools() == []
 
 
 def test_propose_writes_a_worktree_and_does_not_apply(tmp_path: Path) -> None:
