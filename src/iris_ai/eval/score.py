@@ -170,17 +170,42 @@ def score_memory(component: str, case: dict) -> dict[str, float]:
     }
 
 
+def _constructed(folder):
+    """Build a local component the way a turn does: `ctx` when the class asks for it."""
+    from iris_ai.plug import construct, load_class
+
+    cls = load_class(folder)
+    try:
+        return construct(cls, None)
+    except TypeError:
+        return cls()
+
+
+def _call_eval(fn, *args, **kwargs):
+    import inspect
+
+    result = fn(*args, **kwargs)
+    if inspect.iscoroutine(result):
+        return _drive_eval(result)
+    return result
+
+
 def _local_capture_stores(name: str, case: dict) -> bool | None:
     """Run a local capture folder. None when there is no folder or no method to call."""
-    from iris_ai.plug import load_class, local_folder
+    from iris_ai.plug import local_folder
 
     folder = local_folder("capture", name)
     if folder is None:
         return None
-    component = load_class(folder)()
+    component = _constructed(folder)
     text = str(case.get("input") or "")
+    if hasattr(component, "extract"):
+        from iris_ai.sdk.types import CaptureRequest
+
+        request = CaptureRequest(user_message=text, reply="")
+        return bool(_call_eval(component.extract, request) or [])
     if hasattr(component, "maybe_capture"):
-        return bool(_drive_eval(component.maybe_capture(user_message=text, reply="")))
+        return bool(_call_eval(component.maybe_capture, user_message=text, reply=""))
     return None
 
 
@@ -212,17 +237,24 @@ def score_capture(component: str, case: dict) -> dict[str, float]:
 
 
 def _local_consolidator_flags(name: str, case: dict) -> bool | None:
-    """Run a local consolidator that exposes `conflicts(curated, incoming)`."""
-    from iris_ai.plug import load_class, local_folder
+    """Run a local consolidator. v1 `propose` wins; `conflicts()` remains for older folders."""
+    from iris_ai.plug import local_folder
 
     folder = local_folder("consolidator", name)
     if folder is None:
         return None
-    component = load_class(folder)()
+    component = _constructed(folder)
+    curated = str(case.get("curated") or "")
+    incoming = str(case.get("input") or "")
+    if hasattr(component, "propose"):
+        from iris_ai.sdk.types import ConsolidationRequest
+
+        plan = _call_eval(component.propose, ConsolidationRequest(notes=incoming, curated=curated))
+        return bool(getattr(plan, "conflicts", ()) or ())
     conflicts = getattr(component, "conflicts", None)
     if conflicts is None:
         return None
-    return bool(conflicts(str(case.get("curated") or ""), str(case.get("input") or "")))
+    return bool(conflicts(curated, incoming))
 
 
 def score_consolidator(component: str, case: dict) -> dict[str, float]:

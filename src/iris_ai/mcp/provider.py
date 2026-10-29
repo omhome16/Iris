@@ -44,6 +44,7 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from iris_ai.config import settings
@@ -71,6 +72,32 @@ if TYPE_CHECKING:
     from iris_ai.agent.tools import Tool
 
 log = logging.getLogger("iris.mcp")
+
+
+def _schema_pin_path() -> Path:
+    from iris_ai.config import settings
+
+    return Path(settings.mcp_servers_file).with_name("mcp-schemas.json")
+
+
+def _load_schema_pins() -> dict[str, str]:
+    path = _schema_pin_path()
+    if not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        log.warning("mcp schema pin file is unreadable; starting empty")
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {str(key): str(value) for key, value in loaded.items() if isinstance(value, str)}
+
+
+def _save_schema_pins(pins: dict[str, str]) -> None:
+    path = _schema_pin_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(pins, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _schema_digest(name: str, schema: dict) -> str:
@@ -138,7 +165,7 @@ class McpPool:
         self._retryable: dict[str, McpServerSpec] = {}
         self._retry_task: asyncio.Task | None = None
         self._closed = False
-        self._schema_pins: dict[str, str] = {}
+        self._schema_pins: dict[str, str] = _load_schema_pins()
 
     async def __aenter__(self) -> McpPool:
         await self.connect()
@@ -274,7 +301,9 @@ class McpPool:
                 if pinned and pinned != digest:
                     log.warning("mcp tool %s schema changed (%s -> %s); leaving it unloaded", key, pinned, digest)
                     continue
-                self._schema_pins.setdefault(key, digest)
+                if key not in self._schema_pins:
+                    self._schema_pins[key] = digest
+                    _save_schema_pins(self._schema_pins)
                 built.append(
                     Tool(
                         key,

@@ -448,7 +448,10 @@ def models(
 
 @app.command()
 def components(
-    action: str = typer.Argument("list", help="list | use | eject | check | rollback | add | simulate | lock"),
+    action: str = typer.Argument(
+        "list",
+        help="list | use | eject | check | rollback | add | simulate | lock | inspect | export",
+    ),
     kind: str = typer.Argument("", help="context | memory | persona | capture | consolidator | channel"),
     option: str = typer.Argument("", help="The option to switch to."),
     live: bool = typer.Option(False, "--live", help="Score with the configured model. Refused for staged code."),
@@ -488,20 +491,20 @@ def new(
         return
     if kind == "component":
         if name not in {"context", "memory"}:
-            _fail("usage: iris new component context|memory")
+            _fail("usage: iris new component context|memory", _debug_flag)
             return
         path = scaffold_mod.write_component(name, dest / name / "component.py")
         console().print(f"wrote {path}")
         return
     if kind == "role":
         if not name:
-            _fail("usage: iris new role <name>")
+            _fail("usage: iris new role <name>", _debug_flag)
             return
         path = scaffold_mod.write_new(kind, name, dest)
         console().print(f"wrote {path}")
         return
     if kind not in FOLDER_KINDS or not name:
-        _fail("usage: iris new context|memory|persona|capture|consolidator|role <name>")
+        _fail("usage: iris new context|memory|persona|capture|consolidator|role <name>", _debug_flag)
         return
     from iris_ai.plug import scaffold
 

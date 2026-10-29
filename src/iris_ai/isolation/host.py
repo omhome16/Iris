@@ -87,6 +87,7 @@ class ExtensionHost:
         self.broker = CapabilityBroker(self.authority, handlers or {})
         self._id = 0
         self._lock = threading.Lock()
+        self._reader: threading.Thread | None = None
         self._state = Path(tempfile.mkdtemp(prefix="iris-host-"))
         self._stderr = bytearray()
         self.proc = subprocess.Popen(
@@ -175,12 +176,14 @@ class ExtensionHost:
             except Exception as exc:  # noqa: BLE001 - surfaced as a host failure
                 holder["err"] = exc
 
-        thread = threading.Thread(target=_run, daemon=True)
+        thread = threading.Thread(target=_run, name="iris-host-read", daemon=True)
+        self._reader = thread
         thread.start()
         thread.join(timeout)
         if thread.is_alive():
             self.close()
             raise TimeoutError("component host timed out")
+        self._reader = None
         if "err" in holder:
             tail = self._stderr.decode("utf-8", errors="replace").strip()
             extra = f" ({tail[-400:]})" if tail else ""
@@ -189,11 +192,13 @@ class ExtensionHost:
 
     def close(self) -> None:
         proc = getattr(self, "proc", None)
-        if proc is None or proc.poll() is not None:
-            return
-        proc.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=2)
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=2)
+        reader = getattr(self, "_reader", None)
+        if isinstance(reader, threading.Thread) and reader.is_alive() and reader is not threading.current_thread():
+            reader.join(timeout=2)
 
     def __del__(self) -> None:
         try:

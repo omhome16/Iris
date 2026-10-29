@@ -72,6 +72,12 @@ def test_credential_shapes_are_redacted(text):
     assert SECRET not in out
 
 
+def test_a_groq_key_is_redacted():
+    key = "gsk_" + "a" * 24
+    assert key not in redact_text(f"provider sent {key}")
+    assert REDACTED in redact_text(f"provider sent {key}")
+
+
 def test_ordinary_text_is_left_alone():
     text = "remind me to renew the lease on Tuesday at 09:30"
     assert redact_text(text) == text

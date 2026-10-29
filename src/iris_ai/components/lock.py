@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -113,23 +114,69 @@ def write_lock(data: dict[str, Any], path: Path | None = None) -> None:
         _write_atomic(normalize(data) if data.get("version") != 3 else data, path)
 
 
+_LOCK_TIMEOUT = 5.0
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether `pid` still has a process. Access denied counts as alive."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.GetLastError.restype = ctypes.c_uint32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return kernel32.GetLastError() == 5
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _lock_is_stale(flag: Path) -> bool:
+    """A sidecar whose owner is gone can be removed. A live owner cannot."""
+    try:
+        pid = int(flag.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return True
+    return not _pid_alive(pid)
+
+
 @contextmanager
-def _file_lock(path: Path, *, timeout: float = 5.0) -> Iterator[None]:
-    """A sidecar lock so the CLI and the TUI cannot rewrite the file together."""
+def _file_lock(path: Path, *, timeout: float | None = None) -> Iterator[None]:
+    """A sidecar lock so the CLI and the TUI cannot rewrite the file together.
+
+    A waiter that times out leaves a live sidecar alone. It removes one only
+    when the recorded pid is no longer a process.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     flag = path.with_name(path.name + ".lock")
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + (_LOCK_TIMEOUT if timeout is None else timeout)
     fd: int | None = None
     while fd is None:
         try:
             fd = os.open(str(flag), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            if time.monotonic() >= deadline:
+            if time.monotonic() < deadline:
+                time.sleep(0.02)
+                continue
+            if _lock_is_stale(flag):
                 with contextlib.suppress(OSError):
                     flag.unlink()
-                fd = os.open(str(flag), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                break
-            time.sleep(0.02)
+                continue
+            raise TimeoutError(f"{path.name} is locked") from None
     try:
         os.write(fd, str(os.getpid()).encode())
         yield

@@ -94,6 +94,16 @@ def test_v1_context_has_no_runtime_and_refuses_env(tmp_path: Path):
         files.read(".env")
     with pytest.raises(PermissionError):
         files.read("config/harness.toml")
+    with pytest.raises(PermissionError):
+        files.read("..\\.env")
+    from iris_ai.sdk.context import StateDir
+
+    state = StateDir(tmp_path / "state")
+    assert state.path("note.txt") == (tmp_path / "state" / "note.txt").resolve()
+    with pytest.raises(PermissionError):
+        state.path("../secret.txt")
+    with pytest.raises(PermissionError):
+        state.path("..\\secret.txt")
 
 
 @pytest.mark.asyncio

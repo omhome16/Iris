@@ -261,6 +261,22 @@ def test_run_checks_levels_and_exit_code(tmp_path: Path, monkeypatch: pytest.Mon
     assert exit_code(failing) == 1
 
 
+def test_components_help_lists_inspect_and_export():
+    result = runner.invoke(app, ["components", "--help"])
+    assert result.exit_code == 0
+    text = flat(result.stdout)
+    assert "inspect" in text
+    assert "export" in text
+
+
+def test_new_component_without_a_kind_exits_with_usage():
+    """A bad scaffold is a usage error, not a traceback from the error helper."""
+    result = runner.invoke(app, ["new", "component"])
+    assert result.exit_code == 1
+    assert "usage: iris new component context|memory" in flat(result.stdout)
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
 def test_version_lines_shape():
     from iris_ai.cli.version import version_lines
 

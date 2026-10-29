@@ -76,6 +76,13 @@ def test_lifecycle_journal_appends(tmp_path: Path):
     events = read_events(path)
     assert [row["event"] for row in events] == ["activate", "rollback"]
     assert events[0]["digest"] == "abc"
+    from iris_ai.lifecycle.journal import verify_chain
+
+    assert verify_chain(path) == []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    tampered = lines[0].replace("voice", "other", 1)
+    path.write_text(tampered + "\n" + lines[1] + "\n", encoding="utf-8")
+    assert verify_chain(path)
 
 
 def test_swap_assigns_the_generation_only_after_attach(tmp_path: Path, monkeypatch):

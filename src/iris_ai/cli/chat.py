@@ -36,6 +36,8 @@ REPL_HELP = """\
   [iris.cmd]/explain[/iris.cmd]      why the last turn looked like that
   [iris.cmd]/trace[/iris.cmd]        the same, plus the trace file
   [iris.cmd]/conflicts[/iris.cmd]    open memory conflicts waiting on you
+  [iris.cmd]/reload[/iris.cmd]       re-read config and swap components
+  [iris.cmd]/dream[/iris.cmd]        run consolidation now
 
 Anything else is a turn: it goes to the same pipeline the API and the Telegram
 bridge use, so memory, judgments and traces behave identically.
@@ -216,6 +218,12 @@ async def _run_chat(*, session: str, once: str | None, debug: bool, no_banner: b
                     continue
                 record = await dreams.sleep()
                 ui.note(out, getattr(record, "summary", None) or "consolidation finished")
+                continue
+            if text == "/reload":
+                from iris_ai.lifecycle.control import reload as control_reload
+
+                message = await control_reload(brain)
+                ui.note(out, message or "reloaded")
                 continue
             from iris_ai.commands.kinds import expand
 

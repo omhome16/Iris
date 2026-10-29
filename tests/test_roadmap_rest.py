@@ -45,6 +45,21 @@ def test_probation_ends_after_three_successful_calls(tmp_path: Path, monkeypatch
     assert read_lock()["kinds"]["context"]["fails"] == 1
 
 
+def test_a_successful_persona_text_shortens_probation(tmp_path: Path, monkeypatch) -> None:
+    _harness(tmp_path, monkeypatch)
+    pin("persona", "custom", source="local", digest="b" * 64)
+
+    class Persona:
+        def text(self) -> str:
+            return "hello"
+
+    from iris_ai.plug import Guarded
+
+    guarded = Guarded(Persona(), None, kind="persona", name="custom")
+    assert guarded.text() == "hello"
+    assert probation_left("persona") == 2
+
+
 def test_plan_refuses_a_git_dependency_and_an_unknown_grant(tmp_path: Path) -> None:
     folder = tmp_path / "widget"
     folder.mkdir()

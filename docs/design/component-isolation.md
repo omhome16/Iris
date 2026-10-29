@@ -20,5 +20,11 @@ that does not enforce it, is not Landlock. Do not describe it as one.
 `net.request` is not a grant. Windows and macOS do not grow a kernel jail
 by turning the host on.
 
+`component_plan` checks the host grant names: `llm.complete`, `llm.embed`,
+`memory.search`, `memory.recent`, `memory.curated`, `files.read`, `state.read`,
+`state.write`, and `log`. In-process v1 permissions are the shorter names
+`llm`, `memory.read`, `files.read`, and `state`. A name that is not on the
+host list is refused. There is no `net.request` grant.
+
 Build the Linux host on top of the existing check jail when a component the
 owner did not read must be contained by the kernel, not only by the audit hook.

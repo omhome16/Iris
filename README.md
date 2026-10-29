@@ -30,7 +30,7 @@ Install a global `iris` from this repository:
 uv tool install git+https://github.com/omhome16/Iris
 ```
 
-Skip the questions with flags. The key is written to `.env` with mode `0600` and is never printed:
+Skip the questions with flags. The key is written to `.env` and is never printed. On POSIX the file mode is `0600`. On Windows that `chmod` does not hide the file from other users of the machine.
 
 ```bash
 uv run iris init --provider groq --model openai/gpt-oss-120b --api-key-env GROQ_API_KEY
@@ -102,7 +102,7 @@ flowchart TB
   journal["config/lifecycle.jsonl"] --> lock
 ```
 
-`react` is the default loop. `plan-execute` plans with a cheap call, acts, then verifies. Three engine failures set the engine back to `react`. The model call stays in the chat graph. `uv run iris eval engine --live` runs both on stub tools and prints success, tool calls, tokens, and latency. It does not call a provider.
+`react` is the default loop. `plan-execute` in the live chat is a cheap plan, then the same agent call, then a recorded verify step. The `PlanExecute` class scored by `uv run iris eval engine --live` is that measurement, on stub tools, and it does not call a provider. `iris eval engine` without `--live` is not a measurement. Three engine failures in the plan phase set the engine back to `react` for the rest of the process. The model call stays in the chat graph.
 
 Context, capture, persona, and consolidator accept a comma-separated pipeline. `budget` trims the prefix. `redact` drops a block or a capture candidate that redaction would change. A stage that fails three times is skipped. `/explain` and `iris trace` name the stages that ran.
 
@@ -142,7 +142,7 @@ A tool result with `"ok": false` is a failure, and the model is told not to clai
 
 An approval can carry the artifact digest and the generation id. Resume checks those when they are present: an expired card, a tampered store copy, or a generation that has moved on is refused.
 
-In chat: `/reload` and `/components` for parts, `/explain` and `/trace` for the last turn, `/conflicts` for memory the consolidator would not overwrite, `/model` and `/provider` for the model, `/team` and `/parallel` for roles, `/mcp` for servers, `/help` for the rest. A file at `components/command/<name>/prompt.md` becomes `/<name>`. `$args` is the rest of the line. A name the built-in list already owns is left alone.
+Both the full-screen chat and the plain `iris chat` REPL have `/reload`, `/explain`, `/trace`, `/conflicts`, `/dream`, and `/help`. The full-screen chat also has `/components`, `/model`, `/provider`, `/team`, `/parallel`, and `/mcp`. A file at `components/command/<name>/prompt.md` becomes `/<name>`. `$args` is the rest of the line. A name the built-in list already owns is left alone.
 
 ## The life of a component
 
@@ -281,7 +281,7 @@ uv run iris components use context graph-rag
 
 Import the types from `iris_ai.sdk`. `ContextResult.render()` is the prefix the turn appends.
 
-Install a folder or a git URL with `iris components add <path> --yes`. The command prints the file count, the line count, the digest, and that the code runs in-process with Iris's permissions, then pins it. `iris components export <kind> <name> --as-plugin DIR` writes an Agent Plugin. `iris plugins add <dir>` copies that plugin's skills and maps `mcp.json` with trust `review`.
+Install a local folder with `iris components add <path> --yes`. The command checks it, copies the canonical bytes into the store, and pins that digest through the lifecycle control path. A git URL, an `http` URL, and a `file` URL are refused. `iris components export <kind> <name> --as-plugin DIR` writes an Agent Plugin. `iris plugins add <dir>` copies that plugin's skills and maps `mcp.json` with trust `review`.
 
 ### Ask Iris to add one
 

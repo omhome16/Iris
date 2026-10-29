@@ -187,10 +187,9 @@ def policy_for(tool: McpToolInfo, spec: McpServerSpec) -> McpPolicy:
 
     1. `approval = "always"` -> `ask`. The owner pinned this server, including
        its reads.
-    2. read-only hint -> `allow`. It cannot write anything, by its own account.
-    3. `trust = "untrusted"` -> `deny`. A self-reported "not read-only" from a
-       server nobody vouched for is not something to approve the first time; the
-       owner opts in by naming a level.
+    2. `trust = "untrusted"` -> `deny`. A self-reported read-only hint is not
+       enough. The owner opts in by naming a level.
+    3. read-only hint -> `allow`, only after trust is not `untrusted`.
     4. `trust = "review"` -> `ask`. Third-party, and the owner accepted that it
        may write *with approval* — while its output is still screened, which is
        the half of "review" that makes it different from `owner`.
@@ -200,10 +199,10 @@ def policy_for(tool: McpToolInfo, spec: McpServerSpec) -> McpPolicy:
     """
     if spec.approval == "always":
         return McpPolicy(Policy.ASK, f"{spec.name}: approval pinned to always")
+    if spec.trust == "untrusted":
+        return McpPolicy(Policy.DENY, f"{spec.name}: untrusted server, including a self-reported read")
     if tool.read_only:
         return McpPolicy(Policy.ALLOW, f"{spec.name}: read-only per the server's own hint")
-    if spec.trust == "untrusted":
-        return McpPolicy(Policy.DENY, f"{spec.name}: untrusted server, tool is not read-only")
     if spec.trust == "review":
         return McpPolicy(Policy.ASK, f"{spec.name}: review-level server, tool is not read-only")
     if spec.approval == "never":

@@ -152,3 +152,53 @@ def test_a_granted_memory_search_returns_the_parent_rows(tmp_path: Path):
     finally:
         hosted.close()
     assert result.render() == "hit:plans"
+
+
+def test_a_timed_out_host_read_reaps_its_reader(monkeypatch):
+    import os
+    import threading
+    import time
+
+    from iris_ai.isolation.host import ExtensionHost
+
+    read_fd, write_fd = os.pipe()
+    stdout = os.fdopen(read_fd, "rb", buffering=0)
+    writer = os.fdopen(write_fd, "wb", buffering=0)
+
+    def blocking_read(stream):
+        stream.read(1)
+        time.sleep(0.3)
+        raise EOFError("host pipe closed")
+
+    monkeypatch.setattr("iris_ai.isolation.host.read_message", blocking_read)
+
+    class Proc:
+        def __init__(self) -> None:
+            self.stdout = stdout
+            self.stdin = None
+            self._dead: int | None = None
+
+        def poll(self) -> int | None:
+            return self._dead
+
+        def kill(self) -> None:
+            self._dead = -9
+            writer.close()
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            return -9
+
+    host = ExtensionHost.__new__(ExtensionHost)
+    host.proc = Proc()
+    host._stderr = bytearray()
+    before = {thread.ident for thread in threading.enumerate()}
+    try:
+        with pytest.raises(TimeoutError, match="timed out"):
+            host._read(0.05)
+        leaked = [thread for thread in threading.enumerate() if thread.ident not in before and thread.is_alive()]
+        assert leaked == []
+    finally:
+        if not writer.closed:
+            writer.close()
+        stdout.close()

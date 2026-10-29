@@ -123,7 +123,7 @@ Two documents, and the split is deliberate:
 | File | What belongs there |
 |---|---|
 | `README.md` | the front door: what Iris is, why it is different, the five-minute path, and where to read next. Keep it short enough to read in one sitting |
-| `DOCS.md` | **the manual.** Every page: install, all 15 commands, every setting, the turn, memory, the judgment layer, safety, extending, interfaces, observability, providers, scheduling, deployment, testing, troubleshooting |
+| `DOCS.md` | **the manual.** Every page: install, the commands `iris --help` lists, every setting, the turn, memory, the judgment layer, safety, extending, interfaces, observability, providers, scheduling, deployment, testing, troubleshooting |
 | `CHANGELOG.md` | per-phase notes, newest first, numbers grounded in a command |
 
 If a change needs prose that is neither a pitch nor release history, it belongs in

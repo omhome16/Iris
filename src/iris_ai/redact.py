@@ -33,6 +33,7 @@ REDACTED = "[redacted]"
 # redacted word in a trace; a false negative costs a leaked key.
 _VALUE_PATTERNS = (
     re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_\-]{8,}"),          # OpenAI-style
+    re.compile(r"\bgsk_[A-Za-z0-9]{8,}"),                     # Groq
     re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{8,}", re.IGNORECASE),
     re.compile(r"\b(?:xox[baprs]-)[A-Za-z0-9\-]{8,}"),          # Slack
     re.compile(r"\bey[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),  # JWT

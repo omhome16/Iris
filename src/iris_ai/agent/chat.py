@@ -458,6 +458,7 @@ class ChatGraph:
                     self.engine_name = "react"
             else:
                 self.engine_path.append("plan")
+                self.runtime.engine_fails = 0
                 planned = {
                     "engine_planned": True,
                     "engine_phase": "act",
@@ -481,6 +482,7 @@ class ChatGraph:
         except Exception as exc:  # noqa: BLE001 - a provider outage must not 500 the turn
             log.warning("agent LLM call failed: %s", exc)
             return {"messages": [{"type": "ai", "content": _reply_for_failure(exc)}]}
+        self.runtime.engine_fails = 0
         if calls:
             ai = {
                 "type": "ai",
@@ -802,13 +804,22 @@ class ChatGraph:
                 log.info("capture skipped: daily note already at the %d-capture cap", settings.capture_max_per_day)
                 turnlog.record("capture", captured=False, reason=f"daily cap {settings.capture_max_per_day} reached")
                 return {}
-        except Exception as exc:  # noqa: BLE001 - the cap must not take down the turn
-            log.warning("capture cap check skipped: %s", exc)
-            day = None
+        except Exception as exc:  # noqa: BLE001 - an unreadable cap must not capture
+            log.warning("capture skipped: daily cap could not be read: %s", exc)
+            turnlog.record("capture", captured=False, reason="daily cap unreadable")
+            return {}
         custom = getattr(self.runtime, "capture_policy", None)
         if custom is not None:
             note = ""
             names = list(getattr(self.runtime, "pipelines", {}).get("capture") or [])
+            stage = next((name for name in reversed(names) if name not in {"redact", "off", ""}), "")
+            fails = getattr(self.runtime, "pipeline_fails", None)
+            if not isinstance(fails, dict):
+                fails = {}
+                self.runtime.pipeline_fails = fails
+            if stage and int(fails.get(f"capture:{stage}") or 0) >= 3:
+                turnlog.record("capture", captured=False, reason=f"{stage} skipped after 3 failures")
+                return {}
             if hasattr(custom, "extract"):
                 from iris_ai.pipeline import redact_candidates
                 from iris_ai.sdk.types import CaptureRequest
@@ -819,7 +830,14 @@ class ChatGraph:
                     session_id=str(state.get("session_id") or ""),
                     context=str(state.get("memory_context") or ""),
                 )
-                candidates = list(await custom.extract(request) or [])
+                try:
+                    candidates = list(await custom.extract(request) or [])
+                except Exception as exc:  # noqa: BLE001 - one stage must not stop the turn
+                    if stage:
+                        fails[f"capture:{stage}"] = int(fails.get(f"capture:{stage}") or 0) + 1
+                    log.warning("capture stage %s failed: %s", stage or "custom", exc)
+                    turnlog.record("capture", captured=False, reason=f"{stage or 'custom'} failed")
+                    return {}
                 if "redact" in names:
                     candidates = redact_candidates(candidates)
                 if candidates:

@@ -98,6 +98,22 @@ class MemoryAccess:
         return self._files.bootstrap_memory()
 
 
+def _contained(root: Path, rel: str) -> Path:
+    """Resolve `rel` inside `root`. Refuse traversal before the path is touched."""
+    if not isinstance(rel, str) or not rel or rel in {".", "/", "\\"}:
+        raise PermissionError(rel)
+    if "\\" in rel or rel.startswith("/") or (len(rel) > 1 and rel[1] == ":"):
+        raise PermissionError(rel)
+    path = Path(rel)
+    if path.is_absolute() or path.drive or any(part in {"..", "~"} for part in path.parts):
+        raise PermissionError(rel)
+    resolved = (root / path).resolve()
+    base = root.resolve()
+    if resolved != base and base not in resolved.parents:
+        raise PermissionError(rel)
+    return resolved
+
+
 class WorkspaceAccess:
     """Reads inside the workspace. Refuses `.env` and `config/`."""
 
@@ -105,11 +121,8 @@ class WorkspaceAccess:
         self.root = Path(root)
 
     def read(self, rel: str) -> str:
-        path = (self.root / rel).resolve()
-        root = self.root.resolve()
-        if root != path and root not in path.parents:
-            raise PermissionError(rel)
-        relative = path.relative_to(root)
+        path = _contained(self.root, rel)
+        relative = path.relative_to(self.root.resolve())
         if path.name == ".env" or "config" in relative.parts or relative.parts[:1] == (".env",):
             raise PermissionError(rel)
         return path.read_text(encoding="utf-8")
@@ -121,7 +134,7 @@ class StateDir:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def path(self, name: str) -> Path:
-        return self.root / name
+        return _contained(self.root, name)
 
 
 def _item(hit: Any):

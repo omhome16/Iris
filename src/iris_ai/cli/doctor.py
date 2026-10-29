@@ -187,6 +187,19 @@ def run_checks(env_dir: Path | None = None, environ: Mapping[str, str] | None = 
     if postgres is not None:
         checks.append(postgres)
     checks.extend(_component_checks(root))
+    lock = root / "config" / "components.lock"
+    if lock.is_file():
+        from iris_ai.lifecycle.journal import recover
+
+        for problem in recover(lock):
+            checks.append(
+                Check(
+                    "component pin",
+                    "fail",
+                    problem,
+                    fix="iris components rollback <kind>",
+                )
+            )
     return checks
 
 
@@ -275,6 +288,20 @@ def _component_checks(root: Path) -> list[Check]:
             continue
         if folder is None and name in builtin:
             continue
+        if folder is not None:
+            from iris_ai.isolation.policy import execution_refusal
+
+            refusal = execution_refusal(kind)
+            if refusal:
+                checks.append(
+                    Check(
+                        f"component {kind}",
+                        "fail",
+                        refusal,
+                        fix="set ALLOW_AUDIT_ISOLATION=true to accept an audit boundary",
+                    )
+                )
+                continue
         try:
             if folder is not None:
                 from iris_ai.artifacts.store import executable_folder, verify

@@ -900,14 +900,18 @@ class Guarded:
             close()
 
     def text(self) -> str:
+        from iris_ai.components.lock import tick_probation
+
         try:
-            return str(self._inner.text())
+            result = str(self._inner.text())
         except Exception as exc:  # noqa: BLE001 - a persona must not take down the turn
             log.warning("persona %s failed: %s", self.name, exc)
             note_failure(self.kind, self.name)
             if self._fallback is not None:
                 return str(self._fallback.text())
             return ""
+        tick_probation(self.kind)
+        return result
 
     async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         from iris_ai.components.lock import tick_probation

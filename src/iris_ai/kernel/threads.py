@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from typing import Any, Protocol
 
 from iris_ai.kernel.messages import Msg, msg_from_dict, msg_to_dict
@@ -151,33 +152,41 @@ class SqliteThreadStore:
 
     def __init__(self, path: str) -> None:
         self.path = path
+        self._lock = threading.Lock()
         self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, state TEXT NOT NULL)"
         )
         self._conn.commit()
 
     async def load(self, thread_id: str) -> dict:
-        row = self._conn.execute("SELECT state FROM threads WHERE id = ?", (thread_id,)).fetchone()
-        return _decode(row[0]) if row else {}
+        with self._lock:
+            row = self._conn.execute("SELECT state FROM threads WHERE id = ?", (thread_id,)).fetchone()
+            return _decode(row[0]) if row else {}
 
     async def save(self, thread_id: str, state: dict) -> None:
-        self._conn.execute(
-            "INSERT INTO threads (id, state) VALUES (?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET state = excluded.state",
-            (thread_id, _encode(state)),
-        )
-        self._conn.commit()
+        payload = _encode(state)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO threads (id, state) VALUES (?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET state = excluded.state",
+                (thread_id, payload),
+            )
+            self._conn.commit()
 
     async def list_threads(self) -> list[str]:
-        rows = self._conn.execute("SELECT id FROM threads ORDER BY id").fetchall()
-        return [row[0] for row in rows]
+        with self._lock:
+            rows = self._conn.execute("SELECT id FROM threads ORDER BY id").fetchall()
+            return [row[0] for row in rows]
 
     async def pending_approval(self, thread_id: str) -> str | None:
         return approval_prompt(await self.load(thread_id))
 
     async def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
 
 class PostgresThreadStore:

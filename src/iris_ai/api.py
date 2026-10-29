@@ -169,7 +169,7 @@ async def health() -> dict:
     """Liveness + readiness: index reachability *and* optional-layer state.
 
     `/health` is deliberately the one unauthenticated route, so it reports
-    capability flags rather than data.
+    capability flags rather than memory contents or counts.
     """
     index: MemoryIndex = app.state.runtime.index
     jev = getattr(app.state.runtime, "jev", None)
@@ -177,7 +177,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "service": "iris",
-        "memory": await index.stats(),
+        "memory": "reachable" if index is not None else "unavailable",
         "jev": bool(jev is not None and jev.enabled),
         "telegram": bool(telegram is not None and telegram.connected),
         # Full judgment-layer health: whether it is live, why not if it is not,

@@ -134,4 +134,6 @@ class Runtime:
     harness_identity: dict = field(default_factory=dict)
     # Identity of the component set last swapped in. A turn pins this at start.
     generation_id: str = ""
+    # Pins that could not be verified at boot. Empty means the lock matched the store.
+    recovery_problems: list[str] = field(default_factory=list)
     on_onboarded: Callable[[], None] | None = field(default=None, init=False)

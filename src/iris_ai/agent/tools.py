@@ -1339,6 +1339,14 @@ def _honour_approval(shown: dict) -> str:
 
 def component_tools(runtime: Runtime) -> list[Tool]:
     """Write a component into staging, check it, and activate it after approval."""
+    generation = str(getattr(runtime, "generation_id", "") or "")
+
+    def _approval_expires() -> str:
+        from datetime import timedelta
+
+        from iris_ai.timeutil import now
+
+        return (now() + timedelta(hours=24)).isoformat()
 
     async def component_write(kind: str, name: str, filename: str, content: str) -> str:
         from iris_ai.plug import staging_dir
@@ -1398,7 +1406,13 @@ def component_tools(runtime: Runtime) -> list[Tool]:
             "permissions": report["permissions"],
             "preview": report["preview"],
             "execution": report["execution"],
-            **approval_payload("component_activate", args, artifact=digest),
+            **approval_payload(
+                "component_activate",
+                args,
+                artifact=digest,
+                generation=generation,
+                expires=_approval_expires(),
+            ),
         }
         decision = _honour_approval(shown)
         if decision != "approved":
@@ -1420,7 +1434,12 @@ def component_tools(runtime: Runtime) -> list[Tool]:
             "active": active,
             "previous": previous,
             "changes": f"switch {kind} from {active or '(none)'} back to {previous}",
-            **approval_payload("component_rollback", args),
+            **approval_payload(
+                "component_rollback",
+                args,
+                generation=generation,
+                expires=_approval_expires(),
+            ),
         }
         decision = _honour_approval(shown)
         if decision != "approved":

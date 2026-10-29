@@ -17,7 +17,7 @@ def _lock(out, mode: str) -> int:
     from iris_ai.plug import component_digest, local_folder
 
     if mode in {"update", "--update"}:
-        from iris_ai.components.lock import pin, read_lock
+        from iris_ai.lifecycle.control import select
 
         changed = 0
         for kind_name, row in (read_lock().get("kinds") or {}).items():
@@ -25,13 +25,7 @@ def _lock(out, mode: str) -> int:
             folder = local_folder(kind_name, name) if name else None
             if folder is None:
                 continue
-            pin(
-                kind_name,
-                name,
-                source=str(row.get("source") or "local"),
-                digest=component_digest(folder),
-                approved_by="review",
-            )
+            select(kind_name, name)
             changed += 1
         out.print(f"re-pinned {changed}")
         return 0
@@ -82,6 +76,30 @@ def _inspect(out, kind: str, name: str) -> int:
     if row.get("active"):
         out.print(f"lock active={row.get('active')} previous={row.get('previous') or '(none)'} fails={row.get('fails', 0)}")
     return 0
+
+
+def _remote_install(source: str) -> bool:
+    """Git and URL installs are refused. A local folder is the only door."""
+    text = source.strip().lower()
+    return text.startswith(("http://", "https://", "git@", "git+", "file:", "ssh://"))
+
+
+def _manifest_identity(folder: Path) -> tuple[str, str] | None:
+    """`(kind, name)` from component.toml. None when the file does not name both."""
+    import tomllib
+
+    meta_path = folder / "component.toml"
+    if not meta_path.is_file():
+        return None
+    with meta_path.open("rb") as handle:
+        loaded = tomllib.load(handle)
+    if not isinstance(loaded, dict):
+        return None
+    kind = str(loaded.get("kind") or "")
+    name = str(loaded.get("name") or "")
+    if not kind or not name:
+        return None
+    return kind, name
 
 
 def _active(kind: str) -> str:
@@ -201,69 +219,52 @@ def run(
     if action == "inspect":
         return _inspect(out, kind, option)
     if action == "rollback":
-        from iris_ai.plug import rollback
+        from iris_ai.lifecycle.control import rollback
 
         out.print(rollback(kind))
         return 0
     if action == "add":
         source_text = option or kind
-        if source_text.startswith("http://") or source_text.startswith("https://") or source_text.startswith("git@"):
-            if not yes:
-                out.print(f"{source_text} runs in-process with Iris's permissions. re-run with --yes to clone and pin it")
-                return 2
-            import subprocess
-            import tempfile
-
-            cloned = Path(tempfile.mkdtemp()) / "src"
-            clone = subprocess.run(
-                ["git", "clone", "--depth", "1", source_text, str(cloned)],
-                capture_output=True,
-                text=True,
-                check=False,
+        if _remote_install(source_text):
+            out.print(
+                "git and http installs are refused. "
+                "Copy the folder locally, then `iris components add <path> --yes`."
             )
-            if clone.returncode != 0:
-                out.print((clone.stderr or "git clone failed").strip())
-                return 1
-            commit = subprocess.run(
-                ["git", "-C", str(cloned), "rev-parse", "HEAD"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            source = cloned
-            pin_source = f"git:{source_text}@{commit.stdout.strip()}"
-        else:
-            source = Path(source_text)
-            pin_source = f"path:{source}"
-            if not source.is_dir():
-                ui.failed(out, "not a directory", str(source))
-                return 2
-        from iris_ai.plug import component_digest, components_root
-
-        files = [path for path in source.rglob("*") if path.is_file() and ".git" not in path.parts]
-        line_count = 0
-        for path in files:
-            if path.suffix == ".py":
-                line_count += len(path.read_text(encoding="utf-8").splitlines())
-        digest = component_digest(source)
-        out.print(
-            f"{len(files)} files, {line_count} lines, digest {digest[:12]}. "
-            "This runs in-process with Iris's permissions."
-        )
-        if not yes:
-            out.print("re-run with --yes to install and pin it")
             return 2
-        import shutil
+        source = Path(source_text)
+        if not source.is_dir():
+            ui.failed(out, "not a directory", str(source))
+            return 2
+        identity = _manifest_identity(source)
+        if identity is None:
+            ui.failed(out, "not a component", "component.toml must set kind and name")
+            return 2
+        from iris_ai.plug import FOLDER_KINDS, check_in_sandbox, component_digest, components_root
 
-        meta_kind = source.parent.name if (kind in {"", source_text}) else kind
-        dest = components_root() / meta_kind / source.name
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
-        from iris_ai.components.lock import pin
+        meta_kind, meta_name = identity
+        if meta_kind not in FOLDER_KINDS:
+            ui.failed(out, "unknown kind", meta_kind)
+            return 2
+        digest = component_digest(source)
+        out.print(f"digest {digest[:12]}. The folder is checked, then the approved bytes are stored and pinned.")
+        if not yes:
+            out.print("re-run with --yes to check, store, and pin it")
+            return 2
+        ok, detail = check_in_sandbox(source)
+        if not ok:
+            ui.failed(out, "check failed", detail)
+            return 1
+        dest = components_root() / meta_kind / meta_name
+        if dest.resolve() != source.resolve():
+            import shutil
 
-        pin(meta_kind, source.name, source=pin_source, digest=component_digest(dest), approved_by="owner")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
+        from iris_ai.lifecycle.control import select
+
+        select(meta_kind, meta_name)
         out.print(f"installed {dest}")
         return 0
     if action == "export":
@@ -285,6 +286,6 @@ def run(
     ui.failed(
         out,
         "usage:",
-        "iris components | use | eject | check | rollback | add",
+        "iris components | use | eject | check | rollback | add | inspect | export",
     )
     return 2

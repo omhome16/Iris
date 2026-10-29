@@ -7,7 +7,7 @@ one message is [architecture.md](architecture.md).
 ## First run
 
 ```bash
-uv tool install iris-personal-ai
+uv tool install git+https://github.com/omhome16/Iris
 iris init
 iris
 ```
@@ -17,9 +17,10 @@ and a pipe stay plain text. `iris init --yes` skips the wizard, which is what CI
 uses. `iris config [section]` reopens one step: provider, key, model, embeddings,
 parts, mcp, or profile.
 
-The profile lives in `workspace/config/iris.json`. Anything you want the model
+The profile lives in `workspace/USER.md`. Anything you want the model
 to *be* goes in `workspace/PERSONA.md`. Leave that file empty and the system
-prompt is only the harness contract.
+prompt is only the harness contract. `/reload` applies a component selection in
+the full-screen chat and in the plain REPL.
 
 ## Swap a piece
 

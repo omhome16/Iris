@@ -65,8 +65,8 @@ These sit after the twelve already asserted in DOCS §6.4. Relaxing one is a des
 
 ## Rules that hold across phases
 
-- **Compatibility.** v1 is the only documented API. The v0 shapes (`assemble_turn` returning a tuple, `maybe_capture` returning a string, `sleep()`, `ctx.runtime`, positional `cls(runtime)`) keep working through adapters with a deprecation warning until 0.6.
-- **Trust.** Components run in-process. The capability context narrows the API, not the process. The protection is the staging folder, the jailed check and simulation, digest pins, and approval. Process isolation is designed, and built only when untrusted installs become a goal.
+- **Compatibility.** v1 is the only documented API. The v0 shapes (`assemble_turn` returning a tuple, `maybe_capture` returning a string, `sleep()`, `ctx.runtime`, positional `cls(runtime)`) were removed from the turn in 0.6. Eval still accepts a local `maybe_capture` or `conflicts()` folder so an older candidate can be scored.
+- **Trust.** The default load is in-process. `COMPONENT_HOST=subprocess` runs context, capture, and consolidator in a scrubbed child. That child is an audit boundary. On Linux it can also apply Landlock and seccomp; if that cannot install, the label is `audit`. Windows and macOS have no kernel jail. The capability context still narrows the API. `component_plan` checks the host grant names (`llm.complete`, `memory.search`, and the rest of that list). In-process v1 permissions are `llm`, `memory.read`, `files.read`, and `state`. There is no `net.request` grant.
 - **Markdown is the source of truth.** Capture returns candidates. Consolidators return plans. The kernel writes the files and rebuilds the index.
 - **Two engines.** `react` and `plan-execute`, both inside the same budgets.
 - **Measurement before claims.** A component's README states where it loses. Suites keep a held-out split. Numbers in the README name the command that produced them.
@@ -102,7 +102,7 @@ flowchart LR
 | 5 Channels v1 | One runner owns identity, sessions, approvals, and rate limits | The same session answers from the terminal and from a channel component. `/explain` shows channel and origin |
 | 6 Canonical five | temporal-rag, evidence-memory, strict-reviewer, decision-only, conflict-resolver | Each beats the default on its suite, and its README says where it loses |
 | 7 Second engine and evolve | `plan-execute`, then a search over harness code that the owner approves | An evolve run names a frontier candidate with held-out numbers. Activation is the normal digest-pinned approval |
-| 8 Distribution | Install, pin, lock, and Agent Plugins 1.0 interop. Isolation is designed, not built | A git URL installs with a pinned digest. `lock --check` fails on drift |
+| 8 Distribution | Install, pin, lock, and Agent Plugins 1.0 interop. The subprocess host is an audit boundary, not a kernel jail | A local folder is checked, stored, and pinned. A git URL is refused. `lock --check` fails on drift |
 | 9 Story | The README says what the architecture is | Demo script, measured numbers, versions 0.4 / 0.5 / 0.6 |
 
 Versions: 0.4.0 after composition (the iris/v1 API), 0.5.0 after the canonical five, 0.6.0 after distribution (v0 adapters removed).

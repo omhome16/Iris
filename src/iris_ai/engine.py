@@ -726,8 +726,13 @@ async def harness(
         runtime.mcp.start_retry()
 
         from iris_ai.components import attach
+        from iris_ai.lifecycle.journal import recover
 
         attach(runtime, load_manifest(manifest_path))
+        problems = recover()
+        runtime.recovery_problems = problems
+        for problem in problems:
+            log.warning("component pin: %s", problem)
         graph = ChatGraph(runtime, saver)
 
         brain = Harness(

@@ -257,6 +257,61 @@ async def test_capture_is_capped_per_day(tmp_path: Path, monkeypatch: pytest.Mon
     assert files.daily_note().read_text(encoding="utf-8").count("(note)") == 1
 
 
+async def test_capture_skips_when_the_daily_cap_cannot_be_read(tmp_path: Path):
+    files = await _onboarded(tmp_path)
+
+    def unreadable(_day=None):
+        raise OSError("daily note unreadable")
+
+    files.read_daily = unreadable  # type: ignore[method-assign]
+    llm = _ReplyLLM({"capture": True, "fact": "Owner prefers black coffee.", "importance": 7})
+    runtime = make_runtime(files, llm)
+    runtime.reindexer = _NoopReindexer()  # type: ignore[assignment]
+    graph = ChatGraph(runtime, MemorySaver())
+
+    reply = await graph.respond(INFORMATIVE, session_id="cap-unreadable")
+
+    assert reply
+    written = files.daily_note().read_text(encoding="utf-8") if files.daily_note().exists() else ""
+    assert "(note)" not in written
+
+
+async def test_a_capture_stage_is_skipped_after_three_failures():
+    from types import SimpleNamespace
+
+    graph = ChatGraph.__new__(ChatGraph)
+    calls = {"n": 0}
+
+    class Files:
+        def today(self):
+            from datetime import date
+
+            return date.today()
+
+        def read_daily(self, _day):
+            return ""
+
+    class Policy:
+        async def extract(self, request):
+            del request
+            calls["n"] += 1
+            raise RuntimeError("boom")
+
+    graph.runtime = SimpleNamespace(
+        files=Files(),
+        capture_policy=Policy(),
+        pipelines={"capture": ["keeper"]},
+        pipeline_fails={},
+    )
+    state = {"origin": "owner", "messages": []}
+    for _ in range(3):
+        await graph._capture(state)
+    assert calls["n"] == 3
+    await graph._capture(state)
+    assert calls["n"] == 3
+    assert graph.runtime.pipeline_fails["capture:keeper"] == 3
+
+
 async def test_capture_failure_never_breaks_the_turn(tmp_path: Path):
     files = await _onboarded(tmp_path)
     llm = _ReplyLLM("not json at all")

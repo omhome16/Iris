@@ -239,11 +239,13 @@ def test_an_untrusted_servers_write_tool_is_denied():
     assert "untrusted" in decision.reason
 
 
-def test_a_read_only_hint_is_enough_to_allow_a_read():
-    """A hint is self-reported, so it buys reads — and nothing more."""
+def test_a_read_only_hint_does_not_open_an_untrusted_server():
+    """The server wrote the hint. Untrusted stays denied until the owner names a level."""
     read = policy_for(_tool(read_only=True), _spec(trust="untrusted"))
-    assert read.policy is Policy.ALLOW
-    assert "read-only" in read.reason
+    assert read.policy is Policy.DENY
+    trusted = policy_for(_tool(read_only=True), _spec(trust="review"))
+    assert trusted.policy is Policy.ALLOW
+    assert "read-only" in trusted.reason
 
 
 def test_a_trusted_servers_write_asks_the_owner():
@@ -299,7 +301,7 @@ async def test_the_trust_decision_uses_what_the_server_actually_advertised():
         verdicts = {
             tool.name: policy_for(tool, connection.spec).policy for tool in await connection.tools()
         }
-    assert verdicts == {"echo": Policy.ALLOW, "wipe": Policy.DENY}
+    assert verdicts == {"echo": Policy.DENY, "wipe": Policy.DENY}
 
 
 async def test_a_failed_call_is_a_result_not_an_exception():
