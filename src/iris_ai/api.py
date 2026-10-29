@@ -662,11 +662,13 @@ async def forget_search(
     (path, chunk_index), so such a candidate could never be retired. This route
     raised AttributeError before `MemoryHit` carried the field, which broke the
     Telegram bridge's whole forget flow."""
+    from iris_ai.capabilities.memory_api import as_hits
+
     runtime: Runtime = app.state.runtime
     hits = await runtime.index.search(
         req.query, top_k=3, mrr_top_k=1, require_origin={Origin.OWNER}
     )
-    hits = [h for h in hits if h.path == "MEMORY.md" and h.chunk_index >= 0]
+    hits = [h for h in as_hits(hits) if h.path == "MEMORY.md" and h.chunk_index >= 0]
     return {
         "candidates": [
             {

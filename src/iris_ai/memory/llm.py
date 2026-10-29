@@ -313,7 +313,15 @@ class LLMClient:
                     kwargs["response_format"] = {"type": "json_object"}
                 resp = await litellm.acompletion(**kwargs)
                 self._record(_model, tier, getattr(resp, "usage", None))
-                return resp.choices[0].message.content
+                choice = resp.choices[0]
+                content = choice.message.content
+                if content is None:
+                    reason = getattr(choice, "finish_reason", None) or "unknown"
+                    raise LLMError(
+                        f"{_model} returned no content (finish_reason={reason}). "
+                        "The token budget was spent before any reply text."
+                    )
+                return content
 
             try:
                 return await _with_retries(call, max_attempts=max_attempts)

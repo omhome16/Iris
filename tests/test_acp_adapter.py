@@ -374,6 +374,12 @@ async def test_cancel_stops_the_running_turn(acp_settings, scripted, monkeypatch
             await asyncio.sleep(30)
             yield ("text", "too late")
 
+        async def complete_with_tools(self, messages, tools=None, **kwargs):
+            """The buffered path. Reflexion never calls the streaming method."""
+            self.started.set()
+            await asyncio.sleep(30)
+            return "too late", [], ""
+
     slow = Slow()
 
     def install(*_steps: dict):
@@ -396,6 +402,60 @@ async def test_cancel_stops_the_running_turn(acp_settings, scripted, monkeypatch
         response = await asyncio.wait_for(task, timeout=20)
         assert response.stop_reason == "cancelled"
         assert "cancelled" in conn.text()
+
+
+async def test_reflexion_cancel_stops_the_buffered_turn(acp_settings, scripted, monkeypatch):
+    """Reflexion does not stream. Cancel still has to reach the buffered call.
+
+    `streams()` is False, so `ChatGraph._agent` skips `_agent_streamed` and
+    awaits `ModelService.complete`. That await is the cancellable point. The
+    slow hook is on `complete_with_tools` only, so a passing test cannot be
+    the streaming path in disguise.
+    """
+    from iris_ai.engines.dispatch import resolve
+
+    engine = resolve("reflexion")
+    assert engine.streams() is False
+
+    class Slow(ScriptedLLM):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.buffered = 0
+
+        async def stream_complete_with_tools(self, messages, tools=None, **kwargs):
+            raise AssertionError("reflexion must not take the streaming path")
+
+        async def complete_with_tools(self, messages, tools=None, **kwargs):
+            self.buffered += 1
+            self.started.set()
+            await asyncio.sleep(30)
+            return "too late", [], ""
+
+    slow = Slow()
+
+    def install(*_steps: dict):
+        entries = dict(MODELS._entries)
+        entries["litellm"] = Registration(
+            kind="model_backend", name="litellm", factory=lambda ledger=None, **kw: slow, source="test"
+        )
+        monkeypatch.setattr(MODELS, "_entries", entries)
+        return slow
+
+    async with _agent(install) as (agent, brain):
+        brain.runtime.engine_name = "reflexion"
+        conn = FakeConnection()
+        agent.on_connect(conn)
+        session = await agent.new_session(cwd=str(acp_settings))
+        task = asyncio.create_task(
+            agent.prompt(session.session_id, [TextContentBlock(type="text", text="take your time")])
+        )
+        await asyncio.wait_for(slow.started.wait(), timeout=20)
+        await agent.cancel(session.session_id)
+        response = await asyncio.wait_for(task, timeout=20)
+        assert response.stop_reason == "cancelled"
+        assert "cancelled" in conn.text()
+        assert slow.buffered >= 1
 
 
 def test_tool_kind_is_conservative_about_names_it_does_not_know():
