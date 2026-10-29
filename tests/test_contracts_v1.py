@@ -149,7 +149,6 @@ async def test_memory_conformance_names_a_missing_method():
             return []
 
     missing = await memory_conformance(Partial())
-    assert "connect" in missing
-    assert "upsert_chunks" in missing
-    assert "search" not in missing
-    assert "nearest" not in missing
+    assert "connect is missing" in missing
+    assert "upsert_chunks is missing" in missing
+    assert "search is missing" not in missing

@@ -62,6 +62,21 @@ def trim_blocks(blocks: list, *, max_chars: int) -> list:
     return kept
 
 
+def drop_raising_blocks(blocks: list) -> list:
+    """Drop a block whose text cannot be read. One bad block does not sink the prefix."""
+    kept = []
+    for block in blocks:
+        try:
+            text = getattr(block, "text", "")
+            if text is None:
+                text = ""
+            str(text)
+        except Exception:  # noqa: BLE001 - a raising block is omitted, not fatal
+            continue
+        kept.append(block)
+    return kept
+
+
 def redact_candidates(candidates: list, *, scrubbed: list[str] | None = None) -> list:
     """Drop a candidate whose text redaction would change."""
     from iris_ai.redact import redact_text

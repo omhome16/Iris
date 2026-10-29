@@ -110,6 +110,34 @@ def _active(kind: str) -> str:
     return kind
 
 
+def _verify(out, kind: str, name: str, suite: str = "") -> int:
+    """Run the behaviour suite. Non-zero when the component fails it."""
+    import asyncio
+
+    from iris_ai.plug import construct, load_class, local_folder
+    from iris_ai.testing import run_conformance, suite_name
+
+    if not kind or not name:
+        ui.failed(out, "usage:", "iris components verify <kind> <name> [--suite SUITE]")
+        return 2
+    folder = local_folder(kind, name)
+    if folder is None:
+        ui.failed(out, "not found", f"{kind}/{name}")
+        return 2
+    try:
+        component = construct(load_class(folder), None, trust="local")
+    except Exception as exc:  # noqa: BLE001 - verify reports the load error
+        ui.failed(out, "load failed", f"{type(exc).__name__}: {exc}")
+        return 1
+    problems = asyncio.run(run_conformance(kind, component, suite=suite))
+    if problems:
+        for item in problems:
+            out.print(item)
+        return 1
+    out.print(f"passed {suite or suite_name(kind)}")
+    return 0
+
+
 def run(
     action: str = "list",
     kind: str = "",
@@ -119,6 +147,8 @@ def run(
     staged: bool = False,
     yes: bool = False,
     as_plugin: str = "",
+    suite: str = "",
+    dry_run: bool = False,
 ) -> int:
     out = console()
     if action in {"list", "ls", ""} and not kind:
@@ -162,6 +192,8 @@ def run(
         folder = eject(kind, option or "default")
         out.print(f"wrote {folder}")
         return 0
+    if action == "verify":
+        return _verify(out, kind, option, suite)
     if action == "check":
         from iris_ai.plug import check_in_sandbox, local_folder
 
@@ -286,6 +318,6 @@ def run(
     ui.failed(
         out,
         "usage:",
-        "iris components | use | eject | check | rollback | add | inspect | export",
+        "iris components | use | eject | check | verify | rollback | add | inspect | export | matrix",
     )
     return 2
