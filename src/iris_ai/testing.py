@@ -154,7 +154,7 @@ async def memory_conformance(backend: object) -> list[str]:
     """
     from datetime import datetime
 
-    from iris_ai.capabilities.memory import REQUIRED
+    from iris_ai.capabilities.memory_api import REQUIRED
     from iris_ai.eval.world import memory_record
 
     problems: list[str] = []

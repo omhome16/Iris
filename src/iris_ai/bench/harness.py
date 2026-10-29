@@ -92,6 +92,7 @@ def _matrix_memory(name: str, root: Path, llm: object):
     from iris_ai.catalog.memory.evidence import EvidenceMemory
     from iris_ai.memory.markdown_index import MarkdownIndex
     from iris_ai.memory.sqlite_index import SqliteIndex
+    from iris_ai.plug import component_folder, construct, load_class
 
     if name == "evidence-memory":
         return EvidenceMemory(path=root / "memory.db", llm=llm)
@@ -100,7 +101,19 @@ def _matrix_memory(name: str, root: Path, llm: object):
 
         settings.workspace_dir = str(root)
         return MarkdownIndex(llm=llm)
-    return SqliteIndex(root / "memory.db", llm=llm)
+    if name == "pgvector":
+        raise RuntimeError("pgvector needs a Postgres server")
+    folder = component_folder("memory", name)
+    if folder is not None:
+        from types import SimpleNamespace
+
+        from iris_ai.memory.files import WorkspaceFiles
+
+        carrier = SimpleNamespace(llm=llm, files=WorkspaceFiles(root), index=None)
+        return construct(load_class(folder), carrier, trust="local")
+    if name in {"sqlite", ""}:
+        return SqliteIndex(root / "memory.db", llm=llm)
+    raise RuntimeError(f"memory {name} is not available")
 
 
 async def _matrix_context(name: str, index: object, root: Path) -> str:

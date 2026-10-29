@@ -16,7 +16,10 @@ CATALOG: dict[str, tuple[tuple[str, str], ...]] = {
     "memory": (
         ("sqlite", "known-good"),
         ("evidence-memory", "known-good"),
+        ("recency", "known-good"),
+        ("graph", "known-good"),
         ("markdown", "broken"),
+        ("pgvector", "broken"),
     ),
     "context": (
         ("default", "known-good"),

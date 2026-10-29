@@ -89,9 +89,11 @@ def verify(digest: str, *, root: Path | None = None) -> bool:
 
 def executable_folder(kind: str, name: str, *, root: Path | None = None) -> Path | None:
     """The directory to import. The store wins when the pin still verifies."""
+    from iris_ai.plug import shipped_folder
+
     folder = local_folder(kind, name, root=root)
     if folder is None:
-        return None
+        return shipped_folder(kind, name)
     from iris_ai.components.lock import read_lock
 
     row = (read_lock().get("kinds") or {}).get(kind) or {}

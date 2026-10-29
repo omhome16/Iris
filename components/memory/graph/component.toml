@@ -1,0 +1,6 @@
+kind = "memory"
+name = "graph"
+api_version = "iris/v1"
+entry = "component:GraphMemory"
+permissions = ["llm", "state"]
+description = "Chunks plus typed edges. Retrieval walks one hop from the keyword hits."

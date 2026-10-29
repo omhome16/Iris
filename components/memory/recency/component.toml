@@ -1,0 +1,6 @@
+kind = "memory"
+name = "recency"
+api_version = "iris/v1"
+entry = "component:Recency"
+permissions = ["llm", "state"]
+description = "Recency floor. Keyword filter, then newest first. No fused score."

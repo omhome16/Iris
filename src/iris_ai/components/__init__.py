@@ -120,12 +120,16 @@ def list_options(kind: str) -> list[str]:
 
         register_local_channels()
         names = list(CHANNELS.names())
-        for info in list_local(kind):
+        from iris_ai.plug import list_shipped
+
+        for info in (*list_local(kind), *list_shipped(kind)):
             if info.name not in names:
                 names.append(info.name)
         return names
     names = list(OPTIONS.get(kind, ()))
-    for info in list_local(kind):
+    from iris_ai.plug import list_shipped
+
+    for info in (*list_local(kind), *list_shipped(kind)):
         if info.name not in names:
             names.append(info.name)
     return names

@@ -79,10 +79,12 @@ def run(
     for row in rows:
         if "ci" in row:
             low, high = row["ci"]
+            floor = float(row.get("noise_floor") or 0)
             out.print(
                 f"{row['kind']}/{row['suite']}  {row['component']} vs {row['against']}  "
                 f"{row['metric']} {row['baseline']:.2f} -> {row['candidate']:.2f}  "
-                f"CI [{low:+.2f}, {high:+.2f}]  {row['verdict']}"
+                f"CI [{low:+.2f}, {high:+.2f}]  seed {row.get('seed', 0)}  "
+                f"floor {floor:.2f}  {row['verdict']}"
             )
         else:
             out.print(_line(row))

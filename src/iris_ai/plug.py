@@ -122,6 +122,36 @@ def lock_path() -> Path:
     return Path(settings.harness_config).parent / "components.lock"
 
 
+def shipped_root() -> Path | None:
+    """The catalog that ships with Iris, independent of the workspace.
+
+    A checkout keeps it at the repo `components/` directory. An installed wheel
+    has the same tree under `iris_ai/shipped_components`.
+    """
+    packaged = Path(__file__).resolve().parent / "shipped_components"
+    repo = Path(__file__).resolve().parents[2] / "components"
+    for candidate in (repo, packaged):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def shipped_folder(kind: str, name: str) -> Path | None:
+    """A catalog folder shipped with Iris, when the workspace has not replaced it."""
+    root = shipped_root()
+    if root is None:
+        return None
+    folder = root / kind / name
+    if (folder / "component.py").is_file():
+        return folder
+    return None
+
+
+def component_folder(kind: str, name: str, *, root: Path | None = None) -> Path | None:
+    """Workspace folder first, then the shipped catalog."""
+    return local_folder(kind, name, root=root) or shipped_folder(kind, name)
+
+
 def local_folder(kind: str, name: str, *, root: Path | None = None) -> Path | None:
     folder = components_root(root) / kind / name
     if (folder / "component.py").is_file():
@@ -152,6 +182,37 @@ def list_local(kind: str | None = None, *, root: Path | None = None) -> list[Com
                     kind=str(meta.get("kind") or item),
                     name=str(meta.get("name") or folder.name),
                     source="local",
+                    description=str(meta.get("description") or ""),
+                    path=folder,
+                )
+            )
+    return found
+
+
+def list_shipped(kind: str | None = None) -> list[ComponentInfo]:
+    """Catalog folders that ship with Iris. Workspace folders are not included."""
+    base = shipped_root()
+    if base is None or not base.is_dir():
+        return []
+    found: list[ComponentInfo] = []
+    kinds = [kind] if kind else [item.name for item in base.iterdir() if item.is_dir()]
+    for item in kinds:
+        if not item or item.startswith("."):
+            continue
+        parent = base / item
+        if not parent.is_dir():
+            continue
+        for folder in sorted(parent.iterdir()):
+            if not folder.is_dir() or folder.name.startswith("."):
+                continue
+            if not (folder / "component.py").is_file():
+                continue
+            meta = _read_toml(folder / "component.toml")
+            found.append(
+                ComponentInfo(
+                    kind=str(meta.get("kind") or item),
+                    name=str(meta.get("name") or folder.name),
+                    source="shipped",
                     description=str(meta.get("description") or ""),
                     path=folder,
                 )
@@ -734,7 +795,7 @@ def check_folder(folder: Path) -> tuple[bool, str]:
         "after_tools",
     )
     if kind == "memory":
-        from iris_ai.capabilities.memory import REQUIRED
+        from iris_ai.capabilities.memory_api import REQUIRED
 
         try:
             cls = load_class(folder)
