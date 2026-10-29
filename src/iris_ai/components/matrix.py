@@ -31,6 +31,7 @@ CATALOG: dict[str, tuple[tuple[str, str], ...]] = {
     "engine": (
         ("react", "known-good"),
         ("plan-execute", "known-good"),
+        ("reflexion", "known-good"),
     ),
     "capture": (
         ("default", "known-good"),

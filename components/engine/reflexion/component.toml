@@ -1,0 +1,5 @@
+kind = "engine"
+name = "reflexion"
+api_version = "iris/v1"
+entry = "component:Reflexion"
+description = "Draft, critique once, then retry. One revision, not a plan."
