@@ -149,12 +149,70 @@ def _selected(suite: dict, split: str) -> list[dict]:
     return [case for case in cases if case.get("id") in ids]
 
 
+def _hit_content(hit: Any) -> str:
+    if isinstance(hit, dict):
+        return str(hit.get("content") or "")
+    return str(getattr(hit, "content", "") or "")
+
+
+def _local_memory_rank(name: str, case: dict) -> list[dict] | None:
+    """Run a local memory folder against the case corpus.
+
+    The suite used to score every unknown name as the identity ranking, so a
+    folder that puts the current fact first still reported `stale_at_5` 1.0.
+    The corpus is upserted and then searched. None means there is no folder.
+    """
+    from iris_ai.plug import local_folder
+
+    folder = local_folder("memory", name)
+    if folder is None:
+        return None
+    component = _constructed(folder)
+    corpus = list(case.get("corpus") or [])
+    records = []
+    for index, row in enumerate(corpus):
+        records.append(
+            {
+                "id": str(row.get("id") or ""),
+                "path": str(row.get("path") or "MEMORY.md"),
+                "chunk_index": index,
+                "content": str(row.get("content") or ""),
+                "stale": bool(row.get("stale")),
+            }
+        )
+    if hasattr(component, "connect"):
+        _call_eval(component.connect)
+    if hasattr(component, "upsert_chunks"):
+        _call_eval(component.upsert_chunks, records)
+    if not hasattr(component, "search"):
+        return list(corpus)
+    hits = list(_call_eval(component.search, str(case.get("input") or ""), top_k=5) or [])
+    ranked: list[dict] = []
+    used: set[int] = set()
+    for hit in hits:
+        content = _hit_content(hit)
+        for index, row in enumerate(corpus):
+            if index in used:
+                continue
+            if str(row.get("content") or "") == content or str(row.get("id") or "") == content:
+                ranked.append(row)
+                used.add(index)
+                break
+    for index, row in enumerate(corpus):
+        if index not in used:
+            ranked.append(row)
+    return ranked
+
+
 def score_memory(component: str, case: dict) -> dict[str, float]:
     from iris_ai.catalog.memory.evidence import current_first
     from iris_ai.eval.retrieval import ndcg_at_k, recall_at_k
 
     corpus = list(case.get("corpus") or [])
-    if component in {"evidence-memory", "evidence_memory"}:
+    local = _local_memory_rank(component, case)
+    if local is not None:
+        ranked = local
+    elif component in {"evidence-memory", "evidence_memory"}:
         ranked = current_first(corpus)
     else:
         ranked = corpus

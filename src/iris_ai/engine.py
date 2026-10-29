@@ -253,6 +253,10 @@ class Harness:
         clear_persona_cache()
         manifest = load_manifest(Path(settings.harness_config))
         notice = swap_components(self.runtime, manifest)
+        from iris_ai.generation import finish_memory_swap
+
+        await finish_memory_swap(self.runtime)
+        self.index = self.runtime.index
         record("reload", generation=getattr(self.runtime, "generation_id", ""), notice=notice)
         from iris_ai.agent.context import ContextAssembler
 
@@ -293,36 +297,77 @@ class Harness:
         await self.jev.close()
 
 
-def _memory_index(llm: LLMClient, _jev: JevClient, reranker: JevReranker):
-    """The configured store: a local component, a dotted class, or the registry."""
-    from iris_ai.plug import construct, load_class, local_folder
+def _memory_carrier(llm: LLMClient, files: WorkspaceFiles | None):
+    """The object a memory component is constructed with.
+
+    The full Runtime does not exist yet: the index is built before it. The
+    carrier has the two attributes `_v1_context` reads, so a class whose first
+    parameter is `ctx` receives a real model and a writable state directory.
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(llm=llm, files=files, index=None)
+
+
+def _sqlite_memory(llm: LLMClient, reranker: JevReranker):
+    return MEMORY_BACKENDS.build("sqlite", dsn=settings.postgres_dsn, llm=llm, reranker=reranker)
+
+
+def _memory_index(
+    llm: LLMClient,
+    _jev: JevClient,
+    reranker: JevReranker,
+    *,
+    files: WorkspaceFiles | None = None,
+):
+    """The configured store: a local component, a dotted class, or the registry.
+
+    A folder or a dotted class is resolved the same way `components._install`
+    resolves every other kind, then constructed with trust `local`. Builtin
+    names stay on the memory registry, which knows each store's kwargs.
+    """
+    from iris_ai.components import _refuse_drift, _refuse_requires, _resolve_class
+    from iris_ai.isolation.policy import execution_refusal
+    from iris_ai.plug import construct, local_folder
 
     name = settings.memory_backend
+    carrier = _memory_carrier(llm, files)
     folder = local_folder("memory", name)
     if folder is not None:
-        from iris_ai.components import _refuse_drift
-        from iris_ai.isolation.policy import execution_refusal
-
         refused = execution_refusal("memory")
         if refused:
             log.warning("%s", refused)
-            return MEMORY_BACKENDS.build("sqlite", dsn=settings.postgres_dsn, llm=llm, reranker=reranker)
+            return _sqlite_memory(llm, reranker)
         blocked = _refuse_drift("memory", name)
         if blocked:
             log.warning("%s", blocked)
-            return MEMORY_BACKENDS.build("sqlite", dsn=settings.postgres_dsn, llm=llm, reranker=reranker)
-        from iris_ai.artifacts.store import executable_folder
-
-        return construct(load_class(executable_folder("memory", name) or folder), None)
-    if ":" in name:
-        from iris_ai.components import load_symbol
-
-        return construct(load_symbol(name), None)
+            return _sqlite_memory(llm, reranker)
+        requires = _refuse_requires("memory", name)
+        if requires:
+            log.warning("%s", requires)
+            return _sqlite_memory(llm, reranker)
+    try:
+        resolved = _resolve_class("memory", name)
+    except Exception as exc:  # noqa: BLE001 - a bad component must not stop boot
+        log.warning("memory %s failed to load (%s). Using sqlite.", name, exc)
+        return _sqlite_memory(llm, reranker)
+    if resolved is not None:
+        cls, source = resolved
+        trust = "builtin" if source == "builtin" else "local"
+        try:
+            return construct(cls, carrier, trust=trust)
+        except Exception as exc:  # noqa: BLE001 - construction errors fall back to sqlite
+            log.warning("memory %s failed to start (%s). Using sqlite.", name, exc)
+            return _sqlite_memory(llm, reranker)
     return MEMORY_BACKENDS.build(name, dsn=settings.postgres_dsn, llm=llm, reranker=reranker)
 
 
 async def _build_index(
-    llm: LLMClient, jev: JevClient, postgres: PostgresMode
+    llm: LLMClient,
+    jev: JevClient,
+    postgres: PostgresMode,
+    *,
+    files: WorkspaceFiles | None = None,
 ) -> tuple[MemoryIndex | NullIndex, str | None]:
     """Build and connect the configured memory backend, or degrade / raise.
 
@@ -332,7 +377,7 @@ async def _build_index(
     falls back to the ``null`` backend and names the reason.
     """
     reranker = JevReranker(jev)
-    index = _memory_index(llm, jev, reranker)
+    index = _memory_index(llm, jev, reranker, files=files)
     try:
         await index.connect()
     except Exception as exc:
@@ -607,7 +652,7 @@ async def harness(
     else:
         log.info("jev disabled (%s): using deterministic paths", jev.unavailable_reason())
 
-    index, degraded_reason = await _build_index(llm, jev, postgres)
+    index, degraded_reason = await _build_index(llm, jev, postgres, files=files)
     mode: RunMode = "degraded" if degraded_reason else "full"
 
     reindexer = Reindexer(files, index, llm)

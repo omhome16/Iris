@@ -209,24 +209,38 @@ def load_class(folder: Path) -> type:
 
 
 def _v1_context(cls: type, runtime: Any, options: dict | None) -> ComponentContext:
-    """Capabilities named in the manifest. The runtime itself is not one of them."""
+    """Capabilities named in the manifest. The runtime itself is not one of them.
+
+    The grant set is `expand_grants` — the same function the subprocess broker
+    uses — so a short name such as `memory.read` enables the same methods in
+    both hosts.
+    """
+    from iris_ai.isolation.broker import expand_grants
     from iris_ai.sdk.context import MemoryAccess, ModelAccess, StateDir, WorkspaceAccess
 
-    granted = set(getattr(cls, "permissions", ()) or ())
+    granted = expand_grants(getattr(cls, "permissions", ()) or ())
     root = getattr(getattr(runtime, "files", None), "root", None)
     kind = getattr(cls, "component_kind", "")
     name = getattr(cls, "component_name", "")
+    llm_methods = granted & {"llm.complete", "llm.embed"}
+    memory_methods = granted & {"memory.search", "memory.recent", "memory.curated"}
+    state_methods = granted & {"state.read", "state.write"}
     return ComponentContext(
         api_version="iris/v1",
         kind=kind,
         name=name,
         options=options or {},
-        llm=ModelAccess(getattr(runtime, "llm", None)) if "llm" in granted else None,
-        memory=MemoryAccess(getattr(runtime, "index", None), getattr(runtime, "files", None))
-        if "memory.read" in granted
+        grants=granted,
+        llm=ModelAccess(getattr(runtime, "llm", None), methods=llm_methods) if llm_methods else None,
+        memory=MemoryAccess(
+            getattr(runtime, "index", None),
+            getattr(runtime, "files", None),
+            methods=memory_methods,
+        )
+        if memory_methods
         else None,
         files=WorkspaceAccess(root) if "files.read" in granted and root is not None else None,
-        state=StateDir(Path(root) / "state" / kind / name) if "state" in granted and root is not None else None,
+        state=StateDir(Path(root) / "state" / kind / name) if state_methods and root is not None else None,
     )
 
 

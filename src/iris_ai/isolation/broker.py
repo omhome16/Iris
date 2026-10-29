@@ -10,7 +10,9 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
-KNOWN_GRANTS = frozenset(
+# Methods the child asks the broker to run. In-process capabilities are built
+# from this same set, so the two hosts cannot drift.
+CANONICAL_GRANTS = frozenset(
     {
         "llm.complete",
         "llm.embed",
@@ -24,15 +26,46 @@ KNOWN_GRANTS = frozenset(
     }
 )
 
+# Short names the docs and the shipped catalog already declare. Each one is the
+# in-process capability, expanded to the broker methods it turns on.
+GRANT_ALIASES: dict[str, frozenset[str]] = {
+    "llm": frozenset({"llm.complete", "llm.embed"}),
+    "memory.read": frozenset({"memory.search", "memory.recent", "memory.curated"}),
+    "files.read": frozenset({"files.read"}),
+    "state": frozenset({"state.read", "state.write"}),
+}
+
+# A manifest may write either spelling. Unknown names are still refused.
+KNOWN_GRANTS = CANONICAL_GRANTS | frozenset(GRANT_ALIASES)
+
+
+def expand_grants(grants: Iterable[str]) -> frozenset[str]:
+    """Broker methods for a declared permission list.
+
+    A short name expands to the methods the in-process context already turns
+    on. A canonical name stays itself. Anything else is refused here, which is
+    the same check the subprocess authority runs before a child starts.
+    """
+    expanded: set[str] = set()
+    unknown: list[str] = []
+    for name in grants:
+        if name in GRANT_ALIASES:
+            expanded.update(GRANT_ALIASES[name])
+        elif name in CANONICAL_GRANTS:
+            expanded.add(name)
+        else:
+            unknown.append(name)
+    if unknown:
+        raise ValueError(f"unknown grant: {', '.join(sorted(unknown))}")
+    return frozenset(expanded)
+
 
 class Authority:
     """The grants one component is allowed to ask for."""
 
     def __init__(self, grants: Iterable[str], *, llm_cap: int = 4) -> None:
-        chosen = frozenset(grants)
-        unknown = chosen - KNOWN_GRANTS
-        if unknown:
-            raise ValueError(f"unknown grant: {', '.join(sorted(unknown))}")
+        # expand_grants refuses a name that is neither canonical nor an alias.
+        chosen = expand_grants(grants)
         if llm_cap < 0:
             raise ValueError("llm cap cannot be negative")
         self.grants = chosen
@@ -40,7 +73,7 @@ class Authority:
 
     def narrow(self, grants: Iterable[str] | None = None, *, llm_cap: int | None = None) -> Authority:
         """A child gets a subset of these grants and a cap no higher than this one."""
-        wanted = self.grants if grants is None else frozenset(grants)
+        wanted = self.grants if grants is None else expand_grants(grants)
         extra = wanted - self.grants
         if extra:
             raise PermissionError(f"cannot add grants: {', '.join(sorted(extra))}")

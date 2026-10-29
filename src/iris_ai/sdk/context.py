@@ -40,41 +40,66 @@ class FixedClock(Clock):
 class ModelAccess:
     """Ledgered model calls, capped per turn. Components do not see the client."""
 
-    def __init__(self, llm: Any, *, cap: int = 4) -> None:
+    def __init__(self, llm: Any, *, cap: int = 4, methods: frozenset[str] | None = None) -> None:
         self._llm = llm
         self.cap = cap
         self.used = 0
+        self.methods = frozenset(methods) if methods is not None else frozenset({"llm.complete", "llm.embed"})
 
-    async def complete(self, prompt: str, *, tier: str = "cheap") -> str:
+    def _take(self, method: str) -> None:
+        if method not in self.methods:
+            raise PermissionError(f"{method} is not granted")
         if self.used >= self.cap:
             raise RuntimeError(f"llm cap of {self.cap} calls reached")
         self.used += 1
+
+    async def complete(self, prompt: str, *, tier: str = "cheap") -> str:
+        self._take("llm.complete")
         if hasattr(self._llm, "complete"):
             result = await self._llm.complete(prompt, tier=tier)
             return str(getattr(result, "text", result))
         raise RuntimeError("no model is configured")
 
     async def embed(self, text: str) -> list[float]:
-        if self.used >= self.cap:
-            raise RuntimeError(f"llm cap of {self.cap} calls reached")
-        self.used += 1
-        if hasattr(self._llm, "embed"):
+        self._take("llm.embed")
+        vector: Any = None
+        if hasattr(self._llm, "embed_one"):
+            vector = await self._llm.embed_one(text)
+        elif hasattr(self._llm, "embed"):
             vector = await self._llm.embed(text)
-            return [float(item) for item in vector]
-        return []
+        else:
+            return []
+        if vector and isinstance(vector[0], (list, tuple)):
+            vector = vector[0]
+        return [float(item) for item in vector]
 
 
 class MemoryAccess:
-    def __init__(self, index: Any, files: Any = None) -> None:
+    def __init__(self, index: Any, files: Any = None, *, methods: frozenset[str] | None = None) -> None:
         self._index = index
         self._files = files
+        self.methods = (
+            frozenset(methods)
+            if methods is not None
+            else frozenset({"memory.search", "memory.recent", "memory.curated"})
+        )
+
+    def _allow(self, method: str) -> None:
+        if method not in self.methods:
+            raise PermissionError(f"{method} is not granted")
 
     async def search(self, query: str, *, top_k: int = 5) -> list:
+        self._allow("memory.search")
         hits = await self._index.search(query, top_k=top_k)
         return [_item(hit) for hit in hits]
 
     async def recent(self, *, limit: int = 10) -> list:
+        self._allow("memory.recent")
         if not hasattr(self._index, "list_chunks"):
+            logging.getLogger("iris.memory").info(
+                "memory backend %s declines list_chunks; recent is empty",
+                type(self._index).__name__,
+            )
             return []
         rows = await self._index.list_chunks()
         from iris_ai.sdk.types import MemoryItem
@@ -93,6 +118,7 @@ class MemoryAccess:
         return items
 
     def curated(self) -> str:
+        self._allow("memory.curated")
         if self._files is None:
             return ""
         return self._files.bootstrap_memory()
@@ -181,6 +207,7 @@ class ComponentContext:
         self.name = str(extra.pop("name", ""))
         self.log = extra.pop("log", logging.getLogger("iris.component"))
         self.clock = extra.pop("clock", Clock())
+        self.grants = frozenset(extra.pop("grants", ()) or ())
         self._llm = extra.pop("llm", None)
         self._memory = extra.pop("memory", None)
         self._files = extra.pop("files", None)
