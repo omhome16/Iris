@@ -50,17 +50,15 @@ class RecallFirst:
 
     async def assemble_turn(self, user_message: str, *, session_id: str) -> tuple[str, list[str]]:
         from iris_ai.agent.context import ContextAssembler
+        from iris_ai.capabilities.memory_api import as_hits
 
         text, skills = await ContextAssembler(self.runtime).assemble_turn(
             user_message, session_id=session_id
         )
         try:
-            hits = await self.runtime.index.search(user_message, top_k=5)
+            hits = as_hits(await self.runtime.index.search(user_message, top_k=5))
         except Exception:  # noqa: BLE001 - recall is optional; the turn still runs
             hits = []
-        from iris_ai.capabilities.memory_api import as_hits
-
-        hits = as_hits(hits)
         if hits:
             lines = [f"- {hit.path}: {str(hit.content)[:200]}" for hit in hits[:5]]
             text = "## Recalled\n" + "\n".join(lines) + "\n\n" + text

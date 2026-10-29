@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 
 from iris_ai.config import settings
-from iris_ai.memory.llm import LLMClient, LLMError
+from iris_ai.memory.llm import LLMClient
 
 _TOKEN_RE = re.compile(r"\S+")
 
@@ -110,25 +110,20 @@ async def _ask_for_contexts(
     contexts: dict[int, str] = {}
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start : start + batch_size]
-        try:
-            payload = await llm.complete(
-                [
-                    {"role": "system", "content": _CONTEXT_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": "\n\n".join(
-                            f"[chunk {start + i}] {_truncate_tokens(c, 200)}" for i, c in enumerate(batch)
-                        ),
-                    },
-                ],
-                tier="cheap",
-                json_mode=True,
-                max_tokens=1500,
-            )
-        except LLMError:
-            # A reasoning model can burn the whole budget and return nothing.
-            # Skip the batch; plain chunks are still indexed.
-            continue
+        payload = await llm.complete(
+            [
+                {"role": "system", "content": _CONTEXT_SYSTEM},
+                {
+                    "role": "user",
+                    "content": "\n\n".join(
+                        f"[chunk {start + i}] {_truncate_tokens(c, 200)}" for i, c in enumerate(batch)
+                    ),
+                },
+            ],
+            tier="cheap",
+            json_mode=True,
+            max_tokens=1500,
+        )
         if not payload:
             continue
         try:

@@ -313,13 +313,19 @@ class LLMClient:
                     kwargs["response_format"] = {"type": "json_object"}
                 resp = await litellm.acompletion(**kwargs)
                 self._record(_model, tier, getattr(resp, "usage", None))
-                choice = resp.choices[0]
-                content = choice.message.content
+                content = resp.choices[0].message.content
                 if content is None:
-                    reason = getattr(choice, "finish_reason", None) or "unknown"
+                    # A reasoning model can spend the whole max_tokens budget on
+                    # hidden thinking and return no content at all. Returning
+                    # None here pushed the problem downstream: the caller stored
+                    # it, json.loads raised TypeError, and boot reported a
+                    # reindex failure with no hint of the real cause. Raising
+                    # keeps the failure where it happened, so failover and the
+                    # retry budget can act on it.
+                    finish = getattr(resp.choices[0], "finish_reason", None)
                     raise LLMError(
-                        f"{_model} returned no content (finish_reason={reason}). "
-                        "The token budget was spent before any reply text."
+                        f"{_model} returned no content (finish_reason={finish}); "
+                        "a reasoning model may need a larger max_tokens"
                     )
                 return content
 

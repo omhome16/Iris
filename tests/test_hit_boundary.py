@@ -47,8 +47,8 @@ async def test_dict_hits_survive_search_and_the_model_payload(monkeypatch) -> No
     hit = hits[0]
     assert isinstance(hit, HitRecord)
     assert hit.path == "MEMORY.md"
-    assert hit["path"] == "MEMORY.md"
-    assert hit.get("via") == "related"
+    assert hit["content"] == "the owner keeps notes in a graph"
+    assert hit.get("score") == 0.42
     assert hit.get("missing", "absent") == "absent"
     payload = memory_result_payload(hit)
     assert payload["content"] == "the owner keeps notes in a graph"

@@ -7,11 +7,7 @@ registry would pull SQLite and Postgres into that jail.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
-
-from iris_ai.memory.provenance import Origin
 
 log = logging.getLogger("iris.memory")
 
@@ -96,127 +92,114 @@ def decline(backend: object, what: str) -> None:
     log.info("memory backend %s declines %s", type(backend).__name__, what)
 
 
-@dataclass(slots=True)
 class HitRecord:
-    """The attribute shape core recall reads, including when a store returns a dict.
+    """One recall hit, in the shape the core reads.
 
-    A real `MemoryHit` is not rebuilt. A mapping is lifted into this record so
-    `hit.path` and `hit["path"]` both work. Extra keys (`via`, `cos`, `seq`)
-    stay reachable through the mapping shim.
+    A store that is not the built-in index may return plain dicts (a plugin
+    written against this module has no reason to import `MemoryHit`, which
+    lives beside the SQLite and Postgres implementations). Every consumer in
+    the core reads attributes, so a dict hit raised AttributeError in the
+    middle of a turn. `as_hit` narrows both shapes here, once.
     """
 
-    content: str
-    path: str
-    score: float = 0.0
-    origin: Origin = Origin.AGENT
-    observed_at: object = None
-    chunk_index: int = -1
-    lane: str = "default"
-    importance: float = 0.0
-    evergreen: bool = False
-    relevance: float = 0.0
-    decay: float = 1.0
-    imp_mult: float = 1.0
-    extra: dict[str, Any] = field(default_factory=dict)
+    __slots__ = (
+        "chunk_index",
+        "content",
+        "decay",
+        "evergreen",
+        "imp_mult",
+        "importance",
+        "lane",
+        "observed_at",
+        "origin",
+        "path",
+        "relevance",
+        "score",
+    )
+
+    def __init__(
+        self,
+        *,
+        content: str = "",
+        path: str = "",
+        score: float = 0.0,
+        importance: float = 0.0,
+        origin: Any = None,
+        observed_at: Any = None,
+        evergreen: bool = False,
+        chunk_index: int = -1,
+        lane: str = "default",
+        relevance: float = 0.0,
+        decay: float = 1.0,
+        imp_mult: float = 1.0,
+    ) -> None:
+        self.content = content
+        self.path = path
+        self.score = score
+        self.importance = importance
+        self.origin = origin
+        self.observed_at = observed_at
+        self.evergreen = evergreen
+        self.chunk_index = chunk_index
+        self.lane = lane
+        self.relevance = relevance
+        self.decay = decay
+        self.imp_mult = imp_mult
 
     def __getitem__(self, key: str) -> Any:
-        if key in _HIT_FIELDS:
-            return getattr(self, key)
-        if key in self.extra:
-            return self.extra[key]
-        raise KeyError(key)
+        """Stay readable as a mapping for a caller that still treats hits as dicts."""
+        return getattr(self, key)
 
     def get(self, key: str, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            return default
+        return getattr(self, key, default)
+
+    def as_dict(self) -> dict:
+        return {name: getattr(self, name) for name in self.__slots__}
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"HitRecord(path={self.path!r}, score={self.score!r})"
 
 
-_HIT_FIELDS = frozenset(
-    {
-        "content",
-        "path",
-        "score",
-        "origin",
-        "observed_at",
-        "chunk_index",
-        "lane",
-        "importance",
-        "evergreen",
-        "relevance",
-        "decay",
-        "imp_mult",
-    }
-)
+def _origin_of(value: Any) -> Any:
+    """`Origin` without importing the store module that defines it."""
+    from iris_ai.memory.provenance import Origin
 
-
-def _origin(value: object) -> Origin:
     if isinstance(value, Origin):
         return value
-    text = str(getattr(value, "value", value) or "").strip().lower()
-    if not text:
-        return Origin.AGENT
     try:
-        return Origin(text)
+        return Origin(str(value))
     except ValueError:
-        return Origin.AGENT
+        return Origin.UNTRUSTED if value else Origin.AGENT
 
 
-def _number(value: object, default: float = 0.0) -> float:
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
+def as_hit(item: object, *, lane: str = "default") -> Any:
+    """Narrow one recall result to the attribute shape the core reads.
 
-
-def _hit_from_mapping(raw: Mapping) -> HitRecord:
-    score = raw.get("score", raw.get("cos", 0.0))
-    chunk = raw.get("chunk_index", None)
-    try:
-        chunk_index = -1 if chunk is None else int(chunk)
-    except (TypeError, ValueError):
-        chunk_index = -1
-    known = {
-        "content": str(raw.get("content") or ""),
-        "path": str(raw.get("path") or ""),
-        "score": _number(score),
-        "origin": _origin(raw.get("origin")),
-        "observed_at": raw.get("observed_at"),
-        "chunk_index": chunk_index,
-        "lane": str(raw.get("lane") or "default"),
-        "importance": _number(raw.get("importance")),
-        "evergreen": bool(raw.get("evergreen") or False),
-        "relevance": _number(raw.get("relevance")),
-        "decay": _number(raw.get("decay"), 1.0),
-        "imp_mult": _number(raw.get("imp_mult"), 1.0),
-    }
-    extra = {str(key): value for key, value in raw.items() if str(key) not in known}
-    return HitRecord(**known, extra=extra)
-
-
-def as_hit(hit: object) -> object:
-    """Leave an attribute hit alone. Lift a dict into `HitRecord`.
-
-    `MemoryHit` is not imported here. This module stays free of the vector
-    index so the component jail can import it.
+    A `MemoryHit` from the built-in index passes through untouched. A dict (or
+    any object missing the basics) is lifted into a `HitRecord`.
     """
-    if isinstance(hit, HitRecord):
-        return hit
-    if isinstance(hit, Mapping):
-        return _hit_from_mapping(hit)
-    if hasattr(hit, "content") and hasattr(hit, "path"):
-        return hit
-    return HitRecord(content="" if hit is None else str(hit), path="")
+    if item is None:
+        return None
+    if not isinstance(item, dict) and all(
+        hasattr(item, name) for name in ("content", "path", "score", "origin")
+    ):
+        return item
+    read = item.get if isinstance(item, dict) else (lambda key, default=None: getattr(item, key, default))
+    return HitRecord(
+        content=str(read("content", "") or ""),
+        path=str(read("path", "") or ""),
+        score=float(read("score", 0.0) or 0.0),
+        importance=float(read("importance", 0.0) or 0.0),
+        origin=_origin_of(read("origin", None)),
+        observed_at=read("observed_at", None),
+        evergreen=bool(read("evergreen", False)),
+        chunk_index=int(read("chunk_index", -1) if read("chunk_index", -1) is not None else -1),
+        lane=str(read("lane", lane) or lane),
+        relevance=float(read("relevance", 0.0) or 0.0),
+        decay=float(read("decay", 1.0) or 1.0),
+        imp_mult=float(read("imp_mult", 1.0) or 1.0),
+    )
 
 
-def as_hits(hits: object) -> list:
-    """Normalize one search result. A lone mapping is one hit, not its keys."""
-    if not hits:
-        return []
-    if isinstance(hits, Mapping):
-        return [as_hit(hits)]
-    try:
-        return [as_hit(hit) for hit in hits]  # type: ignore[union-attr]
-    except TypeError:
-        return [as_hit(hits)]
+def as_hits(items: list) -> list:
+    return [hit for hit in (as_hit(item) for item in items or []) if hit is not None]
