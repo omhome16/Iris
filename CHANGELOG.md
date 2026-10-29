@@ -12,6 +12,15 @@ older prose are historical records of where things lived at the time.
 
 ## Unreleased — verified plug-and-play
 
+The shipped catalog under `components/` adds a recency-only memory, a one-hop
+graph memory, recall-first and compaction-first context, a reflexion engine,
+a tool-call capture, supersede and merge-by-similarity consolidators, and
+cli, webhook, and offline telegram channels. `iris eval` runs those folders
+and prints a paired bootstrap interval from seed 0 against a noise floor of
+zero. `iris components matrix --dry-run` prints 1350 cells (900 known-good,
+450 broken) plus the three channels. pgvector and markdown are the broken
+memory axis: one needs Postgres, the other does not round-trip writes.
+
 Memory, context, persona, capture, consolidator, engine, channel, tool, and
 guard are one folder format. A component is pinned only after the jailed check
 and a behaviour suite. `iris components verify <kind> <name>` runs that suite.

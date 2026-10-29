@@ -1206,10 +1206,49 @@ boots.
 A swappable part is a folder under `components/<kind>/<name>/`, a built-in
 name, an `iris_ai.components` entry point named `<kind>.<name>`, or
 `package.module:Class`. `iris new <kind> <name>` writes the folder.
-`iris components list` shows built-ins and local folders. The folder kinds are
-context, memory, persona, capture, consolidator, engine, channel, tool, and
-guard. Hooks, models, judges, and secret stores stay entry points; `iris new`
-for those prints the recipe instead of writing a folder nothing loads.
+`iris components list` shows built-ins, workspace folders, and the catalog
+shipped under `components/`. The folder kinds are context, memory, persona,
+capture, consolidator, engine, channel, tool, and guard. Hooks, models,
+judges, and secret stores stay entry points; `iris new` for those prints the
+recipe instead of writing a folder nothing loads.
+
+The shipped catalog is not a set of renames. Each row is a different
+mechanism. `iris eval <kind> --component <name>` runs the folder and prints a
+paired bootstrap interval from seed 0, next to the noise floor of three
+deterministic repeats (zero for these scorers).
+
+| Kind | Name | Mechanism |
+|---|---|---|
+| memory | sqlite | FTS plus exact cosine. The fused default |
+| memory | pgvector | The same policy on Postgres. Needs a server, so the matrix marks it broken without one |
+| memory | recency | Keyword gate, then newest write first. The floor under the fused scorer |
+| memory | graph | Keyword seeds, then one hop along a typed edge. Recency does not break a tie |
+| memory | markdown | Keyword scan of the files. Writes are no-ops, so the matrix marks it broken |
+| context | default | The assembler. Stale and current lines are both current |
+| context | recall-first | Every hit is a priority-0 memory block. A trim drops other notes first |
+| context | compaction-first | Older hits collapse into one history line. The newest line stays verbatim |
+| context | temporal-rag | Overlapping older facts move to a history block |
+| engine | react | One model step, tools, done |
+| engine | plan-execute | Plan, act, then verify |
+| engine | reflexion | Draft, one critique, one retry. No plan node |
+| capture | default | The built-in prefilter |
+| capture | decision-only | Keep a turn only when it records a choice |
+| capture | tool-summary | Keep a one-line summary of tool calls. A decision with no tool call is dropped |
+| consolidator | dreaming | Light, REM, Deep |
+| consolidator | conflict-resolver | A contradiction becomes a conflict for the owner |
+| consolidator | supersede | The new line retires the old one. The two sentences are not merged |
+| consolidator | merge-similarity | Shared subject words become one sentence. The old line is not retired |
+| channel | cli | An in-process outbox |
+| channel | webhook | The JSON body of a POST, held in memory. No port is bound |
+| channel | telegram-local | Telegram-shaped receipts. No token and no socket. The live `telegram` transport is separate |
+
+On the supersession suite, recency's `stale_at_5` is 0 and the graph's is 1.
+Recall-first and the default both show the stale line as current.
+Compaction-first does not. Reflexion and react both finish the scripted
+engine tasks. They differ on retries (1 versus 0). Tool-summary and
+decision-only differ on capture F1. Supersede and merge-by-similarity differ
+on silent overwrite. Supersede and the conflict resolver do not: both refuse
+a quiet overwrite, one with a conflict and one with a supersede list.
 
 ```bash
 iris new engine my-engine
