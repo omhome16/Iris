@@ -741,12 +741,31 @@ after you approve**; a cancel resumes the thread with the memory intact.
 
 ### 7.8 Backends
 
+Memory is a component, the same way context and capture are. A built-in name,
+a folder under `components/memory/<name>/`, an `iris_ai.components` entry
+point, or a dotted class path all construct through one door. The class is
+built with a `ComponentContext` when its first parameter is `ctx`, so
+`ctx.llm.embed` returns a vector from the configured model and `ctx.state.path`
+is a writable directory. Changing `memory_backend` and reloading swaps the
+index and the reindexer in the same generation. The rest of the turn keeps
+using `runtime.index`.
+
 | Backend | Embeddings | Ships as | Use |
 |---|---|---|---|
 | **SQLite** | local model or provider API | **default** | laptop, zero services, one file |
 | Postgres + pgvector | provider API | optional | large corpora, existing installs |
+| evidence-memory | same as SQLite | built in | current facts ranked ahead of superseded ones |
+| markdown | none | built in | keyword search over the files; writes are no-ops |
 | null | none | always | tests and degraded mode — it **raises** rather than returning an empty result set, so "recall is broken" cannot look like "nothing matched" |
-| external vector service | provider | plugin | power users (`iris_ai.memory` entry point) |
+| a folder or entry point | whatever the component embeds | local | `iris new memory <name>`, then `iris components verify memory <name>` |
+
+Every store implements the seven core methods: `connect`, `close`, `search`,
+`upsert_chunks`, `replace_file_chunks`, `delete_file_chunks`, `stats`.
+`nearest`, `list_chunks`, and `forget_entry` are `MemoryMaintenance`.
+`escalate` is `MemoryEscalation`. Dreaming, the rot report, forget-confirm,
+and `MemoryAccess.recent` ask `offers` and skip with one log line when the
+backend declines. A store with only the seven core methods boots. A rot report
+over a store without `list_chunks` is an empty list.
 
 The SQLite backend runs **FTS5 keyword search plus brute-force exact cosine over
 the stored rows** (computed in numpy), rather than a native vector extension. That
@@ -771,6 +790,15 @@ iris migrate --to null        # refused: the degraded stand-in stores nothing
 
 See [§3.4](#34-maintain). The Markdown is re-read through the same reindexer a
 normal boot uses, so a migration cannot produce a shape a boot would not.
+
+A reload does the same rewire without a restart. `swap_components` rebuilds
+`index` and `reindexer` when `memory_backend` changes, connects the new store,
+and reindexes from the Markdown. The previous connection is closed. `iris
+components matrix` runs that contract across the built-in combinations: the
+turn completes, a write comes back from the same backend, and the pipeline
+does not fall back. `iris components matrix --dry-run` prints each combination
+as known-good or broken and runs nothing. Markdown is broken for that check
+because its writes are no-ops.
 
 ---
 
@@ -1158,16 +1186,55 @@ integration is configuration, never a core edit.
 | Capability | Protocol | Required surface |
 |---|---|---|
 | models | `iris_ai.capabilities.models.ModelBackend` | `complete`, `complete_with_tools`, `stream_complete_with_tools`, `embed`, `embed_one` |
-| memory | `iris_ai.capabilities.memory.MemoryBackend` | `connect`, `close`, `search`, `escalate`, `stats`, `upsert_chunks`, `delete_file_chunks`, `replace_file_chunks`, `forget_entry`, `nearest`, `list_chunks` |
+| memory | `iris_ai.capabilities.memory.MemoryBackend` | `connect`, `close`, `search`, `upsert_chunks`, `replace_file_chunks`, `delete_file_chunks`, `stats` |
+| memory maintenance | `MemoryMaintenance` | `nearest`, `list_chunks`, `forget_entry` — optional; callers skip when `offers` is false |
+| memory escalation | `MemoryEscalation` | `escalate` — optional; the default lane stays `search` |
 | judges | `iris_ai.capabilities.judges.Judge` | `enabled`, `unavailable_reason`, `ask`, `status`, `close` |
 | tools | `iris_ai.toolregistry.ToolProvider` | `.name`, `.tools(runtime)` |
 | channels | `iris_ai.channels.base.Channel` | `.name`, `.connected`, `connect`, `close`, `send_message`, `send_photo`, `get_chat_history` |
+| engines | `iris_ai.engines.dispatch.TurnEngine` | `short_circuit`, `wants_plan`, `streams`, `tool_phase`, `finish`, `after_tools` |
 | secret stores | `iris_ai.secrets` registered backend | `.name`, `.get`, `.set`, `.delete`, `.location()` |
 
-`REQUIRED` in each capability module is the same list the conformance test asserts,
-exported so the test cannot drift from the documentation.
+`REQUIRED` in each capability module is the core list. The memory behaviour
+suite calls the core methods and the maintenance methods against a real store.
+A missing maintenance method is a suite failure for a backend that claims to
+be a full index. A backend that only implements the seven core methods still
+boots.
 
-### 10.2 Entry points (the plugin surface)
+### 10.2 Folders and entry points
+
+A swappable part is a folder under `components/<kind>/<name>/`, a built-in
+name, an `iris_ai.components` entry point named `<kind>.<name>`, or
+`package.module:Class`. `iris new <kind> <name>` writes the folder.
+`iris components list` shows built-ins and local folders. The folder kinds are
+context, memory, persona, capture, consolidator, engine, channel, tool, and
+guard. Hooks, models, judges, and secret stores stay entry points; `iris new`
+for those prints the recipe instead of writing a folder nothing loads.
+
+```bash
+iris new engine my-engine
+iris components check engine my-engine
+iris components verify memory my-store
+iris components verify context plain --suite context-behaviour
+iris components use memory my-store
+iris components inspect memory my-store
+iris components matrix --dry-run
+```
+
+`verify` boots the component and calls it. The memory suite uses a temporary
+SQLite file: upsert then search, idempotent replace, delete, ordered
+`nearest`, `list_chunks` after writes, `forget_entry`, `stats`, and a second
+connect/close. It exits non-zero when `list_chunks` returns nothing after an
+upsert. `use` and `activate` run that same suite after the jailed check and
+before the pin. A folder that fails is not pinned. `inspect` prints the suite
+name and the time it passed, next to the digest.
+
+Permissions use one alias table. A manifest may say `llm`, `memory.read`,
+`files.read`, or `state`. Those expand to the broker methods
+(`llm.complete`, `llm.embed`, `memory.search`, `memory.recent`,
+`memory.curated`, `files.read`, `state.read`, `state.write`). The in-process
+context and the subprocess host accept the same set. `files.read` is already
+both a short name and a broker method.
 
 | Group | The plugin exposes | Selected by | Listed by |
 |---|---|---|---|
@@ -1179,6 +1246,12 @@ exported so the test cannot drift from the documentation.
 | `iris_ai.hooks` | a callable `attach(bus) -> None` | attached at boot | `iris plugins hooks` |
 | `iris_ai.skills` | installed skill packages | discovered | `iris skills list` |
 | `iris_ai.secret_stores` | a secret-store backend | `SECRET_STORE=<name>` | `iris secrets backend` |
+| `iris_ai.components` | a class for one kind, named `<kind>.<name>` | the manifest value for that kind | `iris components list` |
+
+A tool folder under `components/tool/<name>/` loads only when `components.lock`
+pins its digest and the stored copy still hashes to that digest. Several tools
+can be pinned at once; the lock keeps them in `pins`. An edit to the working
+folder does not change the bytes that run.
 
 ### 10.3 The rules every plugin inherits
 
@@ -1188,7 +1261,10 @@ These hold in `registry.py` and the boot path, so a plugin cannot opt out:
   sources. Core owns the name it registers; a plugin taking it over must say
   `replace=True` explicitly.
 - **An unknown name is an error, not a no-op.** `MODEL_BACKEND=typo` fails with the
-  list of registered backends rather than falling back to something else.
+  list of registered backends rather than falling back to something else. An
+  unknown engine does the same: `resolve("typo")` and a dotted path that does
+  not import both raise with the engines that do exist. `react` is the engine
+  only when config names it, or when no engine is configured.
 - **Discovery is cheap.** Registering an entry point does not call it, so a
   disabled channel is never imported, let alone constructed.
 - **A broken plugin is skipped, not fatal.** A provider that raises while being

@@ -10,6 +10,22 @@ research notes) has since been consolidated into a single [`DOCS.md`](DOCS.md), 
 the link targets below were repointed rather than left broken. Backticked paths in
 older prose are historical records of where things lived at the time.
 
+## Unreleased — verified plug-and-play
+
+Memory, context, persona, capture, consolidator, engine, channel, tool, and
+guard are one folder format. A component is pinned only after the jailed check
+and a behaviour suite. `iris components verify <kind> <name>` runs that suite.
+`iris components inspect` shows which suite passed and when. `iris components
+matrix --dry-run` prints every built-in combination as known-good or broken.
+
+Short permissions (`llm`, `memory.read`, `files.read`, `state`) expand to the
+same broker methods in-process and under `COMPONENT_HOST=subprocess`. A local
+memory folder is constructed with the model and the workspace, so `ctx.llm.embed`
+and `ctx.state.path` work, and a reload swaps the index without a restart.
+`MemoryBackend` is seven methods. Maintenance and escalation are optional;
+callers skip them with one log line. An unknown engine name fails with the
+list of known engines.
+
 ## 0.6.0 — distribution
 
 A component installs from a directory with `iris components add <path> --yes`,

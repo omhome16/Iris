@@ -1,9 +1,11 @@
 # Components
 
-Folder components are context, memory, persona, capture, and consolidator. One
-line in `config/harness.toml` selects one. Channels, tools, hooks, models,
-judges, and secret stores are entry-point plugins (DOCS.md section 10.2), not
-folders. `terminal` and `http` are faces: `iris serve`.
+Folder components are context, memory, persona, capture, consolidator, engine,
+channel, tool, and guard. One line in `config/harness.toml` selects one.
+Hooks, models, judges, and secret stores stay entry points (DOCS.md section
+10.2). `terminal` and `http` are faces: `iris serve`. `iris new <kind> <name>`
+writes the folder. `iris components verify` runs it before `iris components use`
+pins it.
 
 ```toml
 [components]
@@ -21,8 +23,8 @@ and `iris doctor` names the fix.
 2. **An entry point** in the group `iris_ai.components`, named like
    `context.graph-rag` = `pkg.mod:Class`. This package does not publish one yet.
    A class path `pkg.module:Class` also works.
-3. **Local.** A folder next to `config/`, for context, memory, persona,
-   capture, or consolidator:
+3. **Local.** A folder next to `config/`, for any folder kind (context, memory,
+   persona, capture, consolidator, engine, channel, tool, guard):
 
 ```text
 components/context/graph-rag/
