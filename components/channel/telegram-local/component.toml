@@ -1,0 +1,5 @@
+kind = "channel"
+name = "telegram-local"
+api_version = "iris/v1"
+entry = "component:TelegramLocal"
+description = "Telegram-shaped receipts with no token and no network call."

@@ -59,11 +59,24 @@ def cells() -> list[dict[str, str]]:
     return rows
 
 
+# Channels are not a cartesian axis. A channel does not change the memory
+# round-trip the grid asserts, and crossing every cell with a transport only
+# multiplies the grid. They are still printed, with a status, so the dry run
+# counts them.
+CHANNELS: tuple[tuple[str, str], ...] = (
+    ("cli", "known-good"),
+    ("webhook", "known-good"),
+    ("telegram-local", "known-good"),
+)
+
+
 def format_dry_run() -> str:
     lines = []
     for cell in cells():
         parts = " ".join(f"{kind}={cell[kind]}" for kind in ORDER)
         lines.append(f"{cell['status']} {parts}")
+    for name, status in CHANNELS:
+        lines.append(f"channel {name} {status}")
     return "\n".join(lines)
 
 

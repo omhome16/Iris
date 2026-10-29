@@ -8,10 +8,13 @@ from iris_ai.components.matrix import cells, format_dry_run, run_matrix
 def test_dry_run_prints_every_combination_and_runs_nothing() -> None:
     text = format_dry_run()
     lines = [line for line in text.splitlines() if line.strip()]
-    assert len(lines) == 1350
     assert len(cells()) == 1350
+    assert len(lines) == 1353
     assert sum(line.startswith("known-good ") for line in lines) == 900
     assert sum(line.startswith("broken ") for line in lines) == 450
+    assert "channel cli known-good" in lines
+    assert "channel webhook known-good" in lines
+    assert "channel telegram-local known-good" in lines
     assert any("memory=markdown" in line and line.startswith("broken") for line in lines)
     assert any("memory=sqlite" in line and line.startswith("known-good") for line in lines)
     from iris_ai.cli.components_cmd import run

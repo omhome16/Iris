@@ -1,0 +1,5 @@
+kind = "channel"
+name = "webhook"
+api_version = "iris/v1"
+entry = "component:WebhookChannel"
+description = "An HTTP webhook payload, held in memory. No port is bound."
