@@ -1,17 +1,23 @@
 """Memory backend capability — the `MemoryBackend` Protocol and its registry.
 
-The kernel asks a memory backend to search, escalate, and report; retrieval
-*policy* (decay, MMR, lane choice) stays in the kernel because it is policy, not
-storage. The core implementations are `MemoryIndex` (Postgres + pgvector),
-registered as ``pgvector``, and `NullIndex`, registered as ``null`` (the honest
-degraded backend that raises rather than returning an empty result set).
+The kernel asks every store to search and to report. Retrieval *policy*
+(decay, MMR, lane choice) stays in the kernel because it is policy, not
+storage. Maintenance (`nearest`, `list_chunks`, `forget_entry`) and the
+escalation lane are optional protocols. A caller asks `offers` and skips the
+call with one log line when the backend declines, instead of assuming the
+method exists.
 
-The SQLite backend in Phase 2 registers here too; nothing above this line changes
-when it does.
+The core implementations are `MemoryIndex` (Postgres + pgvector), registered
+as ``pgvector``, and `NullIndex`, registered as ``null`` (the honest degraded
+backend that raises rather than returning an empty result set).
+
+The SQLite backend registers here too; nothing above this line changes when a
+new store does.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol, runtime_checkable
 
 from iris_ai.config import settings
@@ -20,26 +26,23 @@ from iris_ai.memory.null_index import NullIndex
 from iris_ai.memory.sqlite_index import SqliteIndex
 from iris_ai.registry import Registry
 
+log = logging.getLogger("iris.memory")
+
+# Every store can answer these. Optional protocols live beside them.
 REQUIRED: tuple[str, ...] = (
     "connect",
     "close",
     "search",
-    "escalate",
-    "stats",
     "upsert_chunks",
-    "delete_file_chunks",
     "replace_file_chunks",
-    "forget_entry",
-    # Dreaming dedupes with nearest. Rot reports and forget-confirm list chunks.
-    # A backend that omits either crashes those paths.
-    "nearest",
-    "list_chunks",
+    "delete_file_chunks",
+    "stats",
 )
 
 
 @runtime_checkable
 class MemoryBackend(Protocol):
-    """Everything the kernel may ask of a memory store."""
+    """The seven methods every store can answer."""
 
     async def connect(self) -> None: ...
 
@@ -55,8 +58,6 @@ class MemoryBackend(Protocol):
         ablation: set[str] | None = None,
     ) -> list: ...
 
-    async def escalate(self, query: str, *, top_k: int = 5, mrr_top_k: int = 5) -> list: ...
-
     async def stats(self) -> dict: ...
 
     async def upsert_chunks(self, records: list) -> None: ...
@@ -65,11 +66,47 @@ class MemoryBackend(Protocol):
 
     async def replace_file_chunks(self, path: str, records: list) -> None: ...
 
-    async def forget_entry(self, path: str, chunk_index: int) -> None: ...
+
+@runtime_checkable
+class MemoryMaintenance(Protocol):
+    """Optional upkeep. Dreaming, rot, and forget-confirm ask before they call."""
 
     async def nearest(self, text: str, *, top_k: int = 3) -> list: ...
 
     async def list_chunks(self) -> list: ...
+
+    async def forget_entry(self, path: str, chunk_index: int) -> None: ...
+
+
+@runtime_checkable
+class MemoryEscalation(Protocol):
+    """Optional second recall lane. The default lane is `search`."""
+
+    async def escalate(self, query: str, *, top_k: int = 5, mrr_top_k: int = 5) -> list: ...
+
+
+def offers(backend: object, protocol: type) -> bool:
+    """True when `backend` implements `protocol` and does not decline it.
+
+    `runtime_checkable` only looks for the names. `MarkdownIndex` inherits
+    raising stubs from the degraded stand-in and sets `memory_declines` so
+    callers skip those stubs instead of reaching them.
+    """
+    if not isinstance(backend, protocol):
+        return False
+    declined: set[str] = set()
+    for cls in type(backend).__mro__:
+        found = cls.__dict__.get("memory_declines")
+        if found:
+            declined.update(found)
+            break
+    needed = set(getattr(protocol, "__protocol_attrs__", ()))
+    return not (needed & declined)
+
+
+def decline(backend: object, what: str) -> None:
+    """One log line when a caller skips a method the backend will not answer."""
+    log.info("memory backend %s declines %s", type(backend).__name__, what)
 
 
 #: The memory registry. `pgvector` (durable, multi-process) and `sqlite` (the

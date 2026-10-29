@@ -721,6 +721,17 @@ def check_folder(folder: Path) -> tuple[bool, str]:
         "consolidator": "propose" if v1 else "sleep",
         "channel": "send_message",
     }.get(kind)
+    if kind == "memory":
+        from iris_ai.capabilities.memory import REQUIRED
+
+        try:
+            cls = load_class(folder)
+        except Exception as exc:  # noqa: BLE001 - the check reports the import error
+            return False, f"import failed: {type(exc).__name__}: {exc}"
+        missing = [name for name in REQUIRED if not callable(getattr(cls, name, None))]
+        if missing:
+            return False, f"memory component must define {', '.join(missing)}()"
+        return True, f"memory/{folder.name} matches the {', '.join(REQUIRED)} contract"
     try:
         cls = load_class(folder)
     except Exception as exc:  # noqa: BLE001 - the check reports the import error

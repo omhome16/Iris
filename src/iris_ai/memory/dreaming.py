@@ -381,6 +381,11 @@ class DeepPhase:
         """True if MEMORY.md already says essentially the same thing."""
         if not existing.strip():
             return False
+        from iris_ai.capabilities.memory import MemoryMaintenance, decline, offers
+
+        if not offers(self.index, MemoryMaintenance):
+            decline(self.index, "nearest; skipping duplicate check")
+            return False
         try:
             near = await self.index.nearest(statement, top_k=3)
         except Exception:  # noqa: BLE001 - dedupe is best-effort

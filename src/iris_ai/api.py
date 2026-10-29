@@ -689,6 +689,11 @@ async def forget_confirm(
     (source of truth), chunk dropped from the index, reindex."""
     runtime: Runtime = app.state.runtime
     files = runtime.files
+    from iris_ai.capabilities.memory import MemoryMaintenance, decline, offers
+
+    if not offers(runtime.index, MemoryMaintenance):
+        decline(runtime.index, "list_chunks; forget confirm skipped")
+        return {"ok": False, "error": "this memory backend cannot list chunks"}
     if Path(req.path).name != files.memory.name:
         return {"ok": False, "error": "only MEMORY.md entries are editable; daily notes are append-only"}
     content = files.read(files.memory)

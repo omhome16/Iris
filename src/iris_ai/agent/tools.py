@@ -175,7 +175,13 @@ async def run_memory_search(runtime: Runtime, query: str, *, top_k: int = 5, lan
     had drifted into two copies of the same search-plus-feedback loop.
     """
     if lane == "escalate":
-        hits = await runtime.index.escalate(query, top_k=top_k, mrr_top_k=top_k)
+        from iris_ai.capabilities.memory import MemoryEscalation, decline, offers
+
+        if not offers(runtime.index, MemoryEscalation):
+            decline(runtime.index, "escalate; escalation lane skipped")
+            hits = []
+        else:
+            hits = await runtime.index.escalate(query, top_k=top_k, mrr_top_k=top_k)
     else:
         hits = await runtime.index.search(query, top_k=top_k, mrr_top_k=top_k)
     if settings.recall_feedback_enabled:

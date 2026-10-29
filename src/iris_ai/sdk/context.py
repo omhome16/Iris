@@ -95,11 +95,10 @@ class MemoryAccess:
 
     async def recent(self, *, limit: int = 10) -> list:
         self._allow("memory.recent")
-        if not hasattr(self._index, "list_chunks"):
-            logging.getLogger("iris.memory").info(
-                "memory backend %s declines list_chunks; recent is empty",
-                type(self._index).__name__,
-            )
+        from iris_ai.capabilities.memory import MemoryMaintenance, decline, offers
+
+        if not offers(self._index, MemoryMaintenance):
+            decline(self._index, "list_chunks; recent is empty")
             return []
         rows = await self._index.list_chunks()
         from iris_ai.sdk.types import MemoryItem

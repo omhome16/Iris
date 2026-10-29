@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
+from iris_ai.capabilities.memory import MemoryMaintenance, decline, offers
 from iris_ai.config import settings
 from iris_ai.memory.index import MemoryIndex
 
@@ -50,6 +51,9 @@ class ForgettingEngine:
 
     async def retention_report(self, *, today: date | None = None) -> list[dict]:
         """Per-chunk retention stats, oldest first — API feed."""
+        if not offers(self.index, MemoryMaintenance):
+            decline(self.index, "list_chunks; retention report is empty")
+            return []
         rows = await self.index.list_chunks()
         out = []
         for r in rows:
@@ -77,6 +81,9 @@ class ForgettingEngine:
         reinforced. Flagged in dreams; the owner decides (`/forget`)."""
         gate = threshold or settings.rot_threshold
         today = today or date.today()
+        if not offers(self.index, MemoryMaintenance):
+            decline(self.index, "list_chunks; rot report is empty")
+            return []
         out: list[RotEntry] = []
         for r in await self.index.list_chunks():
             if r["evergreen"]:
