@@ -36,6 +36,7 @@ CATALOG: dict[str, tuple[tuple[str, str], ...]] = {
     "capture": (
         ("default", "known-good"),
         ("decision-only", "known-good"),
+        ("tool-summary", "known-good"),
     ),
     "consolidator": (
         ("dreaming", "known-good"),

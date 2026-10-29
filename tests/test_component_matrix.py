@@ -8,10 +8,10 @@ from iris_ai.components.matrix import cells, format_dry_run, run_matrix
 def test_dry_run_prints_every_combination_and_runs_nothing() -> None:
     text = format_dry_run()
     lines = [line for line in text.splitlines() if line.strip()]
-    assert len(lines) == 360
-    assert len(cells()) == 360
-    assert sum(line.startswith("known-good ") for line in lines) == 240
-    assert sum(line.startswith("broken ") for line in lines) == 120
+    assert len(lines) == 540
+    assert len(cells()) == 540
+    assert sum(line.startswith("known-good ") for line in lines) == 360
+    assert sum(line.startswith("broken ") for line in lines) == 180
     assert any("memory=markdown" in line and line.startswith("broken") for line in lines)
     assert any("memory=sqlite" in line and line.startswith("known-good") for line in lines)
     from iris_ai.cli.components_cmd import run
@@ -41,8 +41,8 @@ def test_a_known_good_cell_round_trips_without_fallback() -> None:
 
 def test_known_good_cells_pass() -> None:
     report = run_matrix()
-    assert report["count"] == 360
+    assert report["count"] == 540
     assert report["failed"] == []
     ran = [row for row in report["results"] if row["ran"]]
-    assert len(ran) == 240
+    assert len(ran) == 360
     assert all(row["roundtrip"] and row["fallback"] is False for row in ran)

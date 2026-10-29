@@ -10,6 +10,8 @@
     {"id": "drop-hypothetical", "input": "What if we used Java?", "expect": {"store": false}},
     {"id": "drop-arithmetic", "input": "What is 12 + 7?", "expect": {"store": false}},
     {"id": "drop-chat", "input": "Hello, how are you?", "expect": {"store": false}},
-    {"id": "drop-maybe", "input": "I might try Go someday.", "expect": {"store": false}}
+    {"id": "drop-maybe", "input": "I might try Go someday.", "expect": {"store": false}},
+    {"id": "tool-search", "input": "tool memory_search: found the note", "expect": {"store": false}},
+    {"id": "tool-write", "input": "tool file_write: wrote notes.md", "expect": {"store": false}}
   ]
 }

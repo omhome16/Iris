@@ -155,11 +155,16 @@ async def _matrix_context(name: str, index: object, root: Path) -> str:
 
 
 async def _matrix_capture(name: str) -> list:
+    from iris_ai.plug import component_folder, construct, load_class
     from iris_ai.sdk.types import CaptureRequest
 
     request = CaptureRequest(user_message="We decided to use uv.", reply="Noted.", session_id="matrix")
     if name in {"default", "", "off"}:
         return []
+    folder = component_folder("capture", name)
+    if folder is not None:
+        component = construct(load_class(folder), None, trust="local")
+        return list(await component.extract(request) or [])
     from iris_ai.catalog.capture.decision_only import DecisionOnly
 
     return list(await DecisionOnly().extract(request) or [])

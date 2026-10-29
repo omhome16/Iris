@@ -1,0 +1,5 @@
+kind = "capture"
+name = "tool-summary"
+api_version = "iris/v1"
+entry = "component:ToolSummary"
+description = "Store a one-line summary of tool calls. Plain talk is not a memory."
