@@ -41,6 +41,9 @@ CATALOG: dict[str, tuple[tuple[str, str], ...]] = {
     "consolidator": (
         ("dreaming", "known-good"),
         ("off", "known-good"),
+        ("conflict-resolver", "known-good"),
+        ("supersede", "known-good"),
+        ("merge-similarity", "known-good"),
     ),
 }
 

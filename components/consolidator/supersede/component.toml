@@ -1,0 +1,6 @@
+kind = "consolidator"
+name = "supersede"
+api_version = "iris/v1"
+entry = "component:Supersede"
+permissions = ["memory.read"]
+description = "A contradicting line replaces the old one. It is not merged and not left as two facts."

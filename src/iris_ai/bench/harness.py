@@ -180,8 +180,15 @@ async def _matrix_consolidator(name: str, root: Path, llm: object) -> bool:
 
         plan = await DreamEngine(llm, WorkspaceFiles(root), None).propose()
         return plan is not None and not getattr(plan, "fallback", False)
-    from iris_ai.catalog.consolidator.conflict_resolver import ConflictResolver
+    from iris_ai.plug import component_folder, construct, load_class
     from iris_ai.sdk.types import ConsolidationRequest
+
+    folder = component_folder("consolidator", name)
+    if folder is not None:
+        component = construct(load_class(folder), None, trust="local")
+        plan = await component.propose(ConsolidationRequest())
+        return plan is not None
+    from iris_ai.catalog.consolidator.conflict_resolver import ConflictResolver
 
     plan = await ConflictResolver().propose(ConsolidationRequest())
     return plan is not None
