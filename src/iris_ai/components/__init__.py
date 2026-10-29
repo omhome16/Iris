@@ -140,6 +140,12 @@ def _context_builtin(name: str):
         from iris_ai.catalog.context.temporal_rag import TemporalRag
 
         return TemporalRag
+    if name == "recall-first":
+        from iris_ai.plug import load_class, shipped_folder
+
+        folder = shipped_folder("context", "recall-first")
+        if folder is not None:
+            return load_class(folder)
     return _CONTEXT.get(name)
 
 

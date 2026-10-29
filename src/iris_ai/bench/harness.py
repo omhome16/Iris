@@ -139,12 +139,16 @@ async def _matrix_context(name: str, index: object, root: Path) -> str:
         result = await MinimalContext(runtime).assemble(request)
     else:
         from iris_ai.components import _builtin
-        from iris_ai.plug import construct
+        from iris_ai.plug import component_folder, construct, load_class
 
-        cls = _builtin("context", name)
-        if cls is None:
-            raise RuntimeError(f"context {name} is not available")
-        component = construct(cls, runtime, trust="builtin")
+        folder = component_folder("context", name)
+        if folder is not None:
+            component = construct(load_class(folder), runtime, trust="local")
+        else:
+            cls = _builtin("context", name)
+            if cls is None:
+                raise RuntimeError(f"context {name} is not available")
+            component = construct(cls, runtime, trust="builtin")
         result = await component.assemble(request)
     render = getattr(result, "render", None)
     return render() if callable(render) else str(result)

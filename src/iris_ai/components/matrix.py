@@ -25,6 +25,8 @@ CATALOG: dict[str, tuple[tuple[str, str], ...]] = {
         ("default", "known-good"),
         ("minimal", "known-good"),
         ("temporal-rag", "known-good"),
+        ("recall-first", "known-good"),
+        ("compaction-first", "known-good"),
     ),
     "engine": (
         ("react", "known-good"),

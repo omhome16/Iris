@@ -1,0 +1,6 @@
+kind = "context"
+name = "compaction-first"
+api_version = "iris/v1"
+entry = "component:CompactionFirst"
+permissions = ["memory.read"]
+description = "Summarise older recalls. Keep the newest line verbatim."
