@@ -206,6 +206,19 @@ def run(
         folder = eject(kind, option or "default")
         out.print(f"wrote {folder}")
         return 0
+    if action == "matrix":
+        from iris_ai.components.matrix import format_dry_run, run_matrix
+
+        if dry_run or kind in {"--dry-run", "dry-run"}:
+            out.print(format_dry_run())
+            return 0
+        report = run_matrix()
+        failed = list(report["failed"])
+        out.print(f"{report['count']} cells, {len(failed)} failed")
+        for row in failed:
+            parts = " ".join(f"{name}={row[name]}" for name in ("memory", "context", "engine", "capture", "consolidator"))
+            out.print(f"fail {parts} {'; '.join(row.get('problems') or [])}")
+        return 1 if failed else 0
     if action == "verify":
         return _verify(out, kind, option, suite)
     if action == "check":
