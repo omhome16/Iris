@@ -29,21 +29,23 @@ from iris_ai.sdk.context import ComponentContext
 
 log = logging.getLogger("iris.plug")
 
-# Folder components a person or Iris can write. engine joins with the engine
-# seam; channel joins with the channel runner. Everything else is an entry point.
+# Folder components a person or Iris can write. One layout for every kind the
+# harness swaps. Hooks, models, judges, and secret stores stay entry points.
 FOLDER_KINDS = (
     "context",
     "memory",
     "persona",
     "capture",
     "consolidator",
+    "engine",
+    "channel",
+    "tool",
+    "guard",
 )
 
 KINDS = (
     *FOLDER_KINDS,
-    "channel",
     "tools",
-    "guard",
     "hook",
     "model",
     "judge",
@@ -51,10 +53,8 @@ KINDS = (
 )
 
 _ENTRY_POINT_HINTS = {
-    "channel": "Register a factory under the entry point group iris_ai.channels, then set [channels] enabled.",
-    "tools": "Register an object with .name and .tools(runtime) under iris_ai.tools.",
+    "tools": "Register an object with .name and .tools(runtime) under iris_ai.tools. A single tool folder is `iris new tool`.",
     "hook": "Register a callable attach(bus) under iris_ai.hooks.",
-    "guard": "Register a callable attach(bus) under iris_ai.hooks. A guard subscribes to pre_tool.",
     "model": "Register a factory returning a ModelBackend under iris_ai.models. Select it with MODEL_BACKEND.",
     "judge": "Register a factory returning a Judge under iris_ai.judges. Select it with JUDGE_BACKEND.",
     "secret_store": "Register a backend under iris_ai.secret_stores. Select it with SECRET_STORE.",
@@ -64,10 +64,11 @@ _ENTRY_POINT_HINTS = {
 def entry_point_hint(kind: str) -> str:
     """What to do instead of scaffolding a folder nothing loads."""
     detail = _ENTRY_POINT_HINTS.get(kind, "This kind is not a folder next to config/.")
+    folders = ", ".join(FOLDER_KINDS)
     return (
         f"{kind} is not a folder component. {detail} "
         "See DOCS.md section 10.2. "
-        "Folder components are context, memory, persona, capture, and consolidator."
+        f"Folder components are {folders}."
     )
 
 _FAIL_LIMIT = 3
@@ -720,7 +721,18 @@ def check_folder(folder: Path) -> tuple[bool, str]:
         "capture": "extract" if v1 else "maybe_capture",
         "consolidator": "propose" if v1 else "sleep",
         "channel": "send_message",
+        "engine": "streams",
+        "tool": "run",
+        "guard": "attach",
     }.get(kind)
+    _ENGINE_METHODS = (
+        "short_circuit",
+        "wants_plan",
+        "streams",
+        "tool_phase",
+        "finish",
+        "after_tools",
+    )
     if kind == "memory":
         from iris_ai.capabilities.memory import REQUIRED
 
@@ -751,7 +763,12 @@ def check_folder(folder: Path) -> tuple[bool, str]:
         if not isinstance(rendered, str):
             return False, "persona text() must return str"
         return True, f"{kind}/{folder.name} matches the text contract"
-    if required and not hasattr(cls, required):
+    if kind == "engine":
+        missing = [name for name in _ENGINE_METHODS if not callable(getattr(cls, name, None))]
+        if missing:
+            return False, f"engine component must define {', '.join(missing)}()"
+        return True, f"engine/{folder.name} matches the {', '.join(_ENGINE_METHODS)} contract"
+    if required and not callable(getattr(cls, required, None)):
         return False, f"{kind} component must define {required}()"
     return True, f"{kind}/{folder.name} matches the {required or kind} contract"
 
@@ -780,6 +797,37 @@ def scaffold(kind: str, name: str, *, root: Path | None = None) -> Path:
             "    async def forget_entry(self, path, chunk_index):\n        return None\n\n"
             "    async def nearest(self, text, *, top_k=3):\n        return []\n\n"
             "    async def list_chunks(self):\n        return []\n"
+        ),
+        "engine": (
+            "name = \"custom\"\n\n"
+            "    def short_circuit(self, state):\n        return None\n\n"
+            "    def wants_plan(self, state) -> bool:\n        return False\n\n"
+            "    def streams(self) -> bool:\n        return True\n\n"
+            "    def tool_phase(self) -> dict:\n        return {}\n\n"
+            "    def finish(self, graph, done) -> None:\n        return None\n\n"
+            "    def after_tools(self, state) -> None:\n        return None\n"
+        ),
+        "channel": (
+            "name = \"custom\"\n"
+            "    connected = False\n\n"
+            "    async def connect(self) -> bool:\n        self.connected = True\n        return True\n\n"
+            "    async def close(self) -> None:\n        self.connected = False\n\n"
+            "    async def send_message(self, chat_id, text) -> str:\n        return \"ok\"\n\n"
+            "    async def send_photo(self, chat_id, photo_url, caption=\"\") -> str:\n        return \"ok\"\n\n"
+            "    async def get_chat_history(self, chat_id, limit=10) -> str:\n        return \"\"\n"
+        ),
+        "tool": (
+            "def run(self, request):\n"
+            "        message = getattr(request, \"message\", None)\n"
+            "        if message is None and isinstance(request, dict):\n"
+            "            message = request.get(\"message\", \"\")\n"
+            "        return {\"ok\": True, \"message\": str(message or \"\")}\n"
+        ),
+        "guard": (
+            "def attach(self, bus) -> None:\n"
+            "        def _allow(**kwargs):\n"
+            "            return None\n"
+            "        bus.on(\"pre_tool\", _allow, name=\"guard\")\n"
         ),
     }.get(kind, "def ready(self) -> bool:\n        return True\n")
     (folder / "component.toml").write_text(

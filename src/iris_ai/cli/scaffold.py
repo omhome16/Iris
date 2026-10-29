@@ -97,10 +97,122 @@ class CustomPersona:
         return "Be direct. Say when you do not know."
 '''
 
+_ENGINE = '''\
+"""A turn engine. Point `[components] engine` at this folder."""
+
+
+class CustomEngine:
+    name = "custom"
+
+    def __init__(self, ctx=None, **options) -> None:
+        self.ctx = ctx
+        self.name = "custom"
+
+    def short_circuit(self, state):
+        return None
+
+    def wants_plan(self, state) -> bool:
+        return False
+
+    def streams(self) -> bool:
+        return True
+
+    def tool_phase(self) -> dict:
+        return {}
+
+    def finish(self, graph, done) -> None:
+        return None
+
+    def after_tools(self, state) -> None:
+        return None
+'''
+
+_CHANNEL = '''\
+"""A channel. Enable it with `[channels] enabled`."""
+
+
+class CustomChannel:
+    name = "custom"
+    connected = False
+
+    def __init__(self, ctx=None, **options) -> None:
+        self.ctx = ctx
+
+    async def connect(self) -> bool:
+        self.connected = True
+        return True
+
+    async def close(self) -> None:
+        self.connected = False
+
+    async def send_message(self, chat_id, text) -> str:
+        return "ok"
+
+    async def send_photo(self, chat_id, photo_url, caption="") -> str:
+        return "ok"
+
+    async def get_chat_history(self, chat_id, limit=10) -> str:
+        return ""
+'''
+
+_TOOL = '''\
+"""A tool component. `run` is called after approval."""
+
+
+class CustomTool:
+    def __init__(self, ctx=None, **options) -> None:
+        self.ctx = ctx
+
+    def run(self, request):
+        message = getattr(request, "message", None)
+        if message is None and isinstance(request, dict):
+            message = request.get("message", "")
+        return {"ok": True, "message": str(message or "")}
+'''
+
+_GUARD = '''\
+"""A guard. `attach` subscribes to pre_tool."""
+
+
+class CustomGuard:
+    def __init__(self, ctx=None, **options) -> None:
+        self.ctx = ctx
+
+    def attach(self, bus) -> None:
+        def _allow(**kwargs):
+            return None
+
+        bus.on("pre_tool", _allow, name="guard")
+'''
+
 _BODIES = {
     "context": (_CONTEXT, "CustomContext"),
     "memory": (_MEMORY, "JsonMemory"),
     "persona": (_PERSONA, "CustomPersona"),
+}
+
+_FOLDER_BODIES = {
+    "engine": (_ENGINE, "CustomEngine"),
+    "channel": (_CHANNEL, "CustomChannel"),
+    "tool": (_TOOL, "CustomTool"),
+    "guard": (_GUARD, "CustomGuard"),
+    "capture": (
+        "class CustomCapture:\n"
+        "    def __init__(self, ctx=None, **options):\n"
+        "        self.ctx = ctx\n"
+        "    async def extract(self, request):\n"
+        "        return []\n",
+        "CustomCapture",
+    ),
+    "consolidator": (
+        "class CustomConsolidator:\n"
+        "    def __init__(self, ctx=None, **options):\n"
+        "        self.ctx = ctx\n"
+        "    async def propose(self, request):\n"
+        "        from iris_ai.sdk.types import ConsolidationPlan\n"
+        "        return ConsolidationPlan()\n",
+        "CustomConsolidator",
+    ),
 }
 
 
@@ -131,6 +243,23 @@ def write_new(kind: str, name: str, dest: Path) -> Path:
             manifest.write_text(existing.rstrip() + "\n\n" + block, encoding="utf-8")
         return path
 
+    if kind in _FOLDER_BODIES:
+        body, cls = _FOLDER_BODIES[kind]
+        folder = dest / kind / name
+        folder.mkdir(parents=True, exist_ok=True)
+        toml = folder / "component.toml"
+        path = folder / "component.py"
+        if path.exists():
+            raise FileExistsError(path)
+        toml.write_text(
+            f'kind = "{kind}"\nname = "{name}"\napi_version = "iris/v1"\n'
+            f'entry = "component:{cls}"\ndescription = "Local {kind} component."\n',
+            encoding="utf-8",
+        )
+        if not body.lstrip().startswith(('"""', "class ", "from ")):
+            body = f'"""Local {kind} component."""\n\n\n{body}'
+        path.write_text(body if body.endswith("\n") else body + "\n", encoding="utf-8")
+        return path
     if kind not in _BODIES:
         from iris_ai.plug import entry_point_hint
 

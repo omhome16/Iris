@@ -8,7 +8,10 @@ way the chat graph does.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Protocol
+
+from iris_ai.registry import Registry, RegistryError
 
 
 class TurnEngine(Protocol):
@@ -76,7 +79,62 @@ class _Plan:
             state["engine_phase"] = "verify"
 
 
+#: Built-in turn engines. A folder, an entry point, or a dotted class joins this
+#: list. An unknown name fails here; it does not silently become react.
+ENGINES: Registry[TurnEngine] = Registry("engine")
+ENGINES.register("react", lambda **_kwargs: _React(), source="core")
+ENGINES.register("plan-execute", lambda **_kwargs: _Plan(), source="core")
+
+
+def known_engines() -> list[str]:
+    """Registry names plus local engine folders."""
+    names = set(ENGINES.names())
+    from iris_ai.plug import list_local
+
+    for info in list_local("engine"):
+        names.add(info.name)
+    return sorted(names)
+
+
+def _unknown(name: str) -> RegistryError:
+    known = ", ".join(known_engines()) or "none"
+    return RegistryError(f"unknown engine {name!r} — registered: {known}")
+
+
 def resolve(name: str | None) -> TurnEngine:
-    if name == "plan-execute":
+    """The engine config named, or react when nothing is configured.
+
+    `None` and `""` are the unconfigured case. `react` is the explicit default.
+    Any other unknown name, including a dotted path that does not import, raises
+    with the list of engines that do exist.
+    """
+    if name is None or str(name).strip() == "":
+        return _React()
+    text = str(name).strip()
+    if text == "react":
+        return _React()
+    if text == "plan-execute":
         return _Plan()
-    return _React()
+    from iris_ai.components.resolve import resolve as resolve_component
+    from iris_ai.plug import construct
+
+    try:
+        found = resolve_component("engine", text)
+    except Exception as exc:
+        raise _unknown(text) from exc
+    if found is not None:
+        cls, source = found
+        if source != "builtin":
+            try:
+                engine = construct(cls, None, trust="local")
+            except Exception as exc:
+                raise _unknown(text) from exc
+            if not callable(getattr(engine, "streams", None)):
+                raise _unknown(text)
+            if not getattr(engine, "name", ""):
+                with contextlib.suppress(AttributeError, TypeError):
+                    engine.name = text
+            return engine
+    if text in ENGINES:
+        return ENGINES.build(text)
+    raise _unknown(text)

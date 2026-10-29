@@ -135,12 +135,19 @@ async def test_a_raising_policy_hook_refuses_the_tool():
     assert await bus.emit("pre_tool", tool="memory_search", args={}) == []
 
 
-def test_channel_is_not_a_folder_component(tmp_path: Path):
+def test_hook_is_not_a_folder_component(tmp_path: Path):
     with pytest.raises(ValueError, match="not a folder component"):
-        scaffold("channel", "discord", root=tmp_path / "components")
-    hint = entry_point_hint("channel")
-    assert "iris_ai.channels" in hint
-    assert "terminal" not in hint
+        scaffold("hook", "audit", root=tmp_path / "components")
+    hint = entry_point_hint("hook")
+    assert "iris_ai.hooks" in hint
+
+
+def test_a_channel_folder_scaffolds(tmp_path: Path):
+    from iris_ai.plug import check_folder
+
+    folder = scaffold("channel", "discord", root=tmp_path / "components")
+    ok, detail = check_folder(folder)
+    assert ok, detail
 
 
 def test_explain_names_the_harness_the_tools_and_the_cost():

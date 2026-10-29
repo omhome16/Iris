@@ -95,6 +95,8 @@ OPTIONS: dict[str, tuple[str, ...]] = {
     "engine": ("react", "plan-execute"),
     # Registered transports only. Faces (terminal, http) are `iris serve`.
     "channel": ("telegram",),
+    "tool": (),
+    "guard": (),
 }
 
 _CONTEXT = {
@@ -114,9 +116,14 @@ def list_options(kind: str) -> list[str]:
     from iris_ai.plug import list_local
 
     if kind == "channel":
-        from iris_ai.channels.registry import CHANNELS
+        from iris_ai.channels.registry import CHANNELS, register_local_channels
 
-        return list(CHANNELS.names())
+        register_local_channels()
+        names = list(CHANNELS.names())
+        for info in list_local(kind):
+            if info.name not in names:
+                names.append(info.name)
+        return names
     names = list(OPTIONS.get(kind, ()))
     for info in list_local(kind):
         if info.name not in names:
@@ -389,7 +396,56 @@ def attach(runtime: Any, manifest: dict) -> str:
         except AttributeError:
             pass
     record_identity(runtime, section)
+    _attach_engine(runtime, section)
+    _attach_local_channels()
+    _attach_guards(runtime)
     return notice
+
+
+def _attach_engine(runtime: Any, section: dict) -> None:
+    """Remember the configured engine. An unknown name stays unknown.
+
+    `resolve` fails loudly at the turn. Substituting react here would hide a typo.
+    """
+    from iris_ai.engines.dispatch import resolve
+
+    name = str(section.get("engine") or getattr(runtime, "engine_name", "") or "react")
+    runtime.engine_name = name
+    try:
+        runtime.turn_engine = resolve(name)
+    except Exception as exc:  # noqa: BLE001 - the turn reports the unknown engine
+        log.warning("engine %s is not available (%s).", name, exc)
+        runtime.turn_engine = None
+
+
+def _attach_local_channels() -> None:
+    from iris_ai.channels.registry import register_local_channels
+
+    added = register_local_channels()
+    if added:
+        log.info("channel folders: %s", ", ".join(added))
+
+
+def _attach_guards(runtime: Any) -> None:
+    """Subscribe each local guard folder. A guard that fails to attach is skipped."""
+    bus = getattr(runtime, "hooks", None)
+    if bus is None:
+        return
+    from iris_ai.plug import construct, list_local, load_class
+
+    for info in list_local("guard"):
+        if info.path is None:
+            continue
+        try:
+            component = construct(load_class(info.path), runtime, trust="local")
+            attach_fn = getattr(component, "attach", None)
+            if not callable(attach_fn):
+                log.warning("guard %s has no attach(). Not subscribed.", info.name)
+                continue
+            attach_fn(bus)
+            log.info("guard attached: %s", info.name)
+        except Exception as exc:  # noqa: BLE001 - one guard must not stop boot
+            log.warning("guard %s failed to attach (%s).", info.name, exc)
 
 
 def _piece(kind: str, name: str) -> dict[str, str]:

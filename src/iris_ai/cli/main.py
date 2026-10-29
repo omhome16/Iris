@@ -504,7 +504,8 @@ def new(
         console().print(f"wrote {path}")
         return
     if kind not in FOLDER_KINDS or not name:
-        _fail("usage: iris new context|memory|persona|capture|consolidator|role <name>", _debug_flag)
+        joined = "|".join((*FOLDER_KINDS, "role"))
+        _fail(f"usage: iris new {joined} <name>", _debug_flag)
         return
     from iris_ai.plug import scaffold
 
