@@ -56,6 +56,30 @@ def test_contextual_chunks_prepend_headers(tmp_path: Path):
     assert chunks[0] in out[0]
 
 
+def test_contextual_skips_a_null_payload(tmp_path: Path):
+    """A reasoning model can return None. The chunker skips that batch."""
+
+    class NullLLM:
+        async def complete(self, messages, **kwargs):
+            return None
+
+    chunks = chunk_text(" ".join(f"word{i}" for i in range(250)), chunk_tokens=100, overlap_tokens=20)
+    out = run_async(contextualize_chunks(chunks, llm=NullLLM(), cache_dir=tmp_path, text="null-payload"))
+    assert out == chunks
+
+
+def test_contextual_skips_a_non_string_payload(tmp_path: Path):
+    """json.loads(None) is a TypeError. A non-string payload is the same skip."""
+
+    class BadLLM:
+        async def complete(self, messages, **kwargs):
+            return 244
+
+    chunks = chunk_text(" ".join(f"word{i}" for i in range(250)), chunk_tokens=100, overlap_tokens=20)
+    out = run_async(contextualize_chunks(chunks, llm=BadLLM(), cache_dir=tmp_path, text="typed-payload"))
+    assert out == chunks
+
+
 def test_contextual_fallback_on_bad_json(tmp_path: Path):
     chunks = chunk_text(" ".join(f"word{i}" for i in range(250)), chunk_tokens=100, overlap_tokens=20)
     llm = ContextLLM(reply="not json at all")

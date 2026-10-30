@@ -16,7 +16,14 @@ from iris_ai.memory.provenance import Origin
 
 
 class MarkdownIndex(NullIndex):
-    """Files only. `search` reads Markdown; it does not raise `MemoryUnavailable`."""
+    """Files only. `search` reads Markdown; it does not raise `MemoryUnavailable`.
+
+    The maintenance methods are inherited raising stubs. Callers ask `offers`
+    and must not reach them: this store declines maintenance and keeps the
+    stubs so a direct call still says the index cannot answer.
+    """
+
+    memory_declines = frozenset({"nearest", "list_chunks", "forget_entry"})
 
     def __init__(self, dsn: str = "", llm: object | None = None, reranker: object | None = None) -> None:
         super().__init__(dsn, llm, reranker)

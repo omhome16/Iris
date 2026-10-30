@@ -57,8 +57,12 @@ def test_fixture_world_indexes_the_corpus(tmp_path: Path):
     assert index.db_path.is_file()
 
 
-async def test_evidence_memory_satisfies_the_backend_contract():
-    missing = await memory_conformance(EvidenceMemory(path=":memory:"))
+async def test_evidence_memory_satisfies_the_backend_contract(tmp_path: Path):
+    from iris_ai.testing import HashEmbedder
+
+    missing = await memory_conformance(
+        EvidenceMemory(path=tmp_path / "memory.db", llm=HashEmbedder())
+    )
     assert missing == []
 
 

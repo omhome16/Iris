@@ -10,6 +10,31 @@ research notes) has since been consolidated into a single [`DOCS.md`](DOCS.md), 
 the link targets below were repointed rather than left broken. Backticked paths in
 older prose are historical records of where things lived at the time.
 
+## Unreleased — verified plug-and-play
+
+The shipped catalog under `components/` adds a recency-only memory, a one-hop
+graph memory, recall-first and compaction-first context, a reflexion engine,
+a tool-call capture, supersede and merge-by-similarity consolidators, and
+cli, webhook, and offline telegram channels. `iris eval` runs those folders
+and prints a paired bootstrap interval from seed 0 against a noise floor of
+zero. `iris components matrix --dry-run` prints 1350 cells (900 known-good,
+450 broken) plus the three channels. pgvector and markdown are the broken
+memory axis: one needs Postgres, the other does not round-trip writes.
+
+Memory, context, persona, capture, consolidator, engine, channel, tool, and
+guard are one folder format. A component is pinned only after the jailed check
+and a behaviour suite. `iris components verify <kind> <name>` runs that suite.
+`iris components inspect` shows which suite passed and when. `iris components
+matrix --dry-run` prints every built-in combination as known-good or broken.
+
+Short permissions (`llm`, `memory.read`, `files.read`, `state`) expand to the
+same broker methods in-process and under `COMPONENT_HOST=subprocess`. A local
+memory folder is constructed with the model and the workspace, so `ctx.llm.embed`
+and `ctx.state.path` work, and a reload swaps the index without a restart.
+`MemoryBackend` is seven methods. Maintenance and escalation are optional;
+callers skip them with one log line. An unknown engine name fails with the
+list of known engines.
+
 ## 0.6.0 — distribution
 
 A component installs from a directory with `iris components add <path> --yes`,

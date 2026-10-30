@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from iris_ai import __version__, background
 from iris_ai.agent.chat import ApprovalRequired, ChatGraph
 from iris_ai.agent.runtime import Runtime
+from iris_ai.capabilities.memory_api import as_hits
 from iris_ai.config import settings
 from iris_ai.engine import harness
 from iris_ai.memory.files import ConcurrencyError, WorkspaceFiles
@@ -663,8 +664,10 @@ async def forget_search(
     raised AttributeError before `MemoryHit` carried the field, which broke the
     Telegram bridge's whole forget flow."""
     runtime: Runtime = app.state.runtime
-    hits = await runtime.index.search(
-        req.query, top_k=3, mrr_top_k=1, require_origin={Origin.OWNER}
+    hits = as_hits(
+        await runtime.index.search(
+            req.query, top_k=3, mrr_top_k=1, require_origin={Origin.OWNER}
+        )
     )
     hits = [h for h in hits if h.path == "MEMORY.md" and h.chunk_index >= 0]
     return {
@@ -689,6 +692,11 @@ async def forget_confirm(
     (source of truth), chunk dropped from the index, reindex."""
     runtime: Runtime = app.state.runtime
     files = runtime.files
+    from iris_ai.capabilities.memory import MemoryMaintenance, decline, offers
+
+    if not offers(runtime.index, MemoryMaintenance):
+        decline(runtime.index, "list_chunks; forget confirm skipped")
+        return {"ok": False, "error": "this memory backend cannot list chunks"}
     if Path(req.path).name != files.memory.name:
         return {"ok": False, "error": "only MEMORY.md entries are editable; daily notes are append-only"}
     content = files.read(files.memory)

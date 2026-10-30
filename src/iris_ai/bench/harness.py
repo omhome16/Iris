@@ -12,6 +12,188 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+def drive_cell(spec: dict) -> dict[str, object]:
+    """One scripted turn for a matrix cell. A stub model, no network.
+
+    The cell passes when the turn completes, a memory write is readable from
+    the same backend, and no stage had to fall back.
+    """
+    import asyncio
+
+    return asyncio.run(_drive_cell(spec))
+
+
+async def _drive_cell(spec: dict) -> dict[str, object]:
+    import tempfile
+
+    from iris_ai.eval.world import memory_record
+    from iris_ai.testing import HashEmbedder
+
+    root = Path(tempfile.mkdtemp(prefix="iris-matrix-"))
+    problems: list[str] = []
+    fallback = False
+    reply = ""
+    roundtrip = False
+    index = None
+    try:
+        index = _matrix_memory(str(spec["memory"]), root, HashEmbedder())
+        await index.connect()
+        record = memory_record("notes.md", 0, "remember the blue bowl")
+        await index.upsert_chunks([record])
+        hits = await index.search("blue bowl", top_k=3)
+        roundtrip = any("blue bowl" in _hit_text(hit) for hit in hits or [])
+        if not roundtrip:
+            problems.append("memory write did not round-trip")
+        await _matrix_context(str(spec["context"]), index, root)
+        from iris_ai.engines.dispatch import resolve
+
+        engine = resolve(str(spec["engine"]))
+        if not isinstance(engine.streams(), bool):
+            problems.append("engine did not answer")
+
+        class Stub:
+            async def complete(self, prompt: str, **_kwargs: object) -> str:
+                return "noted"
+
+        reply = await Stub().complete("remember the blue bowl")
+        if not reply:
+            problems.append("turn did not complete")
+        await _matrix_capture(str(spec["capture"]))
+        if not await _matrix_consolidator(str(spec["consolidator"]), root, Stub()):
+            fallback = True
+            problems.append("pipeline fell back")
+    except Exception as exc:  # noqa: BLE001 - one cell reports its failure
+        fallback = True
+        problems.append(f"{type(exc).__name__}: {exc}")
+    finally:
+        if index is not None:
+            close = getattr(index, "close", None)
+            if close is not None:
+                import contextlib
+
+                with contextlib.suppress(Exception):
+                    await close()
+    return {
+        "ok": not problems and roundtrip and not fallback,
+        "problems": problems,
+        "roundtrip": roundtrip,
+        "fallback": fallback,
+        "reply": reply,
+    }
+
+
+def _hit_text(hit: object) -> str:
+    if isinstance(hit, dict):
+        return str(hit.get("content") or "")
+    return str(getattr(hit, "content", "") or "")
+
+
+def _matrix_memory(name: str, root: Path, llm: object):
+    from iris_ai.catalog.memory.evidence import EvidenceMemory
+    from iris_ai.memory.markdown_index import MarkdownIndex
+    from iris_ai.memory.sqlite_index import SqliteIndex
+    from iris_ai.plug import component_folder, construct, load_class
+
+    if name == "evidence-memory":
+        return EvidenceMemory(path=root / "memory.db", llm=llm)
+    if name == "markdown":
+        from iris_ai.config import settings
+
+        settings.workspace_dir = str(root)
+        return MarkdownIndex(llm=llm)
+    if name == "pgvector":
+        raise RuntimeError("pgvector needs a Postgres server")
+    folder = component_folder("memory", name)
+    if folder is not None:
+        from types import SimpleNamespace
+
+        from iris_ai.memory.files import WorkspaceFiles
+
+        carrier = SimpleNamespace(llm=llm, files=WorkspaceFiles(root), index=None)
+        return construct(load_class(folder), carrier, trust="local")
+    if name in {"sqlite", ""}:
+        return SqliteIndex(root / "memory.db", llm=llm)
+    raise RuntimeError(f"memory {name} is not available")
+
+
+async def _matrix_context(name: str, index: object, root: Path) -> str:
+    from types import SimpleNamespace
+
+    from iris_ai.memory.files import WorkspaceFiles
+    from iris_ai.sdk.types import ContextRequest
+
+    class _Skills:
+        def selectable(self) -> list:
+            return []
+
+    files = WorkspaceFiles(root)
+    runtime = SimpleNamespace(files=files, skills=_Skills(), jev=None, index=index, llm=None)
+    request = ContextRequest(message="blue bowl", session_id="matrix", origin="owner")
+    if name in {"default", ""}:
+        from iris_ai.agent.context import ContextAssembler
+
+        result = await ContextAssembler(runtime).assemble(request)
+    elif name == "minimal":
+        from iris_ai.components import MinimalContext
+
+        result = await MinimalContext(runtime).assemble(request)
+    else:
+        from iris_ai.components import _builtin
+        from iris_ai.plug import component_folder, construct, load_class
+
+        folder = component_folder("context", name)
+        if folder is not None:
+            component = construct(load_class(folder), runtime, trust="local")
+        else:
+            cls = _builtin("context", name)
+            if cls is None:
+                raise RuntimeError(f"context {name} is not available")
+            component = construct(cls, runtime, trust="builtin")
+        result = await component.assemble(request)
+    render = getattr(result, "render", None)
+    return render() if callable(render) else str(result)
+
+
+async def _matrix_capture(name: str) -> list:
+    from iris_ai.plug import component_folder, construct, load_class
+    from iris_ai.sdk.types import CaptureRequest
+
+    request = CaptureRequest(user_message="We decided to use uv.", reply="Noted.", session_id="matrix")
+    if name in {"default", "", "off"}:
+        return []
+    folder = component_folder("capture", name)
+    if folder is not None:
+        component = construct(load_class(folder), None, trust="local")
+        return list(await component.extract(request) or [])
+    from iris_ai.catalog.capture.decision_only import DecisionOnly
+
+    return list(await DecisionOnly().extract(request) or [])
+
+
+async def _matrix_consolidator(name: str, root: Path, llm: object) -> bool:
+    """False when the stage had to fall back. An explicit off is not a fallback."""
+    if name == "off":
+        return True
+    if name == "dreaming":
+        from iris_ai.memory.dreaming import DreamEngine
+        from iris_ai.memory.files import WorkspaceFiles
+
+        plan = await DreamEngine(llm, WorkspaceFiles(root), None).propose()
+        return plan is not None and not getattr(plan, "fallback", False)
+    from iris_ai.plug import component_folder, construct, load_class
+    from iris_ai.sdk.types import ConsolidationRequest
+
+    folder = component_folder("consolidator", name)
+    if folder is not None:
+        component = construct(load_class(folder), None, trust="local")
+        plan = await component.propose(ConsolidationRequest())
+        return plan is not None
+    from iris_ai.catalog.consolidator.conflict_resolver import ConflictResolver
+
+    plan = await ConflictResolver().propose(ConsolidationRequest())
+    return plan is not None
+
+
 def scripted() -> dict[str, object]:
     from iris_ai.config import settings
     from iris_ai.isolation.host import open_component

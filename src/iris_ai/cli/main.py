@@ -450,7 +450,7 @@ def models(
 def components(
     action: str = typer.Argument(
         "list",
-        help="list | use | eject | check | rollback | add | simulate | lock | inspect | export",
+        help="list | use | eject | check | verify | rollback | add | simulate | lock | inspect | export | matrix",
     ),
     kind: str = typer.Argument("", help="context | memory | persona | capture | consolidator | channel"),
     option: str = typer.Argument("", help="The option to switch to."),
@@ -458,10 +458,24 @@ def components(
     staged: bool = typer.Option(False, "--staged", help="The component is not approved yet."),
     yes: bool = typer.Option(False, "--yes", help="Confirm an install without a prompt."),
     as_plugin: str = typer.Option("", "--as-plugin", help="Write an Agent Plugin into this directory."),
+    suite: str = typer.Option("", "--suite", help="Behaviour suite for `verify`. Defaults to <kind>-behaviour."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List the component matrix and run nothing."),
 ) -> None:
     """List plug-and-play options, or switch one."""
     mod = _load("components_cmd")
-    raise typer.Exit(code=mod.run(action, kind, option, live=live, staged=staged, yes=yes, as_plugin=as_plugin))
+    raise typer.Exit(
+        code=mod.run(
+            action,
+            kind,
+            option,
+            live=live,
+            staged=staged,
+            yes=yes,
+            as_plugin=as_plugin,
+            suite=suite,
+            dry_run=dry_run,
+        )
+    )
 
 
 @app.command()
@@ -504,7 +518,8 @@ def new(
         console().print(f"wrote {path}")
         return
     if kind not in FOLDER_KINDS or not name:
-        _fail("usage: iris new context|memory|persona|capture|consolidator|role <name>", _debug_flag)
+        joined = "|".join((*FOLDER_KINDS, "role"))
+        _fail(f"usage: iris new {joined} <name>", _debug_flag)
         return
     from iris_ai.plug import scaffold
 

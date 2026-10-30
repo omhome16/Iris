@@ -17,15 +17,14 @@ def _lock(out, mode: str) -> int:
     from iris_ai.plug import component_digest, local_folder
 
     if mode in {"update", "--update"}:
-        from iris_ai.lifecycle.control import select
-
         changed = 0
         for kind_name, row in (read_lock().get("kinds") or {}).items():
             name = str(row.get("active") or "")
             folder = local_folder(kind_name, name) if name else None
             if folder is None:
                 continue
-            select(kind_name, name)
+            if not _guarded_select(out, kind_name, name):
+                return 1
             changed += 1
         out.print(f"re-pinned {changed}")
         return 0
@@ -73,6 +72,10 @@ def _inspect(out, kind: str, name: str) -> int:
     out.print(f"permissions {', '.join(meta.get('permissions') or row.get('permissions') or []) or '(none)'}")
     out.print(f"pinned {(row.get('digest') or '')[:12] or '(not pinned)'}")
     out.print(f"current {current[:12] or '(built-in)'}")
+    if row.get("suite"):
+        out.print(f"suite {row.get('suite')} at {row.get('verified_at') or '(unknown)'}")
+    else:
+        out.print("suite (not verified)")
     if row.get("active"):
         out.print(f"lock active={row.get('active')} previous={row.get('previous') or '(none)'} fails={row.get('fails', 0)}")
     return 0
@@ -110,6 +113,46 @@ def _active(kind: str) -> str:
     return kind
 
 
+def _verify(out, kind: str, name: str, suite: str = "") -> int:
+    """Run the behaviour suite. Non-zero when the component fails it."""
+    import asyncio
+
+    from iris_ai.plug import construct, load_class, local_folder
+    from iris_ai.testing import run_conformance, suite_name
+
+    if not kind or not name:
+        ui.failed(out, "usage:", "iris components verify <kind> <name> [--suite SUITE]")
+        return 2
+    folder = local_folder(kind, name)
+    if folder is None:
+        ui.failed(out, "not found", f"{kind}/{name}")
+        return 2
+    try:
+        component = construct(load_class(folder), None, trust="local")
+    except Exception as exc:  # noqa: BLE001 - verify reports the load error
+        ui.failed(out, "load failed", f"{type(exc).__name__}: {exc}")
+        return 1
+    problems = asyncio.run(run_conformance(kind, component, suite=suite))
+    if problems:
+        for item in problems:
+            out.print(item)
+        return 1
+    out.print(f"passed {suite or suite_name(kind)}")
+    return 0
+
+
+def _guarded_select(out, kind: str, option: str) -> bool:
+    """Pin through the shared door. A failed folder is not selected."""
+    from iris_ai.lifecycle.control import select
+
+    try:
+        select(kind, option)
+    except RuntimeError as exc:
+        ui.failed(out, "verification failed", str(exc))
+        return False
+    return True
+
+
 def run(
     action: str = "list",
     kind: str = "",
@@ -119,6 +162,8 @@ def run(
     staged: bool = False,
     yes: bool = False,
     as_plugin: str = "",
+    suite: str = "",
+    dry_run: bool = False,
 ) -> int:
     out = console()
     if action in {"list", "ls", ""} and not kind:
@@ -150,9 +195,8 @@ def run(
             upsert(path, "enabled", [option], table="channels")
         else:
             upsert(path, kind, option, table="components")
-        from iris_ai.lifecycle.control import select
-
-        select(kind, option)
+        if not _guarded_select(out, kind, option):
+            return 1
         out.print(f"[iris.ok]using[/iris.ok] {kind} = {option}")
         out.print("apply it with /reload in chat, or start iris again")
         return 0
@@ -162,6 +206,21 @@ def run(
         folder = eject(kind, option or "default")
         out.print(f"wrote {folder}")
         return 0
+    if action == "matrix":
+        from iris_ai.components.matrix import format_dry_run, run_matrix
+
+        if dry_run or kind in {"--dry-run", "dry-run"}:
+            out.print(format_dry_run())
+            return 0
+        report = run_matrix()
+        failed = list(report["failed"])
+        out.print(f"{report['count']} cells, {len(failed)} failed")
+        for row in failed:
+            parts = " ".join(f"{name}={row[name]}" for name in ("memory", "context", "engine", "capture", "consolidator"))
+            out.print(f"fail {parts} {'; '.join(row.get('problems') or [])}")
+        return 1 if failed else 0
+    if action == "verify":
+        return _verify(out, kind, option, suite)
     if action == "check":
         from iris_ai.plug import check_in_sandbox, local_folder
 
@@ -262,9 +321,8 @@ def run(
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
-        from iris_ai.lifecycle.control import select
-
-        select(meta_kind, meta_name)
+        if not _guarded_select(out, meta_kind, meta_name):
+            return 1
         out.print(f"installed {dest}")
         return 0
     if action == "export":
@@ -286,6 +344,6 @@ def run(
     ui.failed(
         out,
         "usage:",
-        "iris components | use | eject | check | rollback | add | inspect | export",
+        "iris components | use | eject | check | verify | rollback | add | inspect | export | matrix",
     )
     return 2

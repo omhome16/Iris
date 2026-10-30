@@ -1,0 +1,6 @@
+kind = "consolidator"
+name = "merge-similarity"
+api_version = "iris/v1"
+entry = "component:MergeSimilarity"
+permissions = ["memory.read"]
+description = "Near-duplicate lines become one sentence. Nothing is superseded."

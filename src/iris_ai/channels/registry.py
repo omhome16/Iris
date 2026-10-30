@@ -55,7 +55,25 @@ CHANNELS.register("telegram", _telegram_factory, source="core")
 def discover_channels(enabled: set[str] | None = None) -> list[str]:
     """Register installed channel plugins. Returns the names that were added."""
     found = CHANNELS.discover("iris_ai.channels", enabled=enabled)
-    return [r.name for r in found]
+    local = register_local_channels()
+    return [r.name for r in found] + local
+
+
+def register_local_channels() -> list[str]:
+    """Register each `components/channel/<name>/` folder that is not already known."""
+    from iris_ai.plug import construct, list_local, load_class
+
+    added: list[str] = []
+    for info in list_local("channel"):
+        if info.name in CHANNELS or info.path is None:
+            continue
+
+        def factory(info=info, **_kwargs):
+            return construct(load_class(info.path), None, trust="local")
+
+        CHANNELS.register(info.name, factory, source="local")
+        added.append(info.name)
+    return added
 
 
 def _split(raw: str) -> set[str]:

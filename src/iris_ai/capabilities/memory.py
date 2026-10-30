@@ -1,76 +1,37 @@
 """Memory backend capability — the `MemoryBackend` Protocol and its registry.
 
-The kernel asks a memory backend to search, escalate, and report; retrieval
-*policy* (decay, MMR, lane choice) stays in the kernel because it is policy, not
-storage. The core implementations are `MemoryIndex` (Postgres + pgvector),
-registered as ``pgvector``, and `NullIndex`, registered as ``null`` (the honest
-degraded backend that raises rather than returning an empty result set).
+The kernel asks every store to search and to report. Retrieval *policy*
+(decay, MMR, lane choice) stays in the kernel because it is policy, not
+storage. Maintenance (`nearest`, `list_chunks`, `forget_entry`) and the
+escalation lane are optional protocols. A caller asks `offers` and skips the
+call with one log line when the backend declines, instead of assuming the
+method exists.
 
-The SQLite backend in Phase 2 registers here too; nothing above this line changes
-when it does.
+The core implementations are `MemoryIndex` (Postgres + pgvector), registered
+as ``pgvector``, and `NullIndex`, registered as ``null`` (the honest degraded
+backend that raises rather than returning an empty result set).
+
+The SQLite backend registers here too; nothing above this line changes when a
+new store does.
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
+from iris_ai.capabilities.memory_api import (  # noqa: F401 - re-exported
+    REQUIRED,
+    MemoryBackend,
+    MemoryEscalation,
+    MemoryMaintenance,
+    decline,
+    offers,
+)
 from iris_ai.config import settings
 from iris_ai.memory.index import MemoryIndex
 from iris_ai.memory.null_index import NullIndex
 from iris_ai.memory.sqlite_index import SqliteIndex
 from iris_ai.registry import Registry
-
-REQUIRED: tuple[str, ...] = (
-    "connect",
-    "close",
-    "search",
-    "escalate",
-    "stats",
-    "upsert_chunks",
-    "delete_file_chunks",
-    "replace_file_chunks",
-    "forget_entry",
-    # Dreaming dedupes with nearest. Rot reports and forget-confirm list chunks.
-    # A backend that omits either crashes those paths.
-    "nearest",
-    "list_chunks",
-)
-
-
-@runtime_checkable
-class MemoryBackend(Protocol):
-    """Everything the kernel may ask of a memory store."""
-
-    async def connect(self) -> None: ...
-
-    async def close(self) -> None: ...
-
-    async def search(
-        self,
-        query: str,
-        *,
-        top_k: int = 20,
-        mrr_top_k: int = 5,
-        require_origin: set[Any] | None = None,
-        ablation: set[str] | None = None,
-    ) -> list: ...
-
-    async def escalate(self, query: str, *, top_k: int = 5, mrr_top_k: int = 5) -> list: ...
-
-    async def stats(self) -> dict: ...
-
-    async def upsert_chunks(self, records: list) -> None: ...
-
-    async def delete_file_chunks(self, path: str) -> None: ...
-
-    async def replace_file_chunks(self, path: str, records: list) -> None: ...
-
-    async def forget_entry(self, path: str, chunk_index: int) -> None: ...
-
-    async def nearest(self, text: str, *, top_k: int = 3) -> list: ...
-
-    async def list_chunks(self) -> list: ...
-
 
 #: The memory registry. `pgvector` (durable, multi-process) and `sqlite` (the
 #: zero-service default) are core, as is the `null` degraded stand-in.

@@ -1,0 +1,6 @@
+kind = "context"
+name = "recall-first"
+api_version = "iris/v1"
+entry = "component:RecallFirst"
+permissions = ["memory.read"]
+description = "Spend the budget on recalled blocks. Other notes are trimmed first."

@@ -21,19 +21,33 @@ def rollback(kind: str) -> str:
 
 
 def select(kind: str, option: str) -> str:
-    """Remember a choice and, for one local folder, pin the stored bytes."""
+    """Remember a choice. A local folder is pinned only after it passes verification."""
     from iris_ai.artifacts.store import ingest
     from iris_ai.components.lock import pin
     from iris_ai.lifecycle.journal import record
-    from iris_ai.plug import _remember, local_folder
+    from iris_ai.plug import _read_toml, _remember, local_folder, verification
 
-    _remember(kind, option)
     folder = local_folder(kind, option) if "," not in option else None
     if folder is None:
+        _remember(kind, option)
         record("select", kind=kind, name=option)
         return option
+    # Same door as activate: the jailed check, then the behaviour suite.
+    # A failure raises and leaves the lock unpinned.
+    suite, verified_at = verification(folder)
     digest = ingest(folder)
-    pin(kind, option, source="local", digest=digest, approved_by="owner")
+    meta = _read_toml(folder / "component.toml")
+    pin(
+        kind,
+        option,
+        source="local",
+        digest=digest,
+        api_version=str(meta.get("api_version") or ""),
+        permissions=list(meta.get("permissions") or []),
+        approved_by="owner",
+        suite=suite,
+        verified_at=verified_at,
+    )
     record("select", kind=kind, name=option, digest=digest)
     return option
 

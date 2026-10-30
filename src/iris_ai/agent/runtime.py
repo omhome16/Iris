@@ -126,6 +126,8 @@ class Runtime:
     # Which persona the prompt should load: blank, file, a preset, or a catalog name.
     persona_choice: str = "file"
     engine_name: str = "react"
+    # The resolved turn engine for this generation. None until attach runs.
+    turn_engine: object | None = None
     engine_fails: int = 0
     pipelines: dict = field(default_factory=dict)
     pipeline_fails: dict = field(default_factory=dict)

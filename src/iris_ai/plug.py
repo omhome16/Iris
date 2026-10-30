@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,21 +29,23 @@ from iris_ai.sdk.context import ComponentContext
 
 log = logging.getLogger("iris.plug")
 
-# Folder components a person or Iris can write. engine joins with the engine
-# seam; channel joins with the channel runner. Everything else is an entry point.
+# Folder components a person or Iris can write. One layout for every kind the
+# harness swaps. Hooks, models, judges, and secret stores stay entry points.
 FOLDER_KINDS = (
     "context",
     "memory",
     "persona",
     "capture",
     "consolidator",
+    "engine",
+    "channel",
+    "tool",
+    "guard",
 )
 
 KINDS = (
     *FOLDER_KINDS,
-    "channel",
     "tools",
-    "guard",
     "hook",
     "model",
     "judge",
@@ -51,10 +53,8 @@ KINDS = (
 )
 
 _ENTRY_POINT_HINTS = {
-    "channel": "Register a factory under the entry point group iris_ai.channels, then set [channels] enabled.",
-    "tools": "Register an object with .name and .tools(runtime) under iris_ai.tools.",
+    "tools": "Register an object with .name and .tools(runtime) under iris_ai.tools. A single tool folder is `iris new tool`.",
     "hook": "Register a callable attach(bus) under iris_ai.hooks.",
-    "guard": "Register a callable attach(bus) under iris_ai.hooks. A guard subscribes to pre_tool.",
     "model": "Register a factory returning a ModelBackend under iris_ai.models. Select it with MODEL_BACKEND.",
     "judge": "Register a factory returning a Judge under iris_ai.judges. Select it with JUDGE_BACKEND.",
     "secret_store": "Register a backend under iris_ai.secret_stores. Select it with SECRET_STORE.",
@@ -64,10 +64,11 @@ _ENTRY_POINT_HINTS = {
 def entry_point_hint(kind: str) -> str:
     """What to do instead of scaffolding a folder nothing loads."""
     detail = _ENTRY_POINT_HINTS.get(kind, "This kind is not a folder next to config/.")
+    folders = ", ".join(FOLDER_KINDS)
     return (
         f"{kind} is not a folder component. {detail} "
         "See DOCS.md section 10.2. "
-        "Folder components are context, memory, persona, capture, and consolidator."
+        f"Folder components are {folders}."
     )
 
 _FAIL_LIMIT = 3
@@ -121,6 +122,36 @@ def lock_path() -> Path:
     return Path(settings.harness_config).parent / "components.lock"
 
 
+def shipped_root() -> Path | None:
+    """The catalog that ships with Iris, independent of the workspace.
+
+    A checkout keeps it at the repo `components/` directory. An installed wheel
+    has the same tree under `iris_ai/shipped_components`.
+    """
+    packaged = Path(__file__).resolve().parent / "shipped_components"
+    repo = Path(__file__).resolve().parents[2] / "components"
+    for candidate in (repo, packaged):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def shipped_folder(kind: str, name: str) -> Path | None:
+    """A catalog folder shipped with Iris, when the workspace has not replaced it."""
+    root = shipped_root()
+    if root is None:
+        return None
+    folder = root / kind / name
+    if (folder / "component.py").is_file():
+        return folder
+    return None
+
+
+def component_folder(kind: str, name: str, *, root: Path | None = None) -> Path | None:
+    """Workspace folder first, then the shipped catalog."""
+    return local_folder(kind, name, root=root) or shipped_folder(kind, name)
+
+
 def local_folder(kind: str, name: str, *, root: Path | None = None) -> Path | None:
     folder = components_root(root) / kind / name
     if (folder / "component.py").is_file():
@@ -151,6 +182,37 @@ def list_local(kind: str | None = None, *, root: Path | None = None) -> list[Com
                     kind=str(meta.get("kind") or item),
                     name=str(meta.get("name") or folder.name),
                     source="local",
+                    description=str(meta.get("description") or ""),
+                    path=folder,
+                )
+            )
+    return found
+
+
+def list_shipped(kind: str | None = None) -> list[ComponentInfo]:
+    """Catalog folders that ship with Iris. Workspace folders are not included."""
+    base = shipped_root()
+    if base is None or not base.is_dir():
+        return []
+    found: list[ComponentInfo] = []
+    kinds = [kind] if kind else [item.name for item in base.iterdir() if item.is_dir()]
+    for item in kinds:
+        if not item or item.startswith("."):
+            continue
+        parent = base / item
+        if not parent.is_dir():
+            continue
+        for folder in sorted(parent.iterdir()):
+            if not folder.is_dir() or folder.name.startswith("."):
+                continue
+            if not (folder / "component.py").is_file():
+                continue
+            meta = _read_toml(folder / "component.toml")
+            found.append(
+                ComponentInfo(
+                    kind=str(meta.get("kind") or item),
+                    name=str(meta.get("name") or folder.name),
+                    source="shipped",
                     description=str(meta.get("description") or ""),
                     path=folder,
                 )
@@ -209,24 +271,38 @@ def load_class(folder: Path) -> type:
 
 
 def _v1_context(cls: type, runtime: Any, options: dict | None) -> ComponentContext:
-    """Capabilities named in the manifest. The runtime itself is not one of them."""
+    """Capabilities named in the manifest. The runtime itself is not one of them.
+
+    The grant set is `expand_grants` — the same function the subprocess broker
+    uses — so a short name such as `memory.read` enables the same methods in
+    both hosts.
+    """
+    from iris_ai.isolation.broker import expand_grants
     from iris_ai.sdk.context import MemoryAccess, ModelAccess, StateDir, WorkspaceAccess
 
-    granted = set(getattr(cls, "permissions", ()) or ())
+    granted = expand_grants(getattr(cls, "permissions", ()) or ())
     root = getattr(getattr(runtime, "files", None), "root", None)
     kind = getattr(cls, "component_kind", "")
     name = getattr(cls, "component_name", "")
+    llm_methods = granted & {"llm.complete", "llm.embed"}
+    memory_methods = granted & {"memory.search", "memory.recent", "memory.curated"}
+    state_methods = granted & {"state.read", "state.write"}
     return ComponentContext(
         api_version="iris/v1",
         kind=kind,
         name=name,
         options=options or {},
-        llm=ModelAccess(getattr(runtime, "llm", None)) if "llm" in granted else None,
-        memory=MemoryAccess(getattr(runtime, "index", None), getattr(runtime, "files", None))
-        if "memory.read" in granted
+        grants=granted,
+        llm=ModelAccess(getattr(runtime, "llm", None), methods=llm_methods) if llm_methods else None,
+        memory=MemoryAccess(
+            getattr(runtime, "index", None),
+            getattr(runtime, "files", None),
+            methods=memory_methods,
+        )
+        if memory_methods
         else None,
         files=WorkspaceAccess(root) if "files.read" in granted and root is not None else None,
-        state=StateDir(Path(root) / "state" / kind / name) if "state" in granted and root is not None else None,
+        state=StateDir(Path(root) / "state" / kind / name) if state_methods and root is not None else None,
     )
 
 
@@ -648,14 +724,94 @@ def _drive(coro: Any) -> Any:
     """
     import asyncio
 
+    current = None
     try:
-        current = asyncio.get_event_loop()
+        current = asyncio.get_running_loop()
     except RuntimeError:
-        current = None
+        # The check child sets a loop before Landlock and seccomp, then calls
+        # this while that loop is not running. A new loop would open a
+        # socketpair, which the filter rejects. `get_event_loop()` also raises
+        # once a previous loop was cleared, so read the loop the policy holds.
+        policy = asyncio.get_event_loop_policy()
+        current = getattr(getattr(policy, "_local", None), "_loop", None)
     if current is None or current.is_closed():
         current = asyncio.new_event_loop()
         asyncio.set_event_loop(current)
     return current.run_until_complete(coro)
+
+
+# The jailed check reads this tuple. It must not import
+# `iris_ai.capabilities.memory`: that module imports the vector index, which
+# imports numpy, and the jail's audit hook blocks ctypes.
+_MEMORY_REQUIRED = (
+    "connect",
+    "close",
+    "search",
+    "upsert_chunks",
+    "replace_file_chunks",
+    "delete_file_chunks",
+    "stats",
+)
+
+
+class _EmptyIndex:
+    """An in-memory store with no rows. Pure Python. Safe inside the check jail."""
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def search(self, query: str = "", **kwargs):
+        del query, kwargs
+        return []
+
+    async def list_chunks(self) -> list:
+        return []
+
+    async def nearest(self, text: str = "", **kwargs):
+        del text, kwargs
+        return []
+
+    async def upsert_chunks(self, records: list) -> None:
+        del records
+
+    async def delete_file_chunks(self, path: str) -> None:
+        del path
+
+    async def replace_file_chunks(self, path: str, records: list) -> None:
+        del path, records
+
+    async def forget_entry(self, path: str, chunk_index: int) -> None:
+        del path, chunk_index
+
+    async def stats(self) -> dict:
+        return {"total_chunks": 0, "backend": "empty"}
+
+
+class _EmptyModel:
+    """Answers the probe without a provider. No native code."""
+
+    async def complete(self, prompt: str = "", **kwargs) -> str:
+        del prompt, kwargs
+        return ""
+
+    async def embed(self, text):
+        if isinstance(text, (list, tuple)):
+            return [[0.0] for _ in text]
+        return [0.0]
+
+    async def embed_one(self, text: str = "") -> list[float]:
+        del text
+        return [0.0]
+
+
+def _probe_runtime():
+    """Capabilities for the jailed probe. No files root, so nothing is written."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(llm=_EmptyModel(), index=_EmptyIndex(), files=SimpleNamespace(root=None))
 
 
 def _probe_v1(kind: str, cls: type) -> str:
@@ -670,7 +826,7 @@ def _probe_v1(kind: str, cls: type) -> str:
     )
 
     try:
-        component = construct(cls, None)
+        component = construct(cls, _probe_runtime())
         if kind == "context":
             result = _drive(component.assemble(ContextRequest(message="hi", session_id="probe")))
             if not isinstance(result, ContextResult):
@@ -706,7 +862,27 @@ def check_folder(folder: Path) -> tuple[bool, str]:
         "capture": "extract" if v1 else "maybe_capture",
         "consolidator": "propose" if v1 else "sleep",
         "channel": "send_message",
+        "engine": "streams",
+        "tool": "run",
+        "guard": "attach",
     }.get(kind)
+    _ENGINE_METHODS = (
+        "short_circuit",
+        "wants_plan",
+        "streams",
+        "tool_phase",
+        "finish",
+        "after_tools",
+    )
+    if kind == "memory":
+        try:
+            cls = load_class(folder)
+        except Exception as exc:  # noqa: BLE001 - the check reports the import error
+            return False, f"import failed: {type(exc).__name__}: {exc}"
+        missing = [name for name in _MEMORY_REQUIRED if not callable(getattr(cls, name, None))]
+        if missing:
+            return False, f"memory component must define {', '.join(missing)}()"
+        return True, f"memory/{folder.name} matches the {', '.join(_MEMORY_REQUIRED)} contract"
     try:
         cls = load_class(folder)
     except Exception as exc:  # noqa: BLE001 - the check reports the import error
@@ -720,13 +896,18 @@ def check_folder(folder: Path) -> tuple[bool, str]:
         # the same, or a persona whose signature is `text(self, original)`
         # passes here and then fails the next boot.
         try:
-            rendered = construct(cls, None).text()
+            rendered = construct(cls, _probe_runtime()).text()
         except Exception as exc:  # noqa: BLE001 - the check reports the contract error
             return False, f"persona text() failed: {type(exc).__name__}: {exc}"
         if not isinstance(rendered, str):
             return False, "persona text() must return str"
         return True, f"{kind}/{folder.name} matches the text contract"
-    if required and not hasattr(cls, required):
+    if kind == "engine":
+        missing = [name for name in _ENGINE_METHODS if not callable(getattr(cls, name, None))]
+        if missing:
+            return False, f"engine component must define {', '.join(missing)}()"
+        return True, f"engine/{folder.name} matches the {', '.join(_ENGINE_METHODS)} contract"
+    if required and not callable(getattr(cls, required, None)):
         return False, f"{kind} component must define {required}()"
     return True, f"{kind}/{folder.name} matches the {required or kind} contract"
 
@@ -755,6 +936,37 @@ def scaffold(kind: str, name: str, *, root: Path | None = None) -> Path:
             "    async def forget_entry(self, path, chunk_index):\n        return None\n\n"
             "    async def nearest(self, text, *, top_k=3):\n        return []\n\n"
             "    async def list_chunks(self):\n        return []\n"
+        ),
+        "engine": (
+            "name = \"custom\"\n\n"
+            "    def short_circuit(self, state):\n        return None\n\n"
+            "    def wants_plan(self, state) -> bool:\n        return False\n\n"
+            "    def streams(self) -> bool:\n        return True\n\n"
+            "    def tool_phase(self) -> dict:\n        return {}\n\n"
+            "    def finish(self, graph, done) -> None:\n        return None\n\n"
+            "    def after_tools(self, state) -> None:\n        return None\n"
+        ),
+        "channel": (
+            "name = \"custom\"\n"
+            "    connected = False\n\n"
+            "    async def connect(self) -> bool:\n        self.connected = True\n        return True\n\n"
+            "    async def close(self) -> None:\n        self.connected = False\n\n"
+            "    async def send_message(self, chat_id, text) -> str:\n        return \"ok\"\n\n"
+            "    async def send_photo(self, chat_id, photo_url, caption=\"\") -> str:\n        return \"ok\"\n\n"
+            "    async def get_chat_history(self, chat_id, limit=10) -> str:\n        return \"\"\n"
+        ),
+        "tool": (
+            "def run(self, request):\n"
+            "        message = getattr(request, \"message\", None)\n"
+            "        if message is None and isinstance(request, dict):\n"
+            "            message = request.get(\"message\", \"\")\n"
+            "        return {\"ok\": True, \"message\": str(message or \"\")}\n"
+        ),
+        "guard": (
+            "def attach(self, bus) -> None:\n"
+            "        def _allow(**kwargs):\n"
+            "            return None\n"
+            "        bus.on(\"pre_tool\", _allow, name=\"guard\")\n"
         ),
     }.get(kind, "def ready(self) -> bool:\n        return True\n")
     (folder / "component.toml").write_text(
@@ -793,24 +1005,96 @@ def eject(kind: str, name: str, *, dest_name: str = "") -> Path:
     return folder
 
 
+def verification(folder: Path) -> tuple[str, str]:
+    """Jailed contract check, then the behaviour suite.
+
+    Both `activate` and `select` call this before a pin. A failure raises
+    `RuntimeError` and nothing is pinned. Returns `(suite, verified_at)`.
+    """
+    import tempfile
+    from types import SimpleNamespace
+
+    from iris_ai.memory.files import WorkspaceFiles
+    from iris_ai.testing import HashEmbedder, run_conformance, suite_name
+
+    before = component_digest(folder)
+    ok, detail = check_in_sandbox(folder)
+    if not ok:
+        raise RuntimeError(detail)
+    meta = _read_toml(folder / "component.toml")
+    kind = str(meta.get("kind") or folder.parent.name)
+    with tempfile.TemporaryDirectory(prefix="iris-verify-") as raw:
+        root = Path(raw)
+        llm = HashEmbedder()
+        index = _verification_index(root, llm)
+        carrier = SimpleNamespace(llm=llm, files=WorkspaceFiles(root), index=index)
+        try:
+            try:
+                component = construct(load_class(folder), carrier, trust="local")
+            except Exception as exc:
+                raise RuntimeError(f"component failed to construct: {type(exc).__name__}: {exc}") from exc
+            problems = _drive(run_conformance(kind, component))
+            if problems:
+                raise RuntimeError("; ".join(problems))
+            if component_digest(folder) != before:
+                raise RuntimeError("component digest changed during verification")
+            return suite_name(kind), datetime.now(UTC).isoformat()
+        finally:
+            _close_capability(index)
+
+
+def _close_capability(index: object) -> None:
+    """Run close() on the throwaway store, including when close is a coroutine.
+
+    A coroutine object has a ``close`` method of its own. Calling that drops
+    the coroutine without shutting the connection.
+    """
+    import inspect
+
+    close = getattr(index, "close", None)
+    if not callable(close):
+        return
+    try:
+        result = close()
+        if inspect.isawaitable(result):
+            _drive(result)
+    except Exception as exc:  # noqa: BLE001 - the suite result matters more than cleanup
+        log.warning("verification index close failed (%s)", exc)
+
+
+def _verification_index(root: Path, llm: object):
+    """A connected empty SQLite store. A no-op index if that store cannot open.
+
+    This runs in the parent, after the jailed check. The matrix builds the
+    same kind of index, so activation and the matrix see the same memory.
+    """
+    index = None
+    try:
+        from iris_ai.memory.sqlite_index import SqliteIndex
+
+        index = SqliteIndex(root / "verify.db", llm=llm)
+        _drive(index.connect())
+    except Exception as exc:  # noqa: BLE001 - the suite can still run against the no-op
+        log.warning("verification index fell back to empty (%s)", exc)
+        if index is not None:
+            _close_capability(index)
+        return _EmptyIndex()
+    return index
+
+
 def activate(kind: str, name: str) -> str:
     """Move a staged component into place, select it, and pin its digest.
 
-    The check runs in the jailed child. Importing the staged code in this
-    process would execute it with the owner's privileges and could write
-    bytecode into the folder before the digest is recorded.
+    The contract check runs in the jailed child. The behaviour suite then runs
+    against a throwaway workspace. The digest is compared before the pin, so a
+    suite cannot rewrite the component it is judging.
     """
     from iris_ai.components.lock import pin
 
     staged = staging_dir(kind, name)
     if not (staged / "component.py").is_file():
         raise FileNotFoundError(f"nothing staged at {staged}")
-    digest = component_digest(staged)
-    ok, detail = check_in_sandbox(staged)
-    if not ok:
-        raise RuntimeError(detail)
-    if component_digest(staged) != digest:
-        raise RuntimeError("component digest changed during the check; activation refused")
+    suite, verified_at = verification(staged)
     dest = components_root() / kind / name
     if dest.exists():
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -834,6 +1118,8 @@ def activate(kind: str, name: str) -> str:
         api_version=str(meta.get("api_version") or ""),
         permissions=list(meta.get("permissions") or []),
         approved_by="owner",
+        suite=suite,
+        verified_at=verified_at,
     )
     record("activate", kind=kind, name=name, digest=stored)
     return f"activated {kind}/{name}"

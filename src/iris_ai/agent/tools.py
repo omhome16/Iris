@@ -27,6 +27,7 @@ from iris_ai.agent.runtime import (
     current_tool_scope,
 )
 from iris_ai.approval import Envelope
+from iris_ai.capabilities.memory_api import as_hits
 from iris_ai.computer.actions import Action, ActionKind
 from iris_ai.config import settings
 from iris_ai.ingest import fetch_text, ingest_url, web_search
@@ -175,9 +176,16 @@ async def run_memory_search(runtime: Runtime, query: str, *, top_k: int = 5, lan
     had drifted into two copies of the same search-plus-feedback loop.
     """
     if lane == "escalate":
-        hits = await runtime.index.escalate(query, top_k=top_k, mrr_top_k=top_k)
+        from iris_ai.capabilities.memory import MemoryEscalation, decline, offers
+
+        if not offers(runtime.index, MemoryEscalation):
+            decline(runtime.index, "escalate; escalation lane skipped")
+            hits = []
+        else:
+            hits = await runtime.index.escalate(query, top_k=top_k, mrr_top_k=top_k)
     else:
         hits = await runtime.index.search(query, top_k=top_k, mrr_top_k=top_k)
+    hits = as_hits(hits)
     if settings.recall_feedback_enabled:
         seen: set[str] = set()
         for hit in hits[:top_k]:
@@ -700,8 +708,10 @@ def build_tools(runtime: Runtime) -> list[Tool]:
         # append-only; matching them is pointless and previously produced a
         # "found in index but not editable" dead end for every /forget on a
         # daily-note hit (the old search covered all paths).
-        hits = await runtime.index.search(
-            query, top_k=3, mrr_top_k=1, require_origin={Origin.OWNER}
+        hits = as_hits(
+            await runtime.index.search(
+                query, top_k=3, mrr_top_k=1, require_origin={Origin.OWNER}
+            )
         )
         hits = [h for h in hits if h.path == "MEMORY.md"]
         if not hits:

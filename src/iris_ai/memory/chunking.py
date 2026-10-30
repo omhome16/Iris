@@ -124,9 +124,11 @@ async def _ask_for_contexts(
             json_mode=True,
             max_tokens=1500,
         )
+        if not payload:
+            continue
         try:
             data = json.loads(payload)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             continue
         for item in data.get("contexts", []):
             try:

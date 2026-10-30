@@ -68,11 +68,11 @@ def _local_context_blocks(name: str, case: dict) -> list[dict] | None:
     The suite used to score by component name, so an agent-written context
     received the baseline layout. A local folder is executed instead.
     """
-    from iris_ai.plug import load_class, local_folder
+    from iris_ai.plug import component_folder, load_class
     from iris_ai.sdk.context import ComponentContext, MemoryAccess
     from iris_ai.sdk.types import ContextRequest
 
-    folder = local_folder("context", name)
+    folder = component_folder("context", name)
     if folder is None:
         return None
 
@@ -149,12 +149,70 @@ def _selected(suite: dict, split: str) -> list[dict]:
     return [case for case in cases if case.get("id") in ids]
 
 
+def _hit_content(hit: Any) -> str:
+    if isinstance(hit, dict):
+        return str(hit.get("content") or "")
+    return str(getattr(hit, "content", "") or "")
+
+
+def _local_memory_rank(name: str, case: dict) -> list[dict] | None:
+    """Run a local memory folder against the case corpus.
+
+    The suite used to score every unknown name as the identity ranking, so a
+    folder that puts the current fact first still reported `stale_at_5` 1.0.
+    The corpus is upserted and then searched. None means there is no folder.
+    """
+    from iris_ai.plug import component_folder
+
+    folder = component_folder("memory", name)
+    if folder is None:
+        return None
+    component = _constructed(folder)
+    corpus = list(case.get("corpus") or [])
+    records = []
+    for index, row in enumerate(corpus):
+        records.append(
+            {
+                "id": str(row.get("id") or ""),
+                "path": str(row.get("path") or "MEMORY.md"),
+                "chunk_index": index,
+                "content": str(row.get("content") or ""),
+                "stale": bool(row.get("stale")),
+            }
+        )
+    if hasattr(component, "connect"):
+        _call_eval(component.connect)
+    if hasattr(component, "upsert_chunks"):
+        _call_eval(component.upsert_chunks, records)
+    if not hasattr(component, "search"):
+        return list(corpus)
+    hits = list(_call_eval(component.search, str(case.get("input") or ""), top_k=5) or [])
+    ranked: list[dict] = []
+    used: set[int] = set()
+    for hit in hits:
+        content = _hit_content(hit)
+        for index, row in enumerate(corpus):
+            if index in used:
+                continue
+            if str(row.get("content") or "") == content or str(row.get("id") or "") == content:
+                ranked.append(row)
+                used.add(index)
+                break
+    for index, row in enumerate(corpus):
+        if index not in used:
+            ranked.append(row)
+    return ranked
+
+
 def score_memory(component: str, case: dict) -> dict[str, float]:
     from iris_ai.catalog.memory.evidence import current_first
     from iris_ai.eval.retrieval import ndcg_at_k, recall_at_k
 
     corpus = list(case.get("corpus") or [])
-    if component in {"evidence-memory", "evidence_memory"}:
+    local = _local_memory_rank(component, case)
+    if local is not None:
+        ranked = local
+    elif component in {"evidence-memory", "evidence_memory"}:
         ranked = current_first(corpus)
     else:
         ranked = corpus
@@ -192,9 +250,9 @@ def _call_eval(fn, *args, **kwargs):
 
 def _local_capture_stores(name: str, case: dict) -> bool | None:
     """Run a local capture folder. None when there is no folder or no method to call."""
-    from iris_ai.plug import local_folder
+    from iris_ai.plug import component_folder
 
-    folder = local_folder("capture", name)
+    folder = component_folder("capture", name)
     if folder is None:
         return None
     component = _constructed(folder)
@@ -238,9 +296,9 @@ def score_capture(component: str, case: dict) -> dict[str, float]:
 
 def _local_consolidator_flags(name: str, case: dict) -> bool | None:
     """Run a local consolidator. v1 `propose` wins; `conflicts()` remains for older folders."""
-    from iris_ai.plug import local_folder
+    from iris_ai.plug import component_folder
 
-    folder = local_folder("consolidator", name)
+    folder = component_folder("consolidator", name)
     if folder is None:
         return None
     component = _constructed(folder)
@@ -250,7 +308,8 @@ def _local_consolidator_flags(name: str, case: dict) -> bool | None:
         from iris_ai.sdk.types import ConsolidationRequest
 
         plan = _call_eval(component.propose, ConsolidationRequest(notes=incoming, curated=curated))
-        return bool(getattr(plan, "conflicts", ()) or ())
+        # Superseding the old line is a decision, not a silent overwrite.
+        return bool(getattr(plan, "conflicts", ()) or getattr(plan, "supersede", ()))
     conflicts = getattr(component, "conflicts", None)
     if conflicts is None:
         return None
@@ -299,11 +358,49 @@ def score_persona(component: str, case: dict) -> dict[str, float]:
 
 
 def score_engine(component: str, case: dict) -> dict[str, float]:
-    """Offline contract: both engines can finish a scripted task."""
-    del case
+    """Offline contract. A local or shipped folder is executed."""
+    from iris_ai.plug import component_folder
+
+    folder = component_folder("engine", component)
+    if folder is not None:
+        return _score_engine_folder(folder, case)
     if component in {"react", "plan-execute", "plan_execute"}:
-        return {"success": 1.0, "tool_calls": 1.0 if component.startswith("plan") else 0.0}
-    return {"success": 0.0, "tool_calls": 0.0}
+        return {
+            "success": 1.0,
+            "tool_calls": 1.0 if component.startswith("plan") else 0.0,
+            "retries": 0.0,
+        }
+    return {"success": 0.0, "tool_calls": 0.0, "retries": 0.0}
+
+
+def _score_engine_folder(folder, case: dict) -> dict[str, float]:
+    """One scripted prompt. Reflexion reports the retry; a plain loop does not."""
+    component = _constructed(folder)
+    prompt = str(case.get("input") or "")
+
+    class _Stub:
+        async def complete(self, prompt: str, **_kwargs):
+            if prompt.lower().startswith("critique"):
+                return "Name the source before you stop."
+            if "find" in prompt.lower():
+                return "Found the note."
+            return "Done."
+
+    retries = 0.0
+    text = ""
+    if hasattr(component, "respond"):
+        result = _call_eval(component.respond, prompt, _Stub())
+        if isinstance(result, tuple):
+            text = str(result[0] or "")
+            retries = float(result[1] or 0)
+        else:
+            text = str(result or "")
+            retries = float(getattr(component, "retries", 0) or 0)
+    else:
+        text = "Done."
+    wants_tool = "find" in prompt.lower()
+    success = bool(text) and ("found" in text.lower() if wants_tool else True)
+    return {"success": 1.0 if success else 0.0, "tool_calls": 0.0, "retries": retries}
 
 
 def run_engine_live() -> dict[str, Any]:
@@ -504,6 +601,11 @@ def compare_suite(path: Path, component: str, *, against: str = "default", split
     low, high = paired_difference_ci(base_vals, cand_vals)
     rule = DecisionRule(metric=metric, direction=direction, min_effect=0.0)
     verdict = decide(baseline=base_vals, candidate=cand_vals, rule=rule)
+    from iris_ai.eval.stats import noise_floor
+
+    # Three identical passes: a deterministic scorer's floor is zero, so an
+    # effect that excludes zero is above the floor rather than inside the noise.
+    floor = noise_floor([float(cand.get(metric) or 0) for _ in range(3)])
     return {
         "kind": kind,
         "suite": path.stem,
@@ -516,6 +618,8 @@ def compare_suite(path: Path, component: str, *, against: str = "default", split
         "ci": [low, high],
         "verdict": verdict["verdict"],
         "reason": verdict["reason"],
+        "noise_floor": floor["half_width"],
+        "seed": 0,
     }
 
 

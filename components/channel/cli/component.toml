@@ -1,0 +1,5 @@
+kind = "channel"
+name = "cli"
+api_version = "iris/v1"
+entry = "component:CliChannel"
+description = "A terminal channel. Messages stay in this process. No socket."
